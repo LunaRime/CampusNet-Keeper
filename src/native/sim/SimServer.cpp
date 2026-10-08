@@ -24,6 +24,11 @@ namespace {
 // 首页只放真实首页 HTML 里存在的变量：
 //   - 免劫持清单 visit_blacklist 只在 loadConfig 响应里（首页 0 命中）
 //   - epHTTPPort 只在首页引用的 a41.js 里（首页 HTML 0 命中），客户端探测拿不到，故不放
+//
+// 契约：首页只复刻真实页面中**客户端会读**的变量（逐个列在 tests/sim_test.cpp 的忠实性
+// 字段清单里），其余变量（portalver / portalid / querypath 等）本就不复刻，故忠实性测试
+// 只钉这些字段。将来谁往模拟器页面加变量，谁负责同步往 sim_test.cpp 的字段清单里加一条，
+// 否则加了也不会被忠实性测试保护。
 const char* kCarrierJson =
     "{\"yys\":{\"title\": \"服务类型\",\"mode\":\"radiobutton\",\"type\":\"0\","
     "\"data\":[{\"id\":\"1\",\"name\":\"校园用户\",\"suffix\":\"\"},"
@@ -35,6 +40,7 @@ std::string BuildHomePage(int port) {
     std::ostringstream oss;
     oss << "<html><head><meta charset=\"gb2312\"><!--Dr.COMWebLoginID_1.htm--></head>"
            "<body><script>"
+           "/** 哆点参数 start */"
         << "authloginport=" << port << ";"
            "authloginpath='/eportal/?c=ACSetting&a=Login';"
            "authloginparam='url=drappall';"

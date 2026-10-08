@@ -41,12 +41,13 @@ std::string RawHttp(int port, const std::string& method,
     }
     req += "\r\n";
     req += body;
-    send(s, req.c_str(), (int)req.size(), 0);
 
     // 客户端超时：不依赖"服务端一定会 close"这个不变量，
     // 否则将来某条服务端路径忘记 close 会让整个套件挂死而不是一条用例转红。
     int timeout = 5000;
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+
+    send(s, req.c_str(), (int)req.size(), 0);
 
     std::string resp;
     char buf[4096];
@@ -58,19 +59,42 @@ std::string RawHttp(int port, const std::string& method,
     return resp;
 }
 
-// 用系统 API 把 GBK(936) 字节解成 UTF-8，用于端到端验证服务端真的发了 GBK。
-// 返回空串表示解码失败（即字节不是合法 GBK）。
-std::string GbkToUtf8(const std::string& gbk) {
-    if (gbk.empty()) return {};
-    int wn = MultiByteToWideChar(936, 0, gbk.data(), (int)gbk.size(), nullptr, 0);
+// 用系统 API 按指定代码页把字节解成 UTF-8。返回空串表示解码失败。
+std::string DecodeToUtf8(const std::string& bytes, UINT code_page) {
+    if (bytes.empty()) return {};
+    int wn = MultiByteToWideChar(code_page, 0, bytes.data(), (int)bytes.size(), nullptr, 0);
     if (wn <= 0) return {};
     std::wstring wide((size_t)wn, L'\0');
-    MultiByteToWideChar(936, 0, gbk.data(), (int)gbk.size(), wide.data(), wn);
+    MultiByteToWideChar(code_page, 0, bytes.data(), (int)bytes.size(), wide.data(), wn);
     int un = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wn, nullptr, 0, nullptr, nullptr);
     if (un <= 0) return {};
     std::string utf8((size_t)un, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide.data(), wn, utf8.data(), un, nullptr, nullptr);
     return utf8;
+}
+
+// 用系统 API 把 UTF-8 文本编成指定代码页的字节。返回空串表示失败。
+std::string EncodeFromUtf8(const std::string& utf8, UINT code_page) {
+    if (utf8.empty()) return {};
+    int wn = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
+    if (wn <= 0) return {};
+    std::wstring wide((size_t)wn, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), wide.data(), wn);
+    int n = WideCharToMultiByte(code_page, 0, wide.data(), wn, nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string out((size_t)n, '\0');
+    WideCharToMultiByte(code_page, 0, wide.data(), wn, out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+// 把 GBK(936) 字节解成 UTF-8，用于端到端验证服务端真的发了 GBK。
+std::string GbkToUtf8(const std::string& gbk) { return DecodeToUtf8(gbk, 936); }
+
+// 该字节串本身能否作为合法 UTF-8 读取（用于确认证据文件确实是 GBK 原始字节）。
+bool IsValidUtf8(const std::string& bytes) {
+    if (bytes.empty()) return false;
+    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+                               (int)bytes.size(), nullptr, 0) > 0;
 }
 
 // 读文件原始字节（不解码、不做换行转换）。
@@ -243,7 +267,12 @@ TEST_CASE("门户首页按 GBK 发送，中文运营商名可读") {
 
 TEST_CASE("首页字段与实测证据逐项一致（忠实性）") {
     // 证据文件是线上原始 GBK 字节，按 GBK 解——顺带验证解码路径。
-    std::string evidence = GbkToUtf8(ReadFileBytes(EvidencePath("portal_home_gbk_raw.htm")));
+    std::string raw = ReadFileBytes(EvidencePath("portal_home_gbk_raw.htm"));
+    REQUIRE(!raw.empty());
+    // 夹具自检：它必须是"不能当合法 UTF-8 读"的原始字节。若将来又被存成 UTF-8，
+    // 这条会先失败，避免把夹具问题误报成模拟器问题。
+    REQUIRE(!IsValidUtf8(raw));
+    std::string evidence = GbkToUtf8(raw);
     REQUIRE(!evidence.empty());
     // 证据侧自证：真实首页没有 visit_blacklist（免劫持清单只在 loadConfig 响应里）
     CHECK(evidence.find("visit_blacklist") == std::string::npos);
@@ -269,6 +298,10 @@ TEST_CASE("首页字段与实测证据逐项一致（忠实性）") {
     // 模拟器首页就不得凭空多给这条指纹 —— 防止将来有人又把它加回来。
     CHECK(evidence.find("epHTTPPort") == std::string::npos);
     CHECK(page.find("epHTTPPort") == std::string::npos);
+    // 「哆点」是 Dr.COM 的识别指纹之一：真实首页以 GBK 中文写着「哆点参数 start」，
+    // 客户端按声明解码后应能读到它（证据侧一并自证，防指纹被删而无人察觉）。
+    CHECK(evidence.find("/** 哆点参数 start */") != std::string::npos);
+    CHECK(page.find("/** 哆点参数 start */") != std::string::npos);
     // 真实首页没有免劫持清单，客户端必须容忍缺失并回退到内置默认值
     CHECK(page.find("visit_blacklist") == std::string::npos);
 
@@ -280,9 +313,6 @@ TEST_CASE("loadConfig 端点与实测证据逐项一致（忠实性）") {
     REQUIRE(!evidence.empty());
     std::string blacklist = ExtractBlacklist(evidence);
     REQUIRE(!blacklist.empty());
-    size_t quotes = 0;
-    for (char c : blacklist) if (c == '"') quotes++;
-    CHECK(quotes == 30);  // 15 项 × 每项两个引号（数组原文已不含键名）
 
     cnk::SimServer srv;
     std::string err;
@@ -291,6 +321,16 @@ TEST_CASE("loadConfig 端点与实测证据逐项一致（忠实性）") {
     CHECK(resp.find("HTTP/1.1 200") != std::string::npos);
     std::string body = StripHeaders(resp);
     REQUIRE(!body.empty());
+
+    // 声明与字节必须一致。首页方向靠「按 GBK 解出中文 + 正文不得是 UTF-8 字节」两侧钉住，
+    // 这一侧是对称的镜像保护：声明 utf-8 却发 GBK 字节，同样会让下游乱码。
+    CHECK(CharsetOf(resp) == "charset=utf-8");
+    const std::string kMsg = "加载页面设置信息成功！";
+    CHECK(DecodeToUtf8(body, CP_UTF8).find(kMsg) != std::string::npos);
+    std::string msg_gbk = EncodeFromUtf8(kMsg, 936);
+    REQUIRE(!msg_gbk.empty());
+    CHECK(msg_gbk != kMsg);                          // 自检：GBK 字节确实不同于 UTF-8
+    CHECK(body.find(msg_gbk) == std::string::npos);  // 正文不得是 GBK 字节
 
     CHECK(body.compare(0, 8, "dr1003({") == 0);
     REQUIRE(body.size() >= 3);
@@ -305,6 +345,7 @@ TEST_CASE("loadConfig 端点与实测证据逐项一致（忠实性）") {
     REQUIRE(ParseDr1003(evidence, ev));
     REQUIRE(ParseDr1003(body, sim));
     CHECK(sim["code"] == 1);
+    CHECK(sim["msg"] == ev["msg"]);
     CHECK(sim["data"]["visit_blacklist"].size() == 15);
     CHECK(sim["data"]["visit_blacklist"] == ev["data"]["visit_blacklist"]);
     CHECK(sim["data"]["en_md5"].is_string());
@@ -317,17 +358,22 @@ TEST_CASE("loadConfig 端点与实测证据逐项一致（忠实性）") {
     srv.Stop();
 }
 
-TEST_CASE("首页与 eportal 路径的字符集声明不同") {
+// 三条路径各自声明自己的编码：首页 gbk，/eportal/ 与 loadConfig 都是 utf-8。
+// 声明值必须与正文实际字节一致（正文编码由上面两条忠实性测试做字节级校验）。
+TEST_CASE("三条路径各自声明正确的字符集") {
     cnk::SimServer srv;
     std::string err;
     REQUIRE(srv.Start(cnk::SimOptions{}, err));
 
     std::string home = RawHttp(srv.Port(), "GET", "/", "");
     std::string login = RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=x&upass=y");
+    std::string config = RawHttp(srv.Port(), "GET", "/eportal/portal/page/loadConfig", "");
 
     CHECK(CharsetOf(home) == "charset=gbk");
     CHECK(CharsetOf(login) == "charset=utf-8");
+    CHECK(CharsetOf(config) == "charset=utf-8");
     CHECK(CharsetOf(home) != CharsetOf(login));
+    CHECK(CharsetOf(login) == CharsetOf(config));
 
     srv.Stop();
 }
