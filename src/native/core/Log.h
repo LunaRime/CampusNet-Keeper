@@ -6,6 +6,8 @@ namespace cnk {
 
 enum class LogLevel { Debug, Info, Warn, Error };
 
+// keep_files 是「轮转备份数」，不含当前文件（标准 logrotate 语义）：
+// keep_files=3 → keeper.log + keeper.log.1/.2/.3 共 4 个文件。
 void LogInit(const std::string& log_dir, LogLevel level,
              size_t max_bytes, int keep_files);
 void LogShutdown();

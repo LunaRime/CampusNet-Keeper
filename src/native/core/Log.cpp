@@ -72,8 +72,13 @@ bool IsSecretKey(const std::string& key) {
     static const char* kKeys[] = {
         "upass", "password", "pwd", "pass", "user_password", "passwd"
     };
+    // ASCII 大小写折叠后比较，键名大小写不影响脱敏。
+    std::string lower;
+    lower.reserve(key.size());
+    for (char c : key)
+        lower += (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
     for (auto* k : kKeys)
-        if (key == k) return true;
+        if (lower == k) return true;
     return false;
 }
 
@@ -137,7 +142,9 @@ std::string RedactSecrets(const std::string& s) {
         key_start = (key_start == std::string::npos) ? i : key_start + 1;
         std::string key = s.substr(key_start, eq - key_start);
 
-        size_t val_end = s.find('&', eq);
+        // '?' 与 '&' 同为参数分隔符，否则内嵌查询串（如 url=http://x?upass=y）
+        // 会被当成单个值整体吃掉，其中的凭据不会被脱敏。
+        size_t val_end = s.find_first_of("&?", eq);
         if (val_end == std::string::npos) val_end = s.size();
 
         out.append(s, i, key_start - i);

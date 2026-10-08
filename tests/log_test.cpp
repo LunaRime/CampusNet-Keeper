@@ -16,6 +16,20 @@ TEST_CASE("RedactSecrets 对无凭据字符串原样返回") {
     CHECK(cnk::RedactSecrets("http://a/b?c=1") == "http://a/b?c=1");
 }
 
+TEST_CASE("RedactSecrets 覆盖内嵌查询串") {
+    CHECK(cnk::RedactSecrets("url=http://x?upass=y") == "url=http://x?upass=***");
+    CHECK(cnk::RedactSecrets("url=http://x?a=1&b=2") == "url=http://x?a=1&b=2");
+    CHECK(cnk::RedactSecrets("next=/p?pwd=1&k=2") == "next=/p?pwd=***&k=2");
+}
+
+TEST_CASE("RedactSecrets 键名大小写不敏感") {
+    CHECK(cnk::RedactSecrets("UPASS=secret") == "UPASS=***");
+    CHECK(cnk::RedactSecrets("PassWord=abc") == "PassWord=***");
+    CHECK(cnk::RedactSecrets("User_Password=q") == "User_Password=***");
+    CHECK(cnk::RedactSecrets("PASSWD=q") == "PASSWD=***");
+    CHECK(cnk::RedactSecrets("DDDDD=alice") == "DDDDD=alice");
+}
+
 TEST_CASE("日志写入后可被 LogTail 读回") {
     auto dir = fs::temp_directory_path() / "cnk_log_test";
     fs::remove_all(dir);
