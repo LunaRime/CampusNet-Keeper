@@ -828,7 +828,6 @@ namespace {
 const char* kDrcomHome =
     "<html><head><meta charset=\"gbk\"><!--Dr.COMWebLoginID_1.htm--></head>"
     "<body><script>"
-    "epHTTPPort=801;"
     "authloginport=801;"
     "authloginpath='/eportal/?c=ACSetting&a=Login';"
     "authloginparam='url=drappall';"
@@ -2618,9 +2617,24 @@ TEST_CASE("同时含 DrcomServer 与 /eportal/ 时判定为 Dr.COM 而非锐捷"
     cnk::HttpResponse r;
     r.server = "DrcomServer1.0";
     r.body = "<script>authloginpath='/eportal/?c=ACSetting&a=Login';"
-             "epHTTPPort=801;</script>";
+             "authloginport=801;</script>";
     r.effective_url = "http://10.0.0.1:801/eportal/";
     CHECK(cnk::DetectVendor(r) == cnk::Vendor::Drcom);
+}
+
+TEST_CASE("页面含中文「哆点」判定为 Dr.COM") {
+    cnk::HttpResponse r;
+    r.body = "<script>/** 哆点参数 start */</script>";
+    CHECK(cnk::DetectVendor(r) == cnk::Vendor::Drcom);
+}
+
+TEST_CASE("epHTTPPort 不构成 Dr.COM 指纹") {
+    // 该变量真实存在，但只在首页引用的 a41.js 里，探测拿到的 HTML 看不到它。
+    // 若把它当指纹，真实环境永远不命中 —— 这条测试防止它被改回来。
+    cnk::HttpResponse r;
+    r.server = "nginx";
+    r.body = "<script>epHTTPPort=801;</script>";
+    CHECK(cnk::DetectVendor(r) != cnk::Vendor::Drcom);
 }
 
 TEST_CASE("页面含 Dr.COMWebLoginID_ 判定为 Dr.COM") {
@@ -2742,8 +2756,11 @@ Vendor DetectVendor(const HttpResponse& resp) {
     if (ContainsCI(server, "drcomserver")) return Vendor::Drcom;
 
     // 序 2：哆点门户特征
+    // 注意：不要用 epHTTPPort 做指纹 —— 该变量真实存在，但在首页引用的
+    // a41.js 里，不在首页 HTML 内；客户端探测只拿得到 HTML，永远看不到它。
+    // 同理 `duodian` 是拼音，真实页面写的是中文「哆点」。
     if (Contains(body, "Dr.COMWebLoginID_") || Contains(body, "0MKKey") ||
-        Contains(body, "epHTTPPort") || ContainsCI(body, "duodian"))
+        Contains(body, "哆点"))
         return Vendor::Drcom;
 
     // 序 3：深澜

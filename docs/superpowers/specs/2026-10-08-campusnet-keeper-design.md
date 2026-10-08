@@ -363,7 +363,7 @@ Portal 会劫持绝大多数 HTTP 请求，若探测地址被劫持，离线与�
 | 序 | 指纹特征 | 判定厂商 |
 |---|---|---|
 | 1 | 响应头 `Server` 含 `DrcomServer` | **Dr.COM**（最明确的信号） |
-| 2 | 页面含 `Dr.COMWebLoginID_`、`0MKKey`、或 `epHTTPPort` | **Dr.COM**（哆点门户变体） |
+| 2 | 页面含 `Dr.COMWebLoginID_`、`0MKKey`、或中文 `哆点` | **Dr.COM**（哆点门户变体） |
 | 3 | 页面/URL 含 `srun_portal`、`get_challenge`、`srun_bx1`，或同时含 `ac_id` 与 `callback` | 深澜 Srun |
 | 4 | URL 含 `/eportal/`，或含 `c=Portal`，或同时含 `wlanuserip` 与 `nasip`，或含 `jsVersion` | 锐捷 eportal |
 | 5 | URL 含 `/portal/login` 或 `iPortal` 或 `portalpage` | 华为 iPortal（走 GenericForm 实现） |
@@ -382,7 +382,7 @@ Portal 会劫持绝大多数 HTTP 请求，若探测地址被劫持，离线与�
 | 厂商 | Dr.COM 城市热点，哆点（DuoDian）门户 v4.0 |
 | 响应头 | `Server: DrcomServer1.0` |
 | Portal 首页 | `http://10.0.0.1/` |
-| eportal HTTP 端口 | **801**（`epHTTPPort=801`，非 80） |
+| eportal HTTP 端口 | **801**（依据 `a41.js` 中的 `var epHTTPPort=801`；**该变量不在首页 HTML 里**，探测只能拿到 HTML，故它不能用作识别指纹） |
 | eportal HTTPS 端口 | 802 |
 | 登录路径（服务器声明） | `/eportal/?c=ACSetting&a=Login`，附参 `url=drappall` |
 | 注销路径 | `/eportal/?c=ACSetting&a=Logout&ver=1.0` |
