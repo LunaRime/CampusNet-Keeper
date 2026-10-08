@@ -2,6 +2,7 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>  // MultiByteToWideChar；必须排在 winsock2.h 之后，否则会引入 winsock1
 
 #include <atomic>
 #include <chrono>
@@ -18,7 +19,7 @@ namespace cnk {
 namespace {
 
 const char* kDrcomHome =
-    "<html><head><meta charset=\"gbk\"><!--Dr.COMWebLoginID_1.htm--></head>"
+    "<html><head><meta charset=\"gb2312\"><!--Dr.COMWebLoginID_1.htm--></head>"
     "<body><script>"
     "epHTTPPort=801;"
     "authloginport=801;"
@@ -77,6 +78,21 @@ std::string UrlDecode(const std::string& s) {
         out += s[i] == '+' ? ' ' : s[i];
     }
     return out;
+}
+
+// 源码字面量经 /utf-8 编译是 UTF-8，而真实门户首页按 GBK 发送，
+// 故发送前转码（UTF-8 → UTF-16 → GBK/936）。转码失败则原样返回，不让基础设施吞掉正文。
+std::string Utf8ToGbk(const std::string& utf8) {
+    if (utf8.empty()) return {};
+    int wn = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
+    if (wn <= 0) return utf8;
+    std::wstring wide((size_t)wn, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), wide.data(), wn);
+    int gn = WideCharToMultiByte(936, 0, wide.data(), wn, nullptr, 0, nullptr, nullptr);
+    if (gn <= 0) return utf8;
+    std::string gbk((size_t)gn, '\0');
+    WideCharToMultiByte(936, 0, wide.data(), wn, gbk.data(), gn, nullptr, nullptr);
+    return gbk;
 }
 
 // loopback 上小响应通常一次就发完，循环发送以免响应被截断。
@@ -159,7 +175,8 @@ void SimServer::Impl::HandleClient(SOCKET client) {
     }
 
     if (path == "/") {
-        resp_body = kDrcomHome;
+        // 真实门户首页是 GBK 字节；转码后再算 Content-Length（GBK 与 UTF-8 字节数不同）
+        resp_body = Utf8ToGbk(kDrcomHome);
     } else if (path == "/eportal/" || path == "/eportal") {
         login_count++;
         // 凭据可能来自 query（GET）或 body（POST）
