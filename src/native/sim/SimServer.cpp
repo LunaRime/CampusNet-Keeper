@@ -227,6 +227,20 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         return;
     }
 
+    if (opts.fail_mode == 3) {
+        // 302 重定向：任何路径都跳走，模拟 Portal 劫持
+        // （客户端靠"302 且 Location 指向别的主机"判定）。
+        std::ostringstream oss;
+        oss << "HTTP/1.1 302 Found\r\n"
+            << "Server: DrcomServer1.0\r\n"
+            << "Location: " << opts.redirect_location << "\r\n"
+            << "Content-Length: 0\r\n"
+            << "Connection: close\r\n\r\n";
+        SendAll(client, oss.str());
+        closesocket(client);
+        return;
+    }
+
     if (path == "/") {
         // 真实门户首页是 GBK 字节；转码后再算 Content-Length（GBK 与 UTF-8 字节数不同）
         resp_body = Utf8ToGbk(BuildHomePage(port));

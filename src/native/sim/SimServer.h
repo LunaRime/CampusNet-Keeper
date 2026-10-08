@@ -9,7 +9,8 @@ struct SimOptions {
     std::string valid_user;
     std::string valid_pass;
     std::string isp_suffix;         // 期望的账号后缀，如 "@cmcc"
-    int fail_mode = 0;              // 0=正常 1=凭据错误 2=连接挂起
+    int fail_mode = 0;              // 0=正常 1=凭据错误 2=连接挂起 3=302 重定向
+    std::string redirect_location;  // fail_mode == 3 时返回的 Location 值
 };
 
 class SimServer {
