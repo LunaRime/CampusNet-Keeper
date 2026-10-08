@@ -624,48 +624,86 @@ git commit -m "feat: 滚动日志与路径工具，含日志脱敏"
 
 - [ ] **Step 1: 写失败测试**
 
+**本任务必须先于任务 4（HTTP 客户端）完成，因此测试不得使用 `HttpPerform`。** 测试自带一个约 30 行的裸 Winsock 客户端，直接收发 HTTP 报文即可 —— 这样任务 3 自洽，不产生对下游的循环依赖。
+
 `tests/sim_test.cpp`:
 
 ```cpp
 #include "doctest.h"
 #include "sim/SimServer.h"
-#include "core/Http.h"
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <string>
 
-TEST_CASE("模拟服务器能响应探测请求") {
-    cnk::SimOptions opts;
-    opts.vendor = "drcom";
+#pragma comment(lib, "ws2_32.lib")
+
+namespace {
+
+// 极简 HTTP 客户端：发一个请求，读回全部响应字节。
+// 仅用于测试断言，不解析响应（正文匹配用 find 就够）。
+std::string RawHttp(int port, const std::string& method,
+                    const std::string& path, const std::string& body) {
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((u_short)port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(s, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        closesocket(s);
+        WSACleanup();
+        return {};
+    }
+
+    std::string req = method + " " + path + " HTTP/1.1\r\n"
+                      "Host: 127.0.0.1\r\n"
+                      "Connection: close\r\n";
+    if (!body.empty()) {
+        req += "Content-Type: application/x-www-form-urlencoded\r\n";
+        req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+    }
+    req += "\r\n";
+    req += body;
+    send(s, req.c_str(), (int)req.size(), 0);
+
+    std::string resp;
+    char buf[4096];
+    int n;
+    while ((n = recv(s, buf, sizeof(buf), 0)) > 0) resp.append(buf, n);
+
+    closesocket(s);
+    WSACleanup();
+    return resp;
+}
+
+}  // namespace
+
+TEST_CASE("模拟服务器能响应门户首页请求") {
     cnk::SimServer srv;
     std::string err;
-    REQUIRE(srv.Start(opts, err));
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
 
-    cnk::HttpRequest req;
-    req.url = srv.BaseUrl() + "/";
-    cnk::HttpResponse resp;
-    REQUIRE(cnk::HttpPerform(req, resp, err));
-    CHECK(resp.status == 200);
-    CHECK(resp.body.find("DrcomServer1.0") != std::string::npos
-          || resp.server.find("DrcomServer") != std::string::npos);
+    std::string resp = RawHttp(srv.Port(), "GET", "/", "");
+    CHECK(resp.find("200") != std::string::npos);
+    CHECK(resp.find("DrcomServer1.0") != std::string::npos);
+    CHECK(resp.find("Dr.COMWebLoginID_") != std::string::npos);
 
     srv.Stop();
 }
 
 TEST_CASE("模拟服务器对正确凭据返回成功标志") {
     cnk::SimOptions opts;
-    opts.vendor = "drcom";
     opts.valid_user = "alice";
     opts.valid_pass = "pw123";
     cnk::SimServer srv;
     std::string err;
     REQUIRE(srv.Start(opts, err));
 
-    cnk::HttpRequest req;
-    req.url = srv.BaseUrl() + srv.LoginPath();
-    req.method = "POST";
-    req.body = "DDDDD=alice&upass=pw123&R1=0&R2=0&R3=0&R6=0&para=00&0MKKey=123456";
-    req.content_type = "application/x-www-form-urlencoded";
-    cnk::HttpResponse resp;
-    REQUIRE(cnk::HttpPerform(req, resp, err));
-    CHECK(resp.body.find("Dr.COMWebLoginID_3.htm") != std::string::npos);
+    std::string resp = RawHttp(srv.Port(), "POST", srv.LoginPath(),
+        "DDDDD=alice&upass=pw123&R1=0&R2=0&R3=0&R6=0&para=00&0MKKey=123456");
+    CHECK(resp.find("Dr.COMWebLoginID_3.htm") != std::string::npos);
     CHECK(srv.LoginCount() == 1);
 
     srv.Stop();
@@ -679,14 +717,9 @@ TEST_CASE("模拟服务器对错误凭据返回失败标志") {
     std::string err;
     REQUIRE(srv.Start(opts, err));
 
-    cnk::HttpRequest req;
-    req.url = srv.BaseUrl() + srv.LoginPath();
-    req.method = "POST";
-    req.body = "DDDDD=alice&upass=wrong";
-    req.content_type = "application/x-www-form-urlencoded";
-    cnk::HttpResponse resp;
-    REQUIRE(cnk::HttpPerform(req, resp, err));
-    CHECK(resp.body.find("Dr.COMWebLoginID_2.htm") != std::string::npos);
+    std::string resp = RawHttp(srv.Port(), "POST", srv.LoginPath(),
+                               "DDDDD=alice&upass=wrong");
+    CHECK(resp.find("Dr.COMWebLoginID_2.htm") != std::string::npos);
 
     srv.Stop();
 }
@@ -700,15 +733,22 @@ TEST_CASE("模拟服务器按后缀校验运营商") {
     std::string err;
     REQUIRE(srv.Start(opts, err));
 
-    cnk::HttpRequest req;
-    req.url = srv.BaseUrl() + srv.LoginPath();
-    req.method = "POST";
-    req.body = "DDDDD=bob@cmcc&upass=pw";
-    req.content_type = "application/x-www-form-urlencoded";
-    cnk::HttpResponse resp;
-    REQUIRE(cnk::HttpPerform(req, resp, err));
-    CHECK(resp.body.find("Dr.COMWebLoginID_3.htm") != std::string::npos);
+    std::string resp = RawHttp(srv.Port(), "POST", srv.LoginPath(),
+                               "DDDDD=bob@cmcc&upass=pw");
+    CHECK(resp.find("Dr.COMWebLoginID_3.htm") != std::string::npos);
 
+    srv.Stop();
+}
+
+TEST_CASE("登录计数随请求累加") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+    CHECK(srv.LoginCount() == 0);
+    RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=x&upass=y");
+    CHECK(srv.LoginCount() == 1);
+    RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=x&upass=y");
+    CHECK(srv.LoginCount() == 2);
     srv.Stop();
 }
 ```
@@ -1040,7 +1080,7 @@ std::string SimServer::LastLoginBody() const {
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `cmake --build build && ./build/cnk_tests.exe`
-Expected: 全部 PASS。若 `sim_test.cpp` 因 `core/Http.h` 尚不存在而编译失败，先把 `tests/sim_test.cpp` 从 `cnk_tests` 源列表中暂时移除并跳过本步，待任务 4 完成后加回。
+Expected: 全部 PASS。本任务不依赖任务 4，测试使用自带的裸 socket 客户端。
 
 - [ ] **Step 6: 提交**
 
@@ -1387,8 +1427,11 @@ spec §7.1 明确：门户首页是 GBK，eportal 路径是 UTF-8。硬编码任
 **Files:**
 - Create: `src/native/core/Encoding.h`
 - Create: `src/native/core/Encoding.cpp`
+- Create: `src/native/core/Url.h`
+- Create: `src/native/core/Url.cpp`
 - Modify: `CMakeLists.txt`
 - Create: `tests/encoding_test.cpp`
+- Create: `tests/url_test.cpp`
 
 **Interfaces:**
 - Consumes: `cnk::HttpResponse`（任务 4）
@@ -1396,6 +1439,11 @@ spec §7.1 明确：门户首页是 GBK，eportal 路径是 UTF-8。硬编码任
   - `std::string cnk::ParseCharset(const std::string& content_type)` — 从 `text/html; charset=gbk` 提取 `gbk`（小写）；无则返回空串
   - `std::string cnk::ToUtf8(const std::string& bytes, const std::string& charset)` — 空 charset 按 UTF-8 处理
   - `std::string cnk::DecodeBody(const cnk::HttpResponse& resp)` — 便捷函数：自动解析 charset 并转 UTF-8
+  - `std::string cnk::UrlEncode(const std::string& s)` — 百分号编码，空格编码为 `%20`
+  - `bool cnk::SplitHostPort(const std::string& url, std::string& scheme_host, std::string& port, const std::string& fallback_port)` — 未显式指定端口时用 `fallback_port`
+  - `std::string cnk::ResolveUrl(const std::string& action, const std::string& base)` — 相对路径按 base 的 origin 解析
+
+**为什么 URL 工具放在这个任务**：任务 11（Dr.COM）、19（锐捷）、20（深澜）、21（通用表单）都需要 URL 编码与「从 auth_url 拆出主机与端口」。把它们各自复制一份会在评审中被判为逐字重复。集中在这里定义一次，四个认证策略共同引用。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1431,6 +1479,65 @@ TEST_CASE("ToUtf8 对非法字节序列不崩溃") {
     std::string junk = "\xFF\xFE\x80\x81\x90";
     auto r = cnk::ToUtf8(junk, "gbk");
     CHECK(r.size() > 0);   // 只要不崩、能返回即可
+}
+```
+
+`tests/url_test.cpp`:
+
+```cpp
+#include "doctest.h"
+#include "core/Url.h"
+
+TEST_CASE("UrlEncode 编码保留字符") {
+    CHECK(cnk::UrlEncode("abc123-_.~") == "abc123-_.~");
+    CHECK(cnk::UrlEncode("a b") == "a%20b");
+    CHECK(cnk::UrlEncode("a@b") == "a%40b");
+    CHECK(cnk::UrlEncode("a&b=c") == "a%26b%3Dc");
+    CHECK(cnk::UrlEncode("") == "");
+}
+
+TEST_CASE("UrlEncode 正确处理中文（按 UTF-8 字节）") {
+    CHECK(cnk::UrlEncode("学") == "%E5%AD%A6");
+}
+
+TEST_CASE("SplitHostPort 对显式端口的 URL") {
+    std::string host, port;
+    REQUIRE(cnk::SplitHostPort("http://10.0.0.1:801/eportal/", host, port, "80"));
+    CHECK(host == "http://10.0.0.1");
+    CHECK(port == "801");
+}
+
+TEST_CASE("SplitHostPort 对无端口的 URL 用 fallback") {
+    std::string host, port;
+    REQUIRE(cnk::SplitHostPort("http://10.0.0.1/", host, port, "801"));
+    CHECK(host == "http://10.0.0.1");
+    CHECK(port == "801");
+
+    std::string host2, port2;
+    REQUIRE(cnk::SplitHostPort("http://10.0.0.1/", host2, port2, "80"));
+    CHECK(port2 == "80");
+}
+
+TEST_CASE("SplitHostPort 保留 scheme") {
+    std::string host, port;
+    REQUIRE(cnk::SplitHostPort("https://a.example.com/x?y=1", host, port, "443"));
+    CHECK(host == "https://a.example.com");
+    CHECK(port == "443");
+}
+
+TEST_CASE("SplitHostPort 对畸形 URL 返回 false") {
+    std::string host, port;
+    CHECK_FALSE(cnk::SplitHostPort("", host, port, "80"));
+}
+
+TEST_CASE("ResolveUrl 处理绝对、根相对与路径相对") {
+    CHECK(cnk::ResolveUrl("http://a/b", "http://x/") == "http://a/b");
+    CHECK(cnk::ResolveUrl("/doLogin", "http://10.0.0.1/portal/")
+          == "http://10.0.0.1/doLogin");
+    CHECK(cnk::ResolveUrl("doLogin", "http://10.0.0.1/portal/")
+          == "http://10.0.0.1/doLogin");
+    CHECK(cnk::ResolveUrl("", "http://10.0.0.1/login")
+          == "http://10.0.0.1/login");
 }
 ```
 
@@ -1538,9 +1645,110 @@ std::string DecodeBody(const HttpResponse& resp) {
 }  // namespace cnk
 ```
 
+`src/native/core/Url.h`:
+
+```cpp
+#pragma once
+#include <string>
+
+namespace cnk {
+
+// 百分号编码。保留 A-Z a-z 0-9 - _ . ~，空格编码为 %20（不用 +，
+// 因为 + 在查询串中的含义依赖服务端实现，%20 语义无歧义）。
+std::string UrlEncode(const std::string& s);
+
+// 从完整 URL 拆出 "scheme://host" 与端口。
+// url 未显式指定端口时，port 取 fallback_port。
+// 空串或无法解析返回 false。
+bool SplitHostPort(const std::string& url, std::string& scheme_host,
+                   std::string& port, const std::string& fallback_port);
+
+// 把 action 解析为绝对 URL：
+//   - action 已是 http(s):// 开头 → 原样返回
+//   - action 以 / 开头 → 拼到 base 的 origin 之后
+//   - 其他 → 视为相对路径，拼到 base 的 origin 之后并补 /
+//   - action 为空 → 返回 base
+std::string ResolveUrl(const std::string& action, const std::string& base);
+
+}  // namespace cnk
+```
+
+`src/native/core/Url.cpp`:
+
+```cpp
+#include "core/Url.h"
+
+namespace cnk {
+
+std::string UrlEncode(const std::string& s) {
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        const bool unreserved =
+            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            out += (char)c;
+        } else {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 0x0F];
+        }
+    }
+    return out;
+}
+
+bool SplitHostPort(const std::string& url, std::string& scheme_host,
+                   std::string& port, const std::string& fallback_port) {
+    scheme_host.clear();
+    port.clear();
+    if (url.empty()) return false;
+
+    const size_t scheme_end = url.find("://");
+    if (scheme_end == std::string::npos) return false;
+
+    const size_t host_start = scheme_end + 3;
+    const size_t path_start = url.find('/', host_start);
+    const std::string authority = url.substr(
+        host_start,
+        path_start == std::string::npos ? std::string::npos : path_start - host_start);
+    if (authority.empty()) return false;
+
+    const size_t colon = authority.rfind(':');
+    if (colon != std::string::npos) {
+        scheme_host = url.substr(0, host_start) + authority.substr(0, colon);
+        port = authority.substr(colon + 1);
+    } else {
+        scheme_host = url.substr(0, host_start) + authority;
+        port = fallback_port;
+    }
+    return true;
+}
+
+std::string ResolveUrl(const std::string& action, const std::string& base) {
+    if (action.empty()) return base;
+    if (action.rfind("http://", 0) == 0 || action.rfind("https://", 0) == 0)
+        return action;
+
+    // 取 base 的 origin
+    const size_t scheme_end = base.find("://");
+    if (scheme_end == std::string::npos) return base + action;
+    const size_t host_start = scheme_end + 3;
+    const size_t path_start = base.find('/', host_start);
+    const std::string origin = base.substr(
+        0, path_start == std::string::npos ? base.size() : path_start);
+
+    if (action[0] == '/') return origin + action;
+    return origin + "/" + action;
+}
+
+}  // namespace cnk
+```
+
 - [ ] **Step 4: 更新 CMakeLists.txt**
 
-追加 `src/native/core/Encoding.cpp` 与 `tests/encoding_test.cpp`。
+追加 `src/native/core/Encoding.cpp`、`src/native/core/Url.cpp`、`tests/encoding_test.cpp`、`tests/url_test.cpp`。
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -3361,49 +3569,13 @@ Expected: 用例失败（桩实现返回「尚未实现」）。
 #include "auth/AuthFactory.h"
 #include "core/Http.h"
 #include "core/Encoding.h"
+#include "core/Url.h"
 #include "core/Log.h"
 #include <sstream>
 
 namespace cnk {
 
 namespace {
-
-std::string UrlEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
-            out += (char)c;
-        else if (c == ' ')
-            out += '+';
-        else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 0x0F];
-        }
-    }
-    return out;
-}
-
-// 从 auth_url 提取 scheme://host，并给出端口。
-// auth_url 未显式指定端口时返回 801（Dr.COM 哆点默认）。
-std::string BaseAndPort(const std::string& auth_url, std::string& scheme_host) {
-    size_t scheme_end = auth_url.find("://");
-    if (scheme_end == std::string::npos) { scheme_host = auth_url; return "801"; }
-    size_t host_start = scheme_end + 3;
-    size_t path_start = auth_url.find('/', host_start);
-    std::string authority = auth_url.substr(
-        host_start, path_start == std::string::npos ? std::string::npos
-                                                    : path_start - host_start);
-    size_t colon = authority.rfind(':');
-    if (colon != std::string::npos) {
-        scheme_host = auth_url.substr(0, host_start) + authority.substr(0, colon);
-        return authority.substr(colon + 1);
-    }
-    scheme_host = auth_url.substr(0, host_start) + authority;
-    return "801";
-}
 
 class DrcomAuth : public IAuth {
 public:
@@ -3419,8 +3591,12 @@ public:
             return r;
         }
 
-        std::string scheme_host;
-        std::string port = BaseAndPort(p.auth_url, scheme_host);
+        std::string scheme_host, port;
+        if (!SplitHostPort(p.auth_url, scheme_host, port, "801")) {
+            r.message = "认证网址格式不正确：" + p.auth_url +
+                        "（应形如 http://10.0.0.1/）";
+            return r;
+        }
         r.request_url = scheme_host + ":" + port +
                         "/eportal/?c=ACSetting&a=Login&url=drappall";
 
@@ -4310,6 +4486,10 @@ public:
     long long LastProbeUnix() const;
     int ConsecutiveAuthFailures() const;
 
+    // 最近一次探测取回的门户页面（已转 UTF-8）。
+    // 供 IPC 的 get_carrier_options 解析服务器下发的运营商列表。
+    std::string LastPortalBody() const;
+
     bool RunProbeNow(ProbeResult& out);
 
 private:
@@ -4586,6 +4766,10 @@ long long Scheduler::LastSuccessUnix() const { return impl_->last_success; }
 long long Scheduler::LastProbeUnix() const { return impl_->last_probe; }
 int Scheduler::ConsecutiveAuthFailures() const {
     return impl_->consecutive_auth_failures;
+}
+
+std::string Scheduler::LastPortalBody() const {
+    return impl_->cached_portal_body;
 }
 
 bool Scheduler::RunProbeNow(ProbeResult& out) {
@@ -6336,6 +6520,7 @@ Expected: 用例失败（桩实现）。
 #include "auth/AuthFactory.h"
 #include "core/Http.h"
 #include "core/Encoding.h"
+#include "core/Url.h"
 #include "core/Log.h"
 #include <cstdlib>
 #include <regex>
@@ -6344,40 +6529,6 @@ namespace cnk {
 
 namespace {
 
-std::string UrlEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
-            out += (char)c;
-        else {
-            out += '%';
-            out += hex[c >> 4];
-            out += hex[c & 0x0F];
-        }
-    }
-    return out;
-}
-
-// 从 auth_url 取 scheme://host 与端口，缺省 801
-std::string BaseAndPort(const std::string& auth_url, std::string& scheme_host) {
-    size_t scheme_end = auth_url.find("://");
-    if (scheme_end == std::string::npos) { scheme_host = auth_url; return "801"; }
-    size_t host_start = scheme_end + 3;
-    size_t path_start = auth_url.find('/', host_start);
-    std::string authority = auth_url.substr(
-        host_start, path_start == std::string::npos ? std::string::npos
-                                                    : path_start - host_start);
-    size_t colon = authority.rfind(':');
-    if (colon != std::string::npos) {
-        scheme_host = auth_url.substr(0, host_start) + authority.substr(0, colon);
-        return authority.substr(colon + 1);
-    }
-    scheme_host = auth_url.substr(0, host_start) + authority;
-    return "801";
-}
-
 class EportalAuth : public IAuth {
 public:
     LoginResult Login(const Profile& p, const NetContext& ctx) override {
@@ -6385,8 +6536,11 @@ public:
         if (p.username.empty()) { r.message = "账号为空，请在设置中填写"; return r; }
         if (p.password.empty()) { r.message = "密码为空，请在设置中填写"; return r; }
 
-        std::string scheme_host;
-        std::string port = BaseAndPort(p.auth_url, scheme_host);
+        std::string scheme_host, port;
+        if (!SplitHostPort(p.auth_url, scheme_host, port, "801")) {
+            r.message = "认证网址格式不正确：" + p.auth_url;
+            return r;
+        }
 
         const std::string service = IspSuffix(p);
         const std::string ip = ctx.local_ip.empty() ? "0.0.0.0" : ctx.local_ip;
@@ -6824,6 +6978,7 @@ std::string SrunXEncode(const std::string& data, const std::string& key) {
 #include "auth/AuthFactory.h"
 #include "core/Http.h"
 #include "core/Encoding.h"
+#include "core/Url.h"
 #include "core/Log.h"
 #include "crypto/Hash.h"
 #include "crypto/SrunXEncode.h"
@@ -6835,23 +6990,6 @@ using json = nlohmann::json;
 namespace cnk {
 
 namespace {
-
-std::string BaseAndPort(const std::string& auth_url, std::string& scheme_host) {
-    size_t scheme_end = auth_url.find("://");
-    if (scheme_end == std::string::npos) { scheme_host = auth_url; return "80"; }
-    size_t host_start = scheme_end + 3;
-    size_t path_start = auth_url.find('/', host_start);
-    std::string authority = auth_url.substr(
-        host_start, path_start == std::string::npos ? std::string::npos
-                                                    : path_start - host_start);
-    size_t colon = authority.rfind(':');
-    if (colon != std::string::npos) {
-        scheme_host = auth_url.substr(0, host_start) + authority.substr(0, colon);
-        return authority.substr(colon + 1);
-    }
-    scheme_host = auth_url.substr(0, host_start) + authority;
-    return "80";
-}
 
 long long NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -6865,8 +7003,11 @@ public:
         if (p.username.empty()) { r.message = "账号为空，请在设置中填写"; return r; }
         if (p.password.empty()) { r.message = "密码为空，请在设置中填写"; return r; }
 
-        std::string scheme_host;
-        std::string port = BaseAndPort(p.auth_url, scheme_host);
+        std::string scheme_host, port;
+        if (!SplitHostPort(p.auth_url, scheme_host, port, "80")) {
+            r.message = "认证网址格式不正确：" + p.auth_url;
+            return r;
+        }
         const std::string base = scheme_host + ":" + port + "/cgi-bin/";
         const std::string ip = ctx.local_ip.empty() ? "0.0.0.0" : ctx.local_ip;
         const std::string account = p.username + IspSuffix(p);
@@ -7313,6 +7454,7 @@ std::string FindFieldByNames(const HtmlForm& form,
 #include "core/Http.h"
 #include "core/Encoding.h"
 #include "core/HtmlForm.h"
+#include "core/Url.h"
 #include "core/Log.h"
 #include "core/Template.h"
 
@@ -7327,34 +7469,6 @@ const std::vector<std::string> kPassFields = {
     "password", "pwd", "pass", "upass", "user_password", "passwd"};
 const std::vector<std::string> kIspFields = {
     "domain", "service", "isp", "operator", "type"};
-
-std::string UrlEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
-            out += (char)c;
-        else if (c == ' ') out += '+';
-        else { out += '%'; out += hex[c >> 4]; out += hex[c & 0x0F]; }
-    }
-    return out;
-}
-
-std::string ResolveAction(const std::string& action, const std::string& base) {
-    if (action.empty()) return base;
-    if (action.rfind("http://", 0) == 0 || action.rfind("https://", 0) == 0)
-        return action;
-    // 取 base 的 scheme://host[:port]
-    size_t scheme_end = base.find("://");
-    if (scheme_end == std::string::npos) return base + action;
-    size_t host_start = scheme_end + 3;
-    size_t path_start = base.find('/', host_start);
-    std::string origin = base.substr(0, path_start == std::string::npos
-                                           ? base.size() : path_start);
-    if (!action.empty() && action[0] == '/') return origin + action;
-    return origin + "/" + action;
-}
 
 std::string ToLowerCopy(std::string s) {
     for (auto& c : s) c = (char)std::tolower((unsigned char)c);
@@ -7413,7 +7527,7 @@ public:
             body += UrlEncode(pairs[i].first) + "=" + UrlEncode(pairs[i].second);
         }
 
-        r.request_url = ResolveAction(form.action, p.auth_url);
+        r.request_url = ResolveUrl(form.action, p.auth_url);
         r.request_body = body;
 
         HttpRequest req;
@@ -8256,6 +8370,8 @@ git commit -m "feat: Avalonia UI 工程骨架与 IPC 客户端"
 
 ```csharp
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using CampusNet.UI.Services;
@@ -8284,8 +8400,15 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _autostart = true;
     [ObservableProperty] private bool _notifyOnReconnect = true;
 
-    // 服务器下发的运营商选项
-    public ObservableCollection<CarrierOption> CarrierOptions { get; } = new();
+    // 密码显示开关（XAML 里绑定到密码框的显示切换）
+    [ObservableProperty] private bool _showPassword;
+
+    // 日志面板内容。任务 25 会接上实时刷新；
+    // 这里先给出最小实现，否则本任务的 XAML 绑定会失败。
+    [ObservableProperty] private string _logText = "";
+
+    // 运营商下拉的最终绑定源：服务器下发项 + 内置回退 + 恒有的「自定义…」
+    public ObservableCollection<CarrierOption> AllCarrierOptions { get; } = new();
 
     public MainViewModel(IpcClient ipc)
     {
@@ -8398,6 +8521,20 @@ public partial class MainViewModel : ObservableObject
         if (SelectedProfile is null) return;
         Profiles.Remove(SelectedProfile);
         SelectedProfile = Profiles.FirstOrDefault();
+    }
+
+    [RelayCommand]
+    private void OpenLogDir()
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "CampusNet-Keeper");
+            Directory.CreateDirectory(dir);
+            Process.Start(new ProcessStartInfo(dir) { UseShellExecute = true });
+        }
+        catch (Exception ex) { LastError = ex.Message; }
     }
 
     private static string FormatUnix(long seconds)
@@ -8943,15 +9080,7 @@ ipc.Start([&](const cnk::IpcRequest& req) -> cnk::IpcResponse {
 }, err);
 ```
 
-上面对 `sch` 新增了一个访问器 `LastPortalBody()`，在 `Scheduler` 上补充：
-
-```cpp
-// Scheduler.h 中声明
-std::string LastPortalBody() const;
-
-// Scheduler.cpp 中实现
-std::string Scheduler::LastPortalBody() const { return impl_->cached_portal_body; }
-```
+上面用到的 `sch->LastPortalBody()` 已在任务 14 定义（返回最近一次探测取回的门户页面，已转 UTF-8）。
 
 - [ ] **Step 2: 实现日志面板**
 
