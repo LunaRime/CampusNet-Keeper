@@ -21,7 +21,9 @@ namespace {
 // 首页 JS 变量的取值逐字取自 docs/evidence/portal_home_gbk_raw.htm（UTF-8 转写后）。
 // 端口是"不变量"而非字面值：真实门户上报 801 是因为它就在 801 上服务，模拟器监听随机
 // 端口，就必须上报自己的实际端口，否则照配置连过来的客户端会连不上（测试里钉住这条）。
-// 免劫持清单 visit_blacklist 不在首页 —— 真实首页 0 命中，它只出现在 loadConfig 响应里。
+// 首页只放真实首页 HTML 里存在的变量：
+//   - 免劫持清单 visit_blacklist 只在 loadConfig 响应里（首页 0 命中）
+//   - epHTTPPort 只在首页引用的 a41.js 里（首页 HTML 0 命中），客户端探测拿不到，故不放
 const char* kCarrierJson =
     "{\"yys\":{\"title\": \"服务类型\",\"mode\":\"radiobutton\",\"type\":\"0\","
     "\"data\":[{\"id\":\"1\",\"name\":\"校园用户\",\"suffix\":\"\"},"
@@ -33,7 +35,6 @@ std::string BuildHomePage(int port) {
     std::ostringstream oss;
     oss << "<html><head><meta charset=\"gb2312\"><!--Dr.COMWebLoginID_1.htm--></head>"
            "<body><script>"
-        << "epHTTPPort=" << port << ";"
         << "authloginport=" << port << ";"
            "authloginpath='/eportal/?c=ACSetting&a=Login';"
            "authloginparam='url=drappall';"

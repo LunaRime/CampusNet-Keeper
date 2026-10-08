@@ -265,9 +265,10 @@ TEST_CASE("首页字段与实测证据逐项一致（忠实性）") {
     // 模拟器监听随机端口，就必须上报自己的实际端口，否则客户端照配置连过来会连不上。
     CHECK(JsValue(evidence, "authloginport") == "801");
     CHECK(JsValue(page, "authloginport") == std::to_string(srv.Port()));
-    // epHTTPPort 在真实首页 0 命中（是设计文档里的推断），但任务 8 的厂商识别依赖它，
-    // 故保留该变量；取值同样必须等于实际监听端口，不得自报 801。
-    CHECK(JsValue(page, "epHTTPPort") == std::to_string(srv.Port()));
+    // epHTTPPort 只在首页引用的 a41.js 里（首页 HTML 0 命中），客户端探测拿不到它，
+    // 模拟器首页就不得凭空多给这条指纹 —— 防止将来有人又把它加回来。
+    CHECK(evidence.find("epHTTPPort") == std::string::npos);
+    CHECK(page.find("epHTTPPort") == std::string::npos);
     // 真实首页没有免劫持清单，客户端必须容忍缺失并回退到内置默认值
     CHECK(page.find("visit_blacklist") == std::string::npos);
 
