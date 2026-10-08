@@ -15,10 +15,11 @@ add_library(cnk_core STATIC
   src/native/core/Version.cpp
   src/native/core/Paths.cpp
   src/native/core/Log.cpp
+  src/native/sim/SimServer.cpp
 )
 target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
-  winhttp crypt32 bcrypt shell32 advapi32 ole32 user32)
+  winhttp crypt32 bcrypt shell32 advapi32 ole32 user32 ws2_32)
 
 add_executable(CampusNet-Keeper src/native/main.cpp)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
@@ -28,6 +29,7 @@ add_executable(cnk_tests
   tests/test_main.cpp
   tests/smoke_test.cpp
   tests/log_test.cpp
+  tests/sim_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
