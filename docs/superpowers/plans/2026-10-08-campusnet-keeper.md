@@ -154,8 +154,12 @@ if(MSVC)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 endif()
 
+# 注意：cnk_core 必须始终包含至少一个真正的 .cpp。
+# 只有头文件的 STATIC 库会让 CMake 报 "cannot determine linker language"；
+# 即便补 LINKER_LANGUAGE 也仍不产出 .lib，依赖目标会 LNK1181。
 add_library(cnk_core STATIC
   src/native/core/Version.h
+  src/native/core/Version.cpp
 )
 target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
@@ -571,6 +575,7 @@ std::string RedactSecrets(const std::string& s) {
 ```cmake
 add_library(cnk_core STATIC
   src/native/core/Version.h
+  src/native/core/Version.cpp
   src/native/core/Paths.cpp
   src/native/core/Log.cpp
 )
