@@ -35,4 +35,7 @@ add_executable(cnk_tests
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
+# 忠实性测试直接读实测证据原件，钉住模拟器输出（见 tests/sim_test.cpp）
+target_compile_definitions(cnk_tests PRIVATE
+  CNK_EVIDENCE_DIR="${CMAKE_SOURCE_DIR}/docs/evidence")
 add_test(NAME cnk_tests COMMAND cnk_tests)

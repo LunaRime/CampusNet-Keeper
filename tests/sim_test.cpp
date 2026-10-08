@@ -1,9 +1,13 @@
 #include "doctest.h"
+#include "json.hpp"
 #include "sim/SimServer.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>  // MultiByteToWideChar / CP_UTF8；必须排在 winsock2.h 之后
+#include <cctype>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #pragma comment(lib, "ws2_32.lib")
@@ -39,6 +43,11 @@ std::string RawHttp(int port, const std::string& method,
     req += body;
     send(s, req.c_str(), (int)req.size(), 0);
 
+    // 客户端超时：不依赖"服务端一定会 close"这个不变量，
+    // 否则将来某条服务端路径忘记 close 会让整个套件挂死而不是一条用例转红。
+    int timeout = 5000;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+
     std::string resp;
     char buf[4096];
     int n;
@@ -64,6 +73,80 @@ std::string GbkToUtf8(const std::string& gbk) {
     return utf8;
 }
 
+// 读文件原始字节（不解码、不做换行转换）。
+std::string ReadFileBytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// 取 JS 变量 name=... 到下一个 ';' 之间的值，去掉首尾空白与包裹的引号。
+// 真实首页里这六个字段与 carrier 的值都不含 ';'。
+std::string JsValue(const std::string& text, const std::string& name) {
+    std::string needle = name + "=";
+    size_t pos = 0;
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        bool at_boundary = (pos == 0) ||
+            !(std::isalnum((unsigned char)text[pos - 1]) || text[pos - 1] == '_');
+        if (at_boundary) {
+            size_t start = pos + needle.size();
+            size_t end = text.find(';', start);
+            if (end == std::string::npos) return {};
+            std::string v = text.substr(start, end - start);
+            size_t b = v.find_first_not_of(" \t\r\n");
+            size_t e = v.find_last_not_of(" \t\r\n");
+            if (b == std::string::npos) return {};
+            v = v.substr(b, e - b + 1);
+            if (v.size() >= 2 && v.front() == '\'' && v.back() == '\'')
+                v = v.substr(1, v.size() - 2);
+            return v;
+        }
+        pos += needle.size();
+    }
+    return {};
+}
+
+// 从响应头里取字符集声明（"charset=xxx"）。
+std::string CharsetOf(const std::string& resp) {
+    size_t p = resp.find("charset=");
+    if (p == std::string::npos) return {};
+    size_t e = resp.find_first_of("\r\n;", p);
+    return resp.substr(p, e - p);
+}
+
+// 从 loadConfig 证据里取出 visit_blacklist 的数组原文（含方括号，不含键名）。
+std::string ExtractBlacklist(const std::string& json) {
+    size_t p = json.find("\"visit_blacklist\":[");
+    if (p == std::string::npos) return {};
+    size_t open = json.find('[', p);
+    size_t close = json.find(']', open);
+    if (open == std::string::npos || close == std::string::npos) return {};
+    return json.substr(open, close - open + 1);
+}
+
+std::string StripHeaders(const std::string& resp) {
+    size_t hdr_end = resp.find("\r\n\r\n");
+    return hdr_end == std::string::npos ? std::string() : resp.substr(hdr_end + 4);
+}
+
+std::string EvidencePath(const char* name) {
+    return std::string(CNK_EVIDENCE_DIR) + "/" + name;
+}
+
+// 剥掉 dr1003(...); 包裹并解析其中的 JSON（与下游解析器走同一条路径）。
+// 解析失败返回 false，不会抛异常。
+bool ParseDr1003(const std::string& body, nlohmann::json& out) {
+    const std::string prefix = "dr1003(";
+    if (body.compare(0, prefix.size(), prefix) != 0) return false;
+    size_t end = body.rfind(");");
+    if (end == std::string::npos || end < prefix.size()) return false;
+    out = nlohmann::json::parse(body.substr(prefix.size(), end - prefix.size()),
+                                nullptr, false);
+    return !out.is_discarded();
+}
+
 }  // namespace
 
 TEST_CASE("模拟服务器能响应门户首页请求") {
@@ -72,7 +155,7 @@ TEST_CASE("模拟服务器能响应门户首页请求") {
     REQUIRE(srv.Start(cnk::SimOptions{}, err));
 
     std::string resp = RawHttp(srv.Port(), "GET", "/", "");
-    CHECK(resp.find("200") != std::string::npos);
+    CHECK(resp.find("HTTP/1.1 200") != std::string::npos);
     CHECK(resp.find("DrcomServer1.0") != std::string::npos);
     CHECK(resp.find("Dr.COMWebLoginID_") != std::string::npos);
 
@@ -154,6 +237,119 @@ TEST_CASE("门户首页按 GBK 发送，中文运营商名可读") {
     // 负向：正文不得是 UTF-8 字节序列，证明真的转码了而非两边都能读
     CHECK(body.find("校园用户") == std::string::npos);
     CHECK(body.find("校园电信") == std::string::npos);
+
+    srv.Stop();
+}
+
+TEST_CASE("首页字段与实测证据逐项一致（忠实性）") {
+    // 证据文件是线上原始 GBK 字节，按 GBK 解——顺带验证解码路径。
+    std::string evidence = GbkToUtf8(ReadFileBytes(EvidencePath("portal_home_gbk_raw.htm")));
+    REQUIRE(!evidence.empty());
+    // 证据侧自证：真实首页没有 visit_blacklist（免劫持清单只在 loadConfig 响应里）
+    CHECK(evidence.find("visit_blacklist") == std::string::npos);
+
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+    std::string page = GbkToUtf8(StripHeaders(RawHttp(srv.Port(), "GET", "/", "")));
+    REQUIRE(!page.empty());
+
+    // 逐项一致：字段名与取值都必须来自实测原件，改名或改值都会被钉住
+    for (const char* field : {"authloginpath", "authloginparam", "authuserfield",
+                              "authpassfield", "authsuccess", "authfail", "carrier"}) {
+        INFO("字段: " << std::string(field));
+        CHECK(JsValue(page, field) != "");
+        CHECK(JsValue(page, field) == JsValue(evidence, field));
+    }
+    // 端口是"不变量"而非字面值：真实门户上报 801 是因为它就在 801 上服务，
+    // 模拟器监听随机端口，就必须上报自己的实际端口，否则客户端照配置连过来会连不上。
+    CHECK(JsValue(evidence, "authloginport") == "801");
+    CHECK(JsValue(page, "authloginport") == std::to_string(srv.Port()));
+    // epHTTPPort 在真实首页 0 命中（是设计文档里的推断），但任务 8 的厂商识别依赖它，
+    // 故保留该变量；取值同样必须等于实际监听端口，不得自报 801。
+    CHECK(JsValue(page, "epHTTPPort") == std::to_string(srv.Port()));
+    // 真实首页没有免劫持清单，客户端必须容忍缺失并回退到内置默认值
+    CHECK(page.find("visit_blacklist") == std::string::npos);
+
+    srv.Stop();
+}
+
+TEST_CASE("loadConfig 端点与实测证据逐项一致（忠实性）") {
+    std::string evidence = ReadFileBytes(EvidencePath("loadconfig_185_801.json"));
+    REQUIRE(!evidence.empty());
+    std::string blacklist = ExtractBlacklist(evidence);
+    REQUIRE(!blacklist.empty());
+    size_t quotes = 0;
+    for (char c : blacklist) if (c == '"') quotes++;
+    CHECK(quotes == 30);  // 15 项 × 每项两个引号（数组原文已不含键名）
+
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+    std::string resp = RawHttp(srv.Port(), "GET", "/eportal/portal/page/loadConfig", "");
+    CHECK(resp.find("HTTP/1.1 200") != std::string::npos);
+    std::string body = StripHeaders(resp);
+    REQUIRE(!body.empty());
+
+    CHECK(body.compare(0, 8, "dr1003({") == 0);
+    REQUIRE(body.size() >= 3);
+    CHECK(body.compare(body.size() - 3, 3, "});") == 0);
+    // 15 项免劫持清单逐字一致（顺序也钉住）
+    CHECK(body.find(blacklist) != std::string::npos);
+
+    // 结构层面：用与下游同一个解析器（nlohmann/json）解析两侧，钉住类型与取值。
+    // 字符串型字段必须是字符串：原件里 en_md5 / ep_http_port 都是字符串，
+    // 写成数字会诱导下游写出"只在模拟器上正确"的解析代码。
+    nlohmann::json ev, sim;
+    REQUIRE(ParseDr1003(evidence, ev));
+    REQUIRE(ParseDr1003(body, sim));
+    CHECK(sim["code"] == 1);
+    CHECK(sim["data"]["visit_blacklist"].size() == 15);
+    CHECK(sim["data"]["visit_blacklist"] == ev["data"]["visit_blacklist"]);
+    CHECK(sim["data"]["en_md5"].is_string());
+    CHECK(sim["data"]["en_md5"] == ev["data"]["en_md5"]);
+    CHECK(sim["data"]["ep_http_port"].is_string());
+    CHECK(sim["data"]["ep_http_port"] == std::to_string(srv.Port()));
+    // 免劫持清单只在 loadConfig 里，首页不得有
+    CHECK(RawHttp(srv.Port(), "GET", "/", "").find("visit_blacklist") == std::string::npos);
+
+    srv.Stop();
+}
+
+TEST_CASE("首页与 eportal 路径的字符集声明不同") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+
+    std::string home = RawHttp(srv.Port(), "GET", "/", "");
+    std::string login = RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=x&upass=y");
+
+    CHECK(CharsetOf(home) == "charset=gbk");
+    CHECK(CharsetOf(login) == "charset=utf-8");
+    CHECK(CharsetOf(home) != CharsetOf(login));
+
+    srv.Stop();
+}
+
+TEST_CASE("运营商后缀不匹配时登录失败") {
+    cnk::SimOptions opts;
+    opts.valid_user = "bob";
+    opts.valid_pass = "pw";
+    opts.isp_suffix = "@cmcc";
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(opts, err));
+
+    // 后缀不符：不得放行（挡住"把后缀剥掉再比"的宽松实现）
+    std::string wrong_suffix = RawHttp(srv.Port(), "POST", srv.LoginPath(),
+                                       "DDDDD=bob@dx&upass=pw");
+    CHECK(wrong_suffix.find("Dr.COMWebLoginID_2.htm") != std::string::npos);
+    CHECK(wrong_suffix.find("Dr.COMWebLoginID_3.htm") == std::string::npos);
+
+    // 缺后缀的裸账号同样不得放行
+    std::string bare = RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=bob&upass=pw");
+    CHECK(bare.find("Dr.COMWebLoginID_2.htm") != std::string::npos);
+    CHECK(bare.find("Dr.COMWebLoginID_3.htm") == std::string::npos);
 
     srv.Stop();
 }

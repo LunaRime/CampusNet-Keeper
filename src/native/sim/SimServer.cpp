@@ -18,25 +18,71 @@ namespace cnk {
 
 namespace {
 
-const char* kDrcomHome =
-    "<html><head><meta charset=\"gb2312\"><!--Dr.COMWebLoginID_1.htm--></head>"
-    "<body><script>"
-    "epHTTPPort=801;"
-    "authloginport=801;"
-    "authloginpath='/eportal/?c=ACSetting&a=Login';"
-    "authloginparam='url=drappall';"
-    "authuserfield='DDDDD';"
-    "authpassfield='upass';"
-    "authsuccess='Dr.COMWebLoginID_3.htm';"
-    "authfail='Dr.COMWebLoginID_2.htm';"
-    "carrier='{\"yys\":{\"title\":\"服务类型\",\"mode\":\"radiobutton\",\"type\":\"0\","
+// 首页 JS 变量的取值逐字取自 docs/evidence/portal_home_gbk_raw.htm（UTF-8 转写后）。
+// 端口是"不变量"而非字面值：真实门户上报 801 是因为它就在 801 上服务，模拟器监听随机
+// 端口，就必须上报自己的实际端口，否则照配置连过来的客户端会连不上（测试里钉住这条）。
+// 免劫持清单 visit_blacklist 不在首页 —— 真实首页 0 命中，它只出现在 loadConfig 响应里。
+const char* kCarrierJson =
+    "{\"yys\":{\"title\": \"服务类型\",\"mode\":\"radiobutton\",\"type\":\"0\","
     "\"data\":[{\"id\":\"1\",\"name\":\"校园用户\",\"suffix\":\"\"},"
     "{\"id\":\"2\",\"name\":\"校园电信\",\"suffix\":\"@dx\"},"
     "{\"id\":\"3\",\"name\":\"校园联通\",\"suffix\":\"@lt\"},"
-    "{\"id\":\"4\",\"name\":\"校园其他\",\"suffix\":\"\"}],\"defaultID\":\"1\"}}';"
-    "visit_blacklist=[\"www.msftncsi.com\",\"detectportal.firefox.com\","
-    "\"captive.apple.com\",\"generate_204\",\"ncsi.txt\"];"
-    "</script></body></html>";
+    "{\"id\":\"4\",\"name\":\"校园其他\",\"suffix\":\"\"}],\"defaultID\":\"1\"}}";
+
+std::string BuildHomePage(int port) {
+    std::ostringstream oss;
+    oss << "<html><head><meta charset=\"gb2312\"><!--Dr.COMWebLoginID_1.htm--></head>"
+           "<body><script>"
+        << "epHTTPPort=" << port << ";"
+        << "authloginport=" << port << ";"
+           "authloginpath='/eportal/?c=ACSetting&a=Login';"
+           "authloginparam='url=drappall';"
+           "authuserfield='DDDDD';"
+           "authpassfield='upass';"
+           "authsuccess='Dr.COMWebLoginID_3.htm';"
+           "authfail='Dr.COMWebLoginID_2.htm';"
+        << "carrier='" << kCarrierJson << "';"
+           "</script></body></html>";
+    return oss.str();
+}
+
+// 免劫持清单逐字取自 docs/evidence/loadconfig_185_801.json 的 visit_blacklist（15 项）。
+const char* kVisitBlacklist =
+    "[\"1.1.1.1\",\"www.msftncsi.com\",\"land.xiaomi.net\",\"detectportal.firefox.com\","
+    "\"www.airport.us\",\"www.thinkdifferent.us\",\"www.ibook.info\",\"www.itools.info\","
+    "\"www.appleiphonecell.com\",\"captive.apple.com\",\"www.apple.com\","
+    "\"gspe21.ls.apple.com\",\"generate_204\",\"ncsi.txt\",\"success.txt\"]";
+
+// GET /eportal/portal/page/loadConfig 的响应：dr1003({...}) 包裹的 JSON（真实格式）。
+// 字段名与取值取自证据文件；字符串型字段必须保持字符串（en_md5 / ep_http_port 原件都是
+// 字符串），否则会诱导下游写出"只在模拟器上正确"的解析代码。
+std::string BuildLoadConfig(int port) {
+    std::ostringstream oss;
+    oss << "dr1003({\"code\":1,\"msg\":\"加载页面设置信息成功！\",\"data\":{"
+        << "\"program_index\":\"GqrAs31700550965\","
+           "\"page_index\":\"5Tl76r1700550989\","
+           "\"page_name\":\"Page_231121\","
+           "\"login_method\":\"1\","
+           "\"account_suffix\":\"\","
+           "\"account_prefix\":\"1\","
+           "\"en_md5\":\"0\","
+           "\"password_cut\":\"0\","
+           "\"enable_r3\":\"0\","
+           "\"enable_https\":\"0\","
+           "\"change_pass_mode\":\"0\","
+           "\"online_monitor\":\"1\","
+           "\"isp_unbind_suffix\":\"1\","
+           "\"find_mac\":\"0\","
+           "\"un_bind_mac\":\"0\","
+           "\"domain_name\":\"\","
+           "\"cvlan_id\":\"4095\","
+           "\"rcn\":\"SD0S0zk6\","
+        << "\"ep_http_port\":\"" << port << "\","
+           "\"ep_https_port\":\"802\","
+        << "\"visit_blacklist\":" << kVisitBlacklist
+        << "}});";
+    return oss.str();
+}
 
 // accept 轮询间隔：决定 Stop() 的最坏唤醒延迟。
 constexpr int kAcceptPollMs = 100;
@@ -176,8 +222,14 @@ void SimServer::Impl::HandleClient(SOCKET client) {
 
     if (path == "/") {
         // 真实门户首页是 GBK 字节；转码后再算 Content-Length（GBK 与 UTF-8 字节数不同）
-        resp_body = Utf8ToGbk(kDrcomHome);
+        resp_body = Utf8ToGbk(BuildHomePage(port));
+    } else if (path == "/eportal/portal/page/loadConfig") {
+        // 免劫持清单只在这里下发，不在首页
+        resp_body = BuildLoadConfig(port);
+        content_type = "text/html; charset=utf-8";
     } else if (path == "/eportal/" || path == "/eportal") {
+        // 真实 eportal 路径按 UTF-8 声明（与首页的 gbk 不同），硬编码任一种都会让另一条乱码
+        content_type = "text/html; charset=utf-8";
         login_count++;
         // 凭据可能来自 query（GET）或 body（POST）
         std::string all = query + "&" + body;
