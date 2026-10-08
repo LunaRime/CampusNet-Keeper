@@ -139,7 +139,7 @@ public:
 |---|---|---|
 | `SrunAuth` | 识别为深澜 | 高（HMAC-MD5 + xEncode + 自定义码表） |
 | `EportalAuth` | 识别为锐捷 | 中（GET 带参 + JSONP 解析） |
-| `DrcomAuth` | 识别为 Dr.COM | 低（GET 带参） |
+| `DrcomAuth` | 识别为 Dr.COM | 中（POST 表单 + 服务器配置解析 + 编码判定） |
 | `GenericFormAuth` | 未识别 / 用户指定 | 中（HTML 表单解析 + 字段启发式匹配） |
 | `CustomTemplateAuth` | 用户选「自定义」 | 低（模板占位符替换） |
 
@@ -204,22 +204,34 @@ src/ui/
 
 **主题**：Avalonia Fluent 主题，亮/暗跟随系统；窗口使用 `TransparencyLevelHint` 取得亚克力背景。
 
-**运营商下拉的行为**（这是本设计里唯一有厂商差异的 UI 细节）：
+**运营商下拉的行为**
 
-1. 预设四项：中国移动、中国电信、中国联通、校园网
-2. 第五项「自定义…」展开文本框，供少数学校使用非标服务名（例如数字 `1`/`2`/`3` 或中文全称）
-3. 程序识别到 Portal 页面中内嵌的可用运营商列表时，用识别结果**覆盖**预设项
+运营商在不同厂商下是**三种完全不同的机制**，UI 必须能表达这三种：
 
-映射规则：
+| 厂商 | 机制 | 参数名 | 示例值 |
+|---|---|---|---|
+| Dr.COM 哆点 | **账号后缀**，直接拼在用户名后 | 无独立参数，拼进 `DDDDD` | `账号@dx`、`账号@lt`、`账号@cmcc`、`账号`（无后缀） |
+| 深澜 Srun | 独立参数 | `domain` | `@telecom`、`@cmcc`、`@unicom`、`@campus` |
+| 锐捷 eportal | 独立参数 | `service` | 各校不同：英文 / 中文 / 数字均有 |
 
-| 运营商 | 深澜 `domain` | 锐捷 `service` |
-|---|---|---|
-| 中国移动 | `@cmcc` | 依学校而定 |
-| 中国电信 | `@telecom` | 依学校而定 |
-| 中国联通 | `@unicom` | 依学校而定 |
-| 校园网 | `@campus` | 空字符串 |
+**优先级规则（重要）**：
 
-锐捷的 `service` 取值各校差异大（有英文、有中文、有数字），因此**必须保留自定义输入**，不能只靠预设。
+1. **服务器下发优先**：Portal 配置中若带有运营商列表，程序**解析并直接采用**，用服务器给的中文名称与后缀渲染下拉项，**不硬编码任何预设**。
+2. **回退到预设**：仅在服务器未下发时，才使用内置预设（Dr.COM：校园用户 / 校园电信 / 校园联通 / 移动 / 自定义；深澜：电信 / 移动 / 联通 / 校园网 / 自定义）。
+3. **始终保留「自定义…」**：展开文本框直接输入后缀或服务名。这是兜底，任何情况下都不得移除。
+
+以本项目已实测的 Portal 为例，服务器下发的 `carrier` 字段是：
+
+```json
+{"yys":{"title":"服务类型","mode":"radiobutton","type":"0",
+  "data":[{"id":"1","name":"校园用户","suffix":""},
+          {"id":"2","name":"校园电信","suffix":"@dx"},
+          {"id":"3","name":"校园联通","suffix":"@lt"},
+          {"id":"4","name":"校园其他","suffix":""}],
+  "defaultID":"1"}}
+```
+
+程序应解析出四个下拉项「校园用户 / 校园电信 / 校园联通 / 校园其他」，各自绑定对应的 `suffix`，并以 `defaultID` 作为默认选中项。**注意该服务器的列表里没有「移动」项，而实际账号却是 `@cmcc` 后缀** —— 这正是不能硬编码的理由，运营商后缀必须以配置为准，且必须允许用户手填。
 
 ## 5. 数据结构
 
@@ -234,7 +246,8 @@ src/ui/
   "settings": {
     "probe_interval_seconds": 5,
     "probe_timeout_seconds": 3,
-    "probe_url": "http://connect.rom.miui.com/generate_204",
+    "probe_url": "http://www.msftncsi.com/ncsi.txt",
+    "probe_expect": "Microsoft NCSI",
     "retry_backoff_seconds": [5, 10, 20, 30, 60],
     "autostart": true,
     "notify_on_reconnect": true,
@@ -296,6 +309,28 @@ Disconnected ──探测──► Probing ──在线──► Online
 
 每隔 `probe_interval_seconds`（默认 5 秒）向 `probe_url` 发起带 `Cache-Control: no-cache` 的请求，超时 3 秒。
 
+**探测地址的选择规则（关键，选错会导致误判）**
+
+Portal 会劫持绝大多数 HTTP 请求，若探测地址被劫持，离线与在线将无法区分。目标是选一个**确定不被劫持**的地址。
+
+本项目的实测 Portal 通过 `visit_blacklist` 字段**主动下发了不会被劫持的地址清单**：
+
+```json
+"visit_blacklist":["1.1.1.1","www.msftncsi.com","land.xiaomi.net","detectportal.firefox.com",
+  "www.airport.us","www.thinkdifferent.us","www.ibook.info","www.itools.info",
+  "www.applephonecell.com","captive.apple.com","www.apple.com","gspe21.ls.apple.com",
+  "generate_204","ncsi.txt","success.txt"]
+```
+
+因此优先级为：
+
+1. **若 Portal 配置中带 `visit_blacklist`，从中选择探测地址**（优先 `www.msftncsi.com` → `ncsi.txt`，其次 `detectportal.firefox.com` → `success.txt`）。这是服务器自己声明的安全地址，可信度最高。
+2. 无该字段时，回退到内置默认值 `http://www.msftncsi.com/ncsi.txt`（响应体固定为 `Microsoft NCSI`）。
+
+**不得使用** `connect.rom.miui.com/generate_204` 之类的第三方地址作为默认值 —— 它不在目标网络的免劫持清单内，一旦被劫持，程序会把「在线」误判为「Portal 劫持」并反复触发无效登录。这是一个容易踩且难以排查的坑。
+
+候选地址需在首次探测时做一次有效性验证（请求该地址，确认返回预期内容且未被重定向），验证通过的地址写入配置缓存。
+
 判定规则（按序匹配，先命中者生效）：
 
 - HTTP 204 → `Online`（`generate_204` 类地址的标准应答）
@@ -323,15 +358,90 @@ Disconnected ──探测──► Probing ──在线──► Online
 
 识别在 `Probe` 检测到 Portal 劫持后执行，输入是 Portal 的响应头与页面 HTML。
 
-| 指纹特征 | 判定厂商 |
-|---|---|
-| 页面/URL 含 `srun_portal`、`get_challenge`、`srun_bx1`、或同时含 `ac_id` 与 `callback` | 深澜 Srun |
-| URL 含 `/eportal/`、或含 `c=Portal`、或同时含 `wlanuserip` 与 `nasip`、或含 `jsVersion` | 锐捷 eportal |
-| URL 含 `/drcom/` 或 `0MKKey` | Dr.COM |
-| URL 含 `/portal/login` 或 `iPortal` 或 `portalpage` | 华为 iPortal（走 GenericForm 实现） |
-| 以上均不匹配 | 通用表单 |
+**判定必须按序进行，先命中者生效** —— 因为 Dr.COM 与锐捷 eportal 共用 `/eportal/` 路径，顺序错了就会误判：
+
+| 序 | 指纹特征 | 判定厂商 |
+|---|---|---|
+| 1 | 响应头 `Server` 含 `DrcomServer` | **Dr.COM**（最明确的信号） |
+| 2 | 页面含 `Dr.COMWebLoginID_`、`0MKKey`、或 `epHTTPPort` | **Dr.COM**（哆点门户变体） |
+| 3 | 页面/URL 含 `srun_portal`、`get_challenge`、`srun_bx1`，或同时含 `ac_id` 与 `callback` | 深澜 Srun |
+| 4 | URL 含 `/eportal/`，或含 `c=Portal`，或同时含 `wlanuserip` 与 `nasip`，或含 `jsVersion` | 锐捷 eportal |
+| 5 | URL 含 `/portal/login` 或 `iPortal` 或 `portalpage` | 华为 iPortal（走 GenericForm 实现） |
+| 6 | 以上均不匹配 | 通用表单 |
+
+第 1、2 条必须排在第 4 条之前。本项目的实测 Portal 同时具备 `Server: DrcomServer1.0` 与 `/eportal/` 路径，若按「见到 `/eportal/` 即锐捷」判定会直接走错协议。
 
 识别结果记录到日志，并在 UI 首次连接时以状态栏文字告知用户，满足「帮我识别」的需求。
+
+### 7.1 已实测确认的目标 Portal
+
+以下参数于 2026-10-08 直接从目标 Portal 抓取确认，是 `DrcomAuth` 实现的**权威依据**，优先级高于任何推测或公开文档：
+
+| 参数 | 实测值 |
+|---|---|
+| 厂商 | Dr.COM 城市热点，哆点（DuoDian）门户 v4.0 |
+| 响应头 | `Server: DrcomServer1.0` |
+| Portal 首页 | `http://10.0.0.1/` |
+| eportal HTTP 端口 | **801**（`epHTTPPort=801`，非 80） |
+| eportal HTTPS 端口 | 802 |
+| 登录路径（服务器声明） | `/eportal/?c=ACSetting&a=Login`，附参 `url=drappall` |
+| 注销路径 | `/eportal/?c=ACSetting&a=Logout&ver=1.0` |
+| 账号字段名 | `DDDDD`（服务器声明 `authuserfield`；页面校验中亦接受 `user_account`） |
+| 密码字段名 | `upass`（服务器声明 `authpassfield`；新式接口用 `user_password`） |
+| 新式 API 基址 | `http://10.0.0.1:801/eportal/portal/` |
+| 状态查询端点 | `{api}visitor/checkUserStateByIP`，返回 `result=1` 且 `login_result∈{1,2}` 表示已在线 |
+| MAC 感知端点 | `{api}perceive` |
+| 登录成功标志 | 跳转 `Dr.COMWebLoginID_3.htm`（或 `3.htm`） |
+| 登录失败标志 | 跳转 `Dr.COMWebLoginID_2.htm`（或 `2.htm`） |
+| 页面编码 | `gb2312` / GBK —— **解析时必须按 GBK 解码，否则中文乱码** |
+| 运营商 | 服务器下发 `carrier` JSON，见 §4.4 |
+| 运营商后缀 | 账号后缀制：`@dx` / `@lt` / `@cmcc` / 空 |
+
+**两套接口并存**：服务器同时声明了老式 `c=ACSetting&a=Login` 与新式 `{api}` REST 端点。登录页 `http://10.0.0.1:801/eportal/` 是一个 **Webpack 打包的 SPA**（`chunk-xxxx` 命名），而 `?c=ACSetting&a=Login` 是配置驱动的老式入口。实现以**服务器自己声明的 `authloginpath` + `authloginport` 为准**（即老式路径），新式 REST 端点作为备选。
+
+**编码在不同路径上不同（容易踩坑）**：
+
+| 路径 | 编码 |
+|---|---|
+| `http://10.0.0.1/`（门户首页） | `charset=gbk`，页面 meta 声明 `gb2312` |
+| `http://10.0.0.1:801/eportal/` | `charset=utf-8` |
+
+程序**必须按响应头 `Content-Type` 中的 charset 动态解码**，不能全局假定一种编码。硬编码 GBK 会让 eportal 路径下的中文错误信息乱码，硬编码 UTF-8 则会让首页内容乱码。日志与 UI 展示时统一转 UTF-8。
+
+**密码加密：已确认关闭**。服务器配置 `en_md5: "0"`，即 MD5 加密认证未启用，密码**明文提交**。页面内嵌的完整 CryptoJS 库是哆点框架自带但未启用的组件，不参与本 Portal 的登录流程。`password_cut: "0"` 亦确认密码不做截取。
+
+**验证码：当前关闭**。登录页存在 `captcha_img` 与 `input.captcha` 元素，但样式为 `display:none` 且服务器配置未启用。实现时需检测该元素是否可见 —— 若某校开启了验证码，自动登录将不可行，程序须明确报错而非静默失败。
+
+### 7.2 Dr.COM 登录请求构造
+
+从登录页 JS 中提取的隐藏表单 `f0` 给出了**完整的请求体字段集**（`method="post"`）：
+
+```
+DDDDD        = <账号（含运营商后缀）>
+upass        = <密码>
+R1  = 0      R2 = 0      R3 = 0      R6 = 0
+para         = 00
+0MKKey       = 123456
+buttonClicked= (空)      redirect_url = (空)      err_flag = (空)
+username     = (空)      password     = (空)      user     = (空)
+cmd          = (空)      Login        = (空)      v6ip     = (空)
+```
+
+提交目标：`http://10.0.0.1:801/eportal/?c=ACSetting&a=Login&url=drappall`，`Content-Type: application/x-www-form-urlencoded`。
+
+注意 `password` 与 `upass` 是**两个不同的字段**：前者为空的占位字段，后者才是真实密码字段。只填 `upass`。
+
+页面通过隐藏 iframe（`name="c"`）接收提交结果以避免跳转。程序无需模拟此行为，直接读取 HTTP 响应即可。
+
+**成功判定**（优先级从高到低）：
+
+1. 响应 URL 或响应体中出现 `Dr.COMWebLoginID_3.htm` 或 `3.htm` → 成功
+2. 响应 URL 或响应体中出现 `Dr.COMWebLoginID_2.htm` 或 `2.htm` → 失败
+3. 兜底：登录后重新执行 §6.1 的探测 —— 探测通过即为成功。**这是最终判据**，因为厂商页面标志可能因版本而异，而「网络是否真的通了」永远可靠。
+
+第 3 条兜底的存在使前两条即使判断错误也不会导致功能失效，只是延长了几秒。
+
+**待实测确认项**：`wlanuserip` / `wlanacname` / `mac` / `vlan` 等 URL 参数的实际取值方式尚未确认（提交逻辑在未成功抓取的 Webpack bundle 内）。计划在实现阶段通过 §9.3 的实测试登录确认；若这些参数为可选项，服务器会忽略之，则实现可先不携带。
 
 ## 8. 错误处理
 
@@ -359,6 +469,15 @@ Disconnected ──探测──► Probing ──在线──► Online
 - DPAPI 加密解密往返
 - 退避序列生成
 
+**Dr.COM 专项测试**（使用本次实测抓取的页面作为测试夹具，存放于 `tests/fixtures/`）：
+
+- `carrier` JSON 解析：输入实测的 `carrier` 字符串，断言解析出 4 个运营商项及各自 `suffix`，默认项为 `defaultID` 对应项
+- `visit_blacklist` 解析与探测地址选择：断言从实测清单中选出 `msftncsi` 而非 `connect.rom.miui.com`
+- 响应编码判定：对实测的 `Content-Type: text/html; charset=gbk` 与 `charset=utf-8` 两组响应头，断言选择正确的解码器，且 GBK 解码后中文正确
+- 账号后缀拼装：`("20241...", suffix="@cmcc")` → `"20241...@cmcc"`；后缀为空时 → 不加 `@`
+- 登录请求体组装：断言 17 个字段全部存在，`upass` 为密码而 `password` 为空
+- 厂商识别优先级：构造一个**同时含** `Server: DrcomServer1.0` 与 `/eportal/` 路径的响应，断言判定为 Dr.COM 而非锐捷（这是最容易误判的组合，实测环境正是如此）
+
 ### 9.2 模拟服务器端到端测试
 
 内置 `--simulate=<vendor>` 模式，在本地 `127.0.0.1` 起一个模拟 Portal 服务器，返回对应厂商格式的挑战与响应。该模式下 `probe_url` 与 `auth_url` 均被强制指向本机模拟服务器（忽略配置中的线上地址，且不写入配置文件），守护进程对着它走完整流程：探测 → 识别 → 登录 → 成功判定。
@@ -367,15 +486,27 @@ Disconnected ──探测──► Probing ──在线──► Online
 
 这使协议逻辑能在**没有真实校园网**的情况下端到端验证，是本项目的主要测试手段。
 
-### 9.3 需在真实校园网验证（开发机无法覆盖）
+### 9.3 已在 2026-10-08 实测完成（风险已消除）
 
-- 真实 Portal 的响应格式与模拟的差异
-- 真实运营商参数取值
-- 真实会话超时行为下 S1 是否达标
+在目标机器的真实校园网环境下直接探测取得，见 §7.1 / §7.2：
 
-缓解：内置 `--probe-now` 与 `--test-login` 命令行开关，输出完整请求与响应（脱敏），供用户在其网络下运行后反馈，据此校正指纹表与协议实现。
+- 厂商识别：Dr.COM 哆点门户 v4.0
+- 端口、登录路径、账号密码字段名、成功失败标志
+- 密码加密开关（`en_md5=0` → 明文）
+- 编码策略（首页 GBK / eportal UTF-8）
+- 运营商机制（账号后缀 + 服务器下发 carrier）
+- 探测地址白名单（`visit_blacklist`）
 
-**此风险不可在开发阶段消除，必须在用户真实网络环境下完成至少一次验证。**
+### 9.4 仍需在真实校园网验证（剩余项）
+
+- **URL 参数取值方式**：`wlanuserip` / `wlanacname` / `mac` / `vlan` 是否必需（§7.2）
+- **完整登录流程**：真实断线 → 自动重登 → 恢复的全链路
+- **会话超时行为**：真实失效周期下 S1（≤ 15 秒）是否达标
+- **各校差异**：本项目仅验证了一所学校；指纹表与协议实现的通用性未经验证
+
+缓解：内置 `--probe-now` 与 `--test-login` 命令行开关，输出完整请求与响应（脱敏）。首次真实重登需在用户侧观察一次完整日志。
+
+**剩余项均可在实现阶段通过一次实测登录解决，不构成架构风险。**
 
 ## 10. 发布
 
@@ -430,20 +561,33 @@ CampusNet-Keeper/
 │   ├─ ui_host/                Hostfxr · PayloadExtract
 │   └─ sim/                    模拟 Portal 服务器
 ├─ src/ui/                     Avalonia 工程
-└─ tests/                      doctest 用例
+└─ tests/
+    ├─ *.cpp                   doctest 用例
+    └─ fixtures/               实测抓取的 Portal 页面样本（GBK 与 UTF-8 各一份、
+                               carrier JSON、visit_blacklist、Dr.COM 失败响应）
 ```
 
 ## 12. 风险
 
-| 风险 | 影响 | 缓解 |
-|---|---|---|
-| 无法在开发机验证真实校园网 | 高 | 模拟服务器 + `--probe-now` 让用户实测反馈；通用表单与自定义模板两层兜底 |
-| 学校使用非 HTTP Portal（802.1X） | 高（方案失效） | 已确认为 Portal 场景；若实测不符，需重新设计 |
-| 各校锐捷 `service` 取值不统一 | 中 | 自定义输入框；识别时尝试从页面提取候选列表 |
-| .NET 运行时缺失 | 低 | 完整版内嵌运行时；缺失时仅 UI 受影响 |
-| 深澜 xEncode 实现偏差 | 中 | 单测对已知向量；`--test-login` 输出请求供比对 |
-| 首次打开 UI 的解压延迟 | 低 | 仅首次；后续命中已解压缓存 |
+| 风险 | 影响 | 现状 | 缓解 |
+|---|---|---|---|
+| 学校使用非 HTTP Portal（802.1X） | 高（方案失效） | **已消除** —— 实测确认是 Dr.COM Web Portal | — |
+| 厂商识别错误 | 高 | **已消除** —— 厂商与全部端点已实测确认 | 仍保留按序判定表（§7）以防其他学校误判 |
+| 探测地址被劫持导致误判 | 高 | **已消除** —— 采用服务器下发的 `visit_blacklist` | 若某校无该字段，回退到已验证的 msftncsi |
+| 密码加密方式未知 | 中 | **已消除** —— `en_md5=0`，明文提交 | — |
+| 登录 URL 参数取值未确认 | 中 | **待解决** —— 见 §7.2、§9.4 | 一次实测登录即可确定；成功判定的第 3 条兜底使参数缺失也不致命 |
+| 各校配置差异（本方案仅验证一校） | 中 | 已知 | 识别按序判定 + 通用表单 + 自定义模板三层兜底 |
+| 某校启用验证码 | 中 | 已知 | 检测到可见验证码元素时明确报错，不静默失败 |
+| 深澜 xEncode 实现偏差 | 中 | 未验证（本机非深澜） | 单测对已知向量；属通用性功能，不影响本机目标 |
+| 锐捷 `service` 取值不统一 | 中 | 未验证 | 自定义输入框 + 服务器下发优先 |
+| .NET 运行时缺失 | 低 | 已知 | 完整版内嵌运行时；缺失时仅 UI 受影响 |
+| 首次打开 UI 的解压延迟 | 低 | 已知 | 仅首次；后续命中已解压缓存 |
 
 ## 13. 未决事项
 
-无。所有设计决策已在本文档内明确。
+设计决策已全部明确。以下为实现阶段需通过一次实测登录解决的**技术细节**（非设计问题）：
+
+1. `wlanuserip` / `wlanacname` / `mac` / `vlan` 四个 URL 参数是否必需。若必须，取值来源需确认（本地网卡 IP / Portal 页面变量）。
+2. 登录成功后服务器是否下发 Cookie 表示会话，以及该 Cookie 是否影响后续探测。
+
+两项均可在拿到一次真实的「断线 → 重登」日志后确定，不影响架构与工期。
