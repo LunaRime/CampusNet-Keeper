@@ -335,10 +335,19 @@ Portal 会劫持绝大多数 HTTP 请求，若探测地址被劫持，离线与�
 
 - HTTP 204 → `Online`（`generate_204` 类地址的标准应答）
 - HTTP 200 且响应体匹配预期标识 → `Online`
-- HTTP 3xx 且 `Location` 主机与 `probe_url` 主机不同 → Portal 劫持，进入 `PortalDetected`
+- HTTP 3xx：**先将 `Location` 解析为绝对地址**（真实 Portal 常用 `/portal/login` 这类相对跳转），再比主机：
+  - 主机与 `probe_url` 不同 → Portal 劫持，进入 `PortalDetected`
+  - 主机相同 → `Online`（能收到重定向本身就说明目标服务可达；Portal 劫持的典型形态是重定向到内网 Portal 地址，即不同主机）
+  - **不得**把相对 Location 直接判成 `Offline` —— 那样会导致永不触发登录、每轮空转重探，「劫持检测 → 自动登录」整链静默失效
 - HTTP 200 但响应体为空或不含预期标识 → Portal 劫持，进入 `PortalDetected`
 - HTTP 200 且响应体含预期标识但长度异常偏大（> 8 KB）→ Portal 劫持（部分设备返回篡改后的完整页面）
 - 连接失败 / 超时 / DNS 失败 → `Disconnected`，进入重试
+
+**超时语义的重要约束（实测得出，见 §9）**：底层的 WinHTTP 超时粒度约 **4 秒**，且 `timeout_ms` 是**每次读操作**的超时而非整次请求的时限。因此：
+
+- `probe_timeout_seconds` 的**实际下限是 4 秒**，配置更小的值不会更快
+- 探测必须额外施加一个**整次请求的总时限**，否则持续滴发响应的对端可以把调用拖到正文上限，长期占用调度线程
+- 该约束只影响探测的时间预算；认证 POST 不受影响
 
 ### 6.2 被动触发（降低响应延迟）
 

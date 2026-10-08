@@ -4104,7 +4104,65 @@ TEST_CASE("正文过长时判定为劫持（长度启发式）") {
     CHECK(r.state == cnk::NetState::PortalDetected);
     srv.Stop();
 }
+
+TEST_CASE("绝对地址的异主机 Location 判定为劫持") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.fail_mode = 3;                                   // 302
+    o.redirect_location = "http://portal.example.com/login";
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    auto s = MakeSettings(srv.BaseUrl() + "/ncsi.txt", "Microsoft NCSI");
+    auto r = cnk::ProbeOnce(s);
+    CHECK(r.state == cnk::NetState::PortalDetected);
+    srv.Stop();
+}
+
+TEST_CASE("相对路径的 Location 也判定为劫持，不能判成 Offline") {
+    // 真实 Portal 常用相对跳转。若未先解析成绝对地址，HostOf 会返回空，
+    // 落进「同主机」分支 —— 那样不仅漏判劫持，还会永不触发登录、每轮空转重探。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.fail_mode = 3;
+    o.redirect_location = "/portal/login";             // 相对路径
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    auto s = MakeSettings(srv.BaseUrl() + "/ncsi.txt", "Microsoft NCSI");
+    auto r = cnk::ProbeOnce(s);
+    CHECK(r.state != cnk::NetState::Offline);          // 关键：绝不能是 Offline
+    CHECK(r.state == cnk::NetState::Online);           // 解析后主机与探测目标相同，判在线
+    srv.Stop();
+}
+
+TEST_CASE("同主机重定向判定为 Online 而非 Offline") {
+    // 能收到重定向本身就说明目标服务可达。原实现判 Offline 是错的。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.fail_mode = 3;
+    o.redirect_location = "http://127.0.0.1:1/other";  // 与探测目标同主机（IP 相同即可）
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    auto s = MakeSettings(srv.BaseUrl() + "/ncsi.txt", "Microsoft NCSI");
+    auto r = cnk::ProbeOnce(s);
+    CHECK(r.state != cnk::NetState::Offline);
+    srv.Stop();
+}
 ```
+
+**必须先实现 SimServer 的 302 模式**：`SimOptions` 增加两个成员，`fail_mode` 增加取值 `3`。
+
+```cpp
+struct SimOptions {
+    // ... 原有成员 ...
+    // fail_mode: 0=正常 1=凭据错误 2=连接挂起 3=302 重定向
+    std::string redirect_location;   // fail_mode == 3 时返回的 Location 值
+};
+```
+
+（该接口由任务 4 的修复首次引入，本任务直接使用。）
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -4141,6 +4199,7 @@ ProbeResult ProbeOnce(const Settings& s);
 ```cpp
 #include "core/Probe.h"
 #include "core/Encoding.h"
+#include "core/Url.h"
 
 namespace cnk {
 
@@ -4187,15 +4246,23 @@ ProbeResult ProbeOnce(const Settings& s) {
     }
 
     if (status >= 300 && status < 400) {
-        const std::string loc_host = HostOf(r.response.location);
+        // Location 可能是**相对路径**（真实 Portal 常用 `/portal/login` 这种形式），
+        // 必须先解析成绝对地址再比主机。否则相对跳转会让 HostOf 返回空，
+        // 落进下面的分支判成 Offline —— 结果是永不触发登录、每轮空转重探，
+        // 「劫持检测 → 自动登录」整链静默失效。
+        const std::string loc_abs = ResolveUrl(r.response.location, s.probe_url);
+        const std::string loc_host = HostOf(loc_abs);
         const std::string probe_host = HostOf(s.probe_url);
+
         if (!loc_host.empty() && loc_host != probe_host) {
             r.state = NetState::PortalDetected;
-            r.message = "被重定向到 " + r.response.location;
+            r.message = "被重定向到 " + loc_abs;
             return r;
         }
-        r.state = NetState::Offline;
-        r.message = "重定向异常：" + r.response.location;
+        // 同主机重定向：能收到重定向本身就说明目标服务可达，网络是通的
+        // （Portal 劫持的典型形态是重定向到内网 Portal 地址，即不同主机）。
+        r.state = NetState::Online;
+        r.message = "重定向但目标主机相同，判定为在线：" + loc_abs;
         return r;
     }
 
