@@ -128,10 +128,18 @@ TEST_CASE("ForceReconnect 立即触发探测而不等待间隔") {
     cfg.settings.probe_interval_seconds = 3600;  // 一小时内不该再自动探测
     cnk::Scheduler sch(cfg);
     sch.Tick();
-    auto first = sch.State();
+    const long long t1 = sch.LastProbeUnix();
+    REQUIRE(t1 > 0);
+
+    // 间隔未到时 Tick 不产生新探测（探测时间戳为秒级，先让墙钟跨秒）
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    sch.Tick();
+    CHECK(sch.LastProbeUnix() == t1);
+
+    // ForceReconnect 后必须立即探测
     sch.ForceReconnect();
     sch.Tick();
-    CHECK(sch.State() == first);
+    CHECK(sch.LastProbeUnix() > t1);
     srv.Stop();
 }
 

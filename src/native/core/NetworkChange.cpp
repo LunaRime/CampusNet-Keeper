@@ -32,7 +32,15 @@ void NetworkChangeWatcher::Impl::Loop() {
         if (rc == ERROR_IO_PENDING) {
             HANDLE waits[2] = {stop_event, notify_event};
             DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
-            if (w == WAIT_OBJECT_0) break;             // 停止
+            if (w == WAIT_OBJECT_0) {
+                // 停止请求：必须取消挂起中的地址变更请求，并等待其完成信号
+                // 后再退出线程——否则内核仍持有指向本栈帧 OVERLAPPED 与事件
+                // 句柄的请求，日后地址变化会写入已释放内存/向已关闭句柄发信号。
+                // 带超时兜底防罕见情况下取消失败导致的挂死。
+                CancelIPChangeNotify(&ov);
+                WaitForSingleObject(notify_event, 2000);
+                break;
+            }
             if (w != WAIT_OBJECT_0 + 1) break;         // 异常
             // notify_event 是自动重置事件，等待返回时已复位，直接重挂即可
         } else {

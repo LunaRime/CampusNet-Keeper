@@ -77,9 +77,10 @@ struct Scheduler::Impl {
 
     int CurrentBackoff() const {
         if (cfg.settings.retry_backoff_seconds.empty()) return 60;
-        if (backoff_index >= cfg.settings.retry_backoff_seconds.size())
-            return cfg.settings.retry_backoff_seconds.back();
-        return cfg.settings.retry_backoff_seconds[backoff_index];
+        const int v = backoff_index >= cfg.settings.retry_backoff_seconds.size()
+            ? cfg.settings.retry_backoff_seconds.back()
+            : cfg.settings.retry_backoff_seconds[backoff_index];
+        return v > 0 ? v : 1;  // 钳制下限：防配置为 0/负数产生紧凑重试循环
     }
 
     void AdvanceBackoff() {
@@ -96,6 +97,7 @@ struct Scheduler::Impl {
         if (network_changed.exchange(false)) {
             stop_retrying = false;
             total_auth_attempts = 0;
+            consecutive_auth_failures = 0;
             backoff_index = 0;
             target_resolved = false;
         }
@@ -269,6 +271,7 @@ void Scheduler::ForceReconnect() {
     impl_->probe_immediately.store(true);
     impl_->stop_retrying = false;
     impl_->total_auth_attempts = 0;
+    impl_->consecutive_auth_failures = 0;
     impl_->backoff_index = 0;
     impl_->target_resolved = false;
 }
@@ -277,6 +280,7 @@ void Scheduler::SetConfig(const AppConfig& cfg) {
     impl_->cfg = cfg;
     impl_->stop_retrying = false;
     impl_->total_auth_attempts = 0;
+    impl_->consecutive_auth_failures = 0;
     impl_->backoff_index = 0;
     impl_->target_resolved = false;
     impl_->probe_immediately.store(true);
@@ -305,7 +309,8 @@ std::string Scheduler::LastPortalBody() const {
 
 bool Scheduler::RunProbeNow(ProbeResult& out) {
     out = ProbeOnce(impl_->cfg.settings);
-    return true;
+    // 未配置有效探测地址（Unknown）视为未完成探测
+    return out.state != NetState::Unknown;
 }
 
 }  // namespace cnk
