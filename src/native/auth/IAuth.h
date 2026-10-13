@@ -1,6 +1,5 @@
 #pragma once
 #include <string>
-#include <memory>
 #include "store/Config.h"
 
 namespace cnk {
