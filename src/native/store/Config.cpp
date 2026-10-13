@@ -220,10 +220,9 @@ bool ConfigFromJson(const std::string& json_str, AppConfig& out, std::string& er
     return true;
 }
 
-bool ConfigSave(const AppConfig& cfg, std::string& error) {
+bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& error) {
     error.clear();
-    std::string path = ConfigPath();
-    if (path.empty()) { error = "无法确定配置目录"; return false; }
+    if (path.empty()) { error = "配置路径为空"; return false; }
 
     std::string json_str;
     if (!ConfigToJson(cfg, json_str)) { error = "序列化失败"; return false; }
@@ -251,11 +250,16 @@ bool ConfigSave(const AppConfig& cfg, std::string& error) {
     return true;
 }
 
-bool ConfigLoad(AppConfig& out, std::string& error) {
+bool ConfigSave(const AppConfig& cfg, std::string& error) {
+    const std::string path = ConfigPath();
+    if (path.empty()) { error = "无法确定配置目录"; return false; }
+    return ConfigSaveTo(path, cfg, error);
+}
+
+bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error) {
     error.clear();
     out = AppConfig{};
-    std::string path = ConfigPath();
-    if (path.empty()) { error = "无法确定配置目录"; return false; }
+    if (path.empty()) { error = "配置路径为空"; return false; }
 
     std::error_code ec;
     if (!fs::exists(fs::u8path(path), ec)) {
@@ -277,13 +281,19 @@ bool ConfigLoad(AppConfig& out, std::string& error) {
         if (e2) {
             LogError("配置文件损坏，且备份失败（" + e2.message() + "），已回落默认配置：" + parse_err);
         } else {
-            LogError("配置文件损坏，已备份到 config.json.bak：" + parse_err);
+            LogError("配置文件损坏，已备份到 " + path + ".bak：" + parse_err);
         }
         out = AppConfig{};
         error = parse_err;
         return false;
     }
     return true;
+}
+
+bool ConfigLoad(AppConfig& out, std::string& error) {
+    const std::string path = ConfigPath();
+    if (path.empty()) { error = "无法确定配置目录"; return false; }
+    return ConfigLoadFrom(path, out, error);
 }
 
 std::string IspSuffix(const Profile& p) {

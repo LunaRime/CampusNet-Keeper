@@ -39,6 +39,7 @@ add_executable(cnk_tests
   tests/encoding_test.cpp
   tests/url_test.cpp
   tests/config_test.cpp
+  tests/config_io_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)

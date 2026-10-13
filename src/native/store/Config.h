@@ -57,6 +57,13 @@ bool ConfigToJson(const AppConfig& cfg, std::string& out_json);
 // 任何格式/类型错误都返回 false 并填 error，不抛异常、不崩溃。
 bool ConfigFromJson(const std::string& json, AppConfig& out, std::string& error);
 
+// 可注入路径的版本（测试与 CLI 用）。失败时不抛异常。
+// 写入采用「先写 .tmp 再改名」的原子替换；替换失败时保留旧文件并清理 .tmp。
+// 读取遇损坏文件时备份为 <path>.bak 后返回失败并回落默认配置。
+bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error);
+bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& error);
+
+// 上述重载的薄封装，路径为 ConfigPath()（%APPDATA%\CampusNet-Keeper\config.json）
 bool ConfigLoad(AppConfig& out, std::string& error);
 bool ConfigSave(const AppConfig& cfg, std::string& error);
 
