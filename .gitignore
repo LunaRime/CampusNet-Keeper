@@ -3,3 +3,5 @@ dist/
 .vs/
 *.user
 out/
+# 本地 agent 工作目录（项目记忆/日志），不入库、不随公开仓库分发
+.workbuddy/
