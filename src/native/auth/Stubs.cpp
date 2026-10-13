@@ -22,7 +22,6 @@ private:
 
 }  // namespace
 
-std::unique_ptr<IAuth> MakeDrcomAuth()        { return std::make_unique<StubAuth>("DrcomAuth"); }
 std::unique_ptr<IAuth> MakeEportalAuth()      { return std::make_unique<StubAuth>("EportalAuth"); }
 std::unique_ptr<IAuth> MakeSrunAuth()         { return std::make_unique<StubAuth>("SrunAuth"); }
 std::unique_ptr<IAuth> MakeGenericFormAuth()  { return std::make_unique<StubAuth>("GenericFormAuth"); }
