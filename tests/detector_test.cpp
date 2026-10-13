@@ -57,7 +57,7 @@ TEST_CASE("epHTTPPort 不构成 Dr.COM 指纹") {
     cnk::HttpResponse r;
     r.server = "nginx";
     r.body = "<script>epHTTPPort=801;</script>";
-    CHECK(cnk::DetectVendor(r) != cnk::Vendor::Drcom);
+    CHECK(cnk::DetectVendor(r) == cnk::Vendor::Unknown);
 }
 
 TEST_CASE("页面含 Dr.COMWebLoginID_ 判定为 Dr.COM") {
@@ -96,6 +96,37 @@ TEST_CASE("含 iPortal 判定为华为") {
     cnk::HttpResponse r;
     r.body = "<html>iPortal 认证</html>";
     CHECK(cnk::DetectVendor(r) == cnk::Vendor::Huawei);
+}
+
+TEST_CASE("URL 含 /portal/login 判定为华为") {
+    // spec §7 序 5 的对象是「URL 含 /portal/login」，URL-only 场景不得漏判
+    cnk::HttpResponse r;
+    r.effective_url = "http://10.0.0.1/portal/login?user=1";
+    r.body = "<html></html>";
+    CHECK(cnk::DetectVendor(r) == cnk::Vendor::Huawei);
+}
+
+TEST_CASE("multiportal 等含 iportal 子串的词不误判为华为") {
+    // 弱指纹必须大小写敏感匹配，避免 multiportal 之类子串误命中
+    cnk::HttpResponse r;
+    r.body = "<html>multiportal gateway</html>";
+    CHECK(cnk::DetectVendor(r) == cnk::Vendor::Unknown);
+}
+
+TEST_CASE("含 wlanuserip/nasip 与 iPortal 时按序判定为锐捷") {
+    // spec §7 顺序所致：序 4（锐捷）先于序 5（华为）。
+    // 钉住该行为，任何顺序调整都会让本用例转红。
+    cnk::HttpResponse r;
+    r.body = "<script>wlanuserip='10.0.0.5'; nasip='10.0.0.1'; iPortal;</script>";
+    CHECK(cnk::DetectVendor(r) == cnk::Vendor::Eportal);
+}
+
+TEST_CASE("GBK 字节未声明 charset 时中文指纹失效（当前降级行为）") {
+    // 钉住当前行为：无 charset 声明 → 按 UTF-8 原样处理 → 中文指纹匹配失败。
+    // 真实首页声明 charset=gbk 且有 DrcomServer 头兜底，故实际风险低。
+    cnk::HttpResponse r;
+    r.body = ToGbk("<script>/** 哆点参数 start */</script>");
+    CHECK(cnk::DetectVendor(r) == cnk::Vendor::Unknown);
 }
 
 TEST_CASE("无任何特征判定为 Unknown") {

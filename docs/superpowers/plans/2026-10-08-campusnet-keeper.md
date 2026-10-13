@@ -2760,6 +2760,12 @@ Vendor DetectVendor(const HttpResponse& resp) {
     const std::string& server = resp.server;
     const std::string& url = resp.effective_url;
 
+    // spec §7 对部分指纹写「页面/URL 含」，两处都查
+    // （审阅注记 2026-10-13：首版仅查 body，URL-only 场景会漏判华为）
+    const auto inUrlOrBody = [&](const char* s) {
+        return Contains(url, s) || Contains(body, s);
+    };
+
     // 序 1：Server 头含 DrcomServer —— 最强信号
     if (ContainsCI(server, "drcomserver")) return Vendor::Drcom;
 
@@ -2772,8 +2778,8 @@ Vendor DetectVendor(const HttpResponse& resp) {
         return Vendor::Drcom;
 
     // 序 3：深澜
-    if (Contains(body, "srun_portal") || Contains(body, "get_challenge") ||
-        Contains(body, "srun_bx1") ||
+    if (inUrlOrBody("srun_portal") || inUrlOrBody("get_challenge") ||
+        inUrlOrBody("srun_bx1") ||
         (Contains(body, "ac_id") && Contains(body, "callback")))
         return Vendor::Srun;
 
@@ -2783,8 +2789,9 @@ Vendor DetectVendor(const HttpResponse& resp) {
         Contains(body, "jsVersion"))
         return Vendor::Eportal;
 
-    // 序 5：华为 iPortal
-    if (ContainsCI(body, "iportal") || Contains(body, "/portal/login") ||
+    // 序 5：华为 iPortal。
+    // "iPortal" 保持大小写敏感：ContainsCI 会把 multiportal 之类的子串误判为华为。
+    if (inUrlOrBody("/portal/login") || Contains(body, "iPortal") ||
         Contains(body, "portalpage"))
         return Vendor::Huawei;
 
