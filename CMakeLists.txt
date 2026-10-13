@@ -22,6 +22,8 @@ add_library(cnk_core STATIC
   src/native/store/Config.cpp
   src/native/auth/Detector.cpp
   src/native/auth/Carrier.cpp
+  src/native/auth/AuthFactory.cpp
+  src/native/auth/Stubs.cpp
   src/native/core/ProbeTarget.cpp
   src/native/sim/SimServer.cpp
 )
@@ -46,6 +48,7 @@ add_executable(cnk_tests
   tests/detector_test.cpp
   tests/carrier_test.cpp
   tests/probe_target_test.cpp
+  tests/auth_factory_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
