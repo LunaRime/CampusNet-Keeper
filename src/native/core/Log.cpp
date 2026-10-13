@@ -70,7 +70,9 @@ void RotateIfNeeded() {
 
 bool IsSecretKey(const std::string& key) {
     static const char* kKeys[] = {
-        "upass", "password", "pwd", "pass", "user_password", "passwd"
+        "upass", "password", "pwd", "pass", "user_password", "passwd",
+        // Dr.COM 的账号字段：学号属敏感信息，日志/诊断输出里与密码同等对待
+        "ddddd"
     };
     // ASCII 大小写折叠后比较，键名大小写不影响脱敏。
     std::string lower;

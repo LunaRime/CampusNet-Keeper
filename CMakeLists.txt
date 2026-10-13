@@ -30,6 +30,7 @@ add_library(cnk_core STATIC
   src/native/core/Probe.cpp
   src/native/core/Scheduler.cpp
   src/native/core/NetworkChange.cpp
+  src/native/core/Cli.cpp
   src/native/core/Template.cpp
   src/native/sim/SimServer.cpp
 )
@@ -59,6 +60,7 @@ add_executable(cnk_tests
   tests/custom_auth_test.cpp
   tests/probe_test.cpp
   tests/scheduler_test.cpp
+  tests/cli_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)

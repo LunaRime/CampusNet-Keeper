@@ -5,8 +5,9 @@
 namespace fs = std::filesystem;
 
 TEST_CASE("RedactSecrets 屏蔽密码类参数") {
+    // DDDDD（Dr.COM 账号字段，内含学号）自任务 15 起与密码同等脱敏
     CHECK(cnk::RedactSecrets("upass=secret123&DDDDD=alice")
-          == "upass=***&DDDDD=alice");
+          == "upass=***&DDDDD=***");
     CHECK(cnk::RedactSecrets("password=abc&x=1") == "password=***&x=1");
     CHECK(cnk::RedactSecrets("pwd=p&user_password=q")
           == "pwd=***&user_password=***");
@@ -27,7 +28,7 @@ TEST_CASE("RedactSecrets 键名大小写不敏感") {
     CHECK(cnk::RedactSecrets("PassWord=abc") == "PassWord=***");
     CHECK(cnk::RedactSecrets("User_Password=q") == "User_Password=***");
     CHECK(cnk::RedactSecrets("PASSWD=q") == "PASSWD=***");
-    CHECK(cnk::RedactSecrets("DDDDD=alice") == "DDDDD=alice");
+    CHECK(cnk::RedactSecrets("ddddd=alice") == "ddddd=***");
 }
 
 TEST_CASE("日志写入后可被 LogTail 读回") {

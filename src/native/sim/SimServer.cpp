@@ -167,6 +167,7 @@ struct SimServer::Impl {
     int port = 0;
     SimOptions opts;
     std::atomic<int> login_count{0};
+    std::atomic<bool> logged_in{false};   // 登录成功即建立会话状态
     std::mutex body_mutex;
     std::string last_login_body;
 
@@ -272,8 +273,17 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         } else if (opts.fail_mode == 1 || !user_ok || !pass_ok) {
             resp_body = "<html><body><!--Dr.COMWebLoginID_2.htm-->login failed</body></html>";
         } else {
+            logged_in.store(true);   // 会话建立，/sim_probe 随之切换为正常应答
             resp_body = "<html><body><!--Dr.COMWebLoginID_3.htm-->"
                         "window.location='3.htm';</body></html>";
+        }
+    } else if (path == "/sim_probe") {
+        // 端到端模拟专用：登录前相当于被劫持（返回门户页），登录成功后
+        // 网络恢复（返回 nCSI 应答）——用于验证「探测 → 劫持 → 登录 → 恢复」整链
+        if (logged_in.load()) {
+            resp_body = "Microsoft NCSI";
+        } else {
+            resp_body = Utf8ToGbk(BuildHomePage(port));
         }
     } else if (path == "/generate_204") {
         // 探测地址类型（generate_204）：标准应答为 204 空体
@@ -403,5 +413,7 @@ std::string SimServer::LastLoginBody() const {
     std::lock_guard<std::mutex> lk(impl_->body_mutex);
     return impl_->last_login_body;
 }
+
+bool SimServer::LoggedIn() const { return impl_->logged_in.load(); }
 
 }  // namespace cnk

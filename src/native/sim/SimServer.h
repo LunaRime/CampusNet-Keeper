@@ -30,6 +30,11 @@ public:
     int LoginCount() const;
     std::string LastLoginBody() const;
 
+    // 是否已有一次成功的登录（模拟会话建立状态）。
+    // /sim_probe 路径据此在「劫持（门户页）」与「正常（nCSI 应答）」间切换，
+    // 供端到端验证「探测 → 劫持 → 登录 → 恢复」整链。
+    bool LoggedIn() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

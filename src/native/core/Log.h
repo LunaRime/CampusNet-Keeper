@@ -23,7 +23,8 @@ inline void LogError(const std::string& m) { LogWrite(LogLevel::Error, m); }
 std::vector<std::string> LogTail(size_t max_lines);
 
 // 把 URL 或表单体中的密码类参数值替换为 ***。
-// 覆盖字段：upass, password, pwd, pass, user_password, passwd
+// 覆盖字段：upass, password, pwd, pass, user_password, passwd，以及
+// Dr.COM 的账号字段 DDDDD（学号属敏感信息，与密码同等脱敏）。
 std::string RedactSecrets(const std::string& s);
 
 }  // namespace cnk
