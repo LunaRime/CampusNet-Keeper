@@ -13,7 +13,8 @@
 ## Global Constraints
 
 - C++ 标准：**C++17**，`CMAKE_CXX_STANDARD_REQUIRED ON`。
-- 编译器：**MSVC v143**（VS2022，路径 `D:\Visual Studio 2022\VS2022`）。编译选项必须含 **`/utf-8`**（源码含中文字面量）与 **`/W4 /permissive-`**。
+- 编译器：**MSVC v143**（VS2022）。**2026-10-13 环境变更**：安装路径已从 `D:\Visual Studio 2022\VS2022` 迁至 `D:\Visual Studio 2026\Microsoft Visual Studio\2022`（原路径失效，旧 CMakeCache 已清理重建）；cmake 位于该安装的 `Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe`。编译选项必须含 **`/utf-8`**（源码含中文字面量）与 **`/W4 /permissive-`**。
+- **构建前置：清除代理环境变量**（`unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY` 后再运行 cmake/msbuild）。环境的代理变量同时存在大小写两套，MSBuild 向 CL.exe 传递环境时抛 `MSB6001 字典中已添加项`，表现为误报「找不到 CXX 编译器」，实际是环境问题与工具链无关。
 - 字符集：**UNICODE**（`UNICODE` 与 `_UNICODE` 均定义）。Win32 API 一律用宽字符版本（`*W`）。
 - 命名空间：**`cnk`**。头文件用 `#pragma once`。源文件扩展名 `.cpp`，头文件 `.h`。
 - 第三方依赖**仅限** `nlohmann/json` 与 `doctest`，二者均为单头文件，vendored 至 `third_party/`。**不得引入任何其他第三方库**，尤其禁止 UI 库（Qt / MFC / WinForms）。
