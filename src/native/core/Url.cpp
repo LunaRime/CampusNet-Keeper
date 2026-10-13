@@ -1,4 +1,6 @@
 #include "core/Url.h"
+#include <cctype>
+#include <cstring>
 
 namespace cnk {
 
@@ -70,10 +72,31 @@ bool SplitHostPort(const std::string& url, std::string& scheme_host,
     return true;
 }
 
+namespace {
+
+// scheme 前缀大小写不敏感比较（prefix 传小写）
+bool StartsWithCI(const std::string& s, const char* prefix) {
+    const size_t n = std::strlen(prefix);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::tolower((unsigned char)s[i]) != prefix[i]) return false;
+    return true;
+}
+
+}  // namespace
+
 std::string ResolveUrl(const std::string& action, const std::string& base) {
     if (action.empty()) return base;
-    if (action.rfind("http://", 0) == 0 || action.rfind("https://", 0) == 0)
+    // 绝对地址：scheme 大小写不敏感（Location 头的写法不受 RFC 约束）
+    if (StartsWithCI(action, "http://") || StartsWithCI(action, "https://"))
         return action;
+
+    // 协议相对（//host/path）：沿用 base 的 scheme 拼接
+    if (action.rfind("//", 0) == 0) {
+        const size_t se = base.find("://");
+        if (se == std::string::npos) return base + action;
+        return base.substr(0, se + 1) + action;  // "http:" + "//host/path"
+    }
 
     // 取 base 的 origin
     const size_t scheme_end = base.find("://");

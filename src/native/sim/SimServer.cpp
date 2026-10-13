@@ -275,6 +275,13 @@ void SimServer::Impl::HandleClient(SOCKET client) {
             resp_body = "<html><body><!--Dr.COMWebLoginID_3.htm-->"
                         "window.location='3.htm';</body></html>";
         }
+    } else if (path == "/generate_204") {
+        // 探测地址类型（generate_204）：标准应答为 204 空体
+        status = 204;
+        resp_body = "";
+    } else if (path == "/big_ncsi.txt") {
+        // 测试用：含预期标识但长度超 8KB 的响应（长度启发式判劫持）
+        resp_body = std::string(9000, 'x') + "Microsoft NCSI";
     } else if (path == "/ncsi.txt") {
         resp_body = "Microsoft NCSI";
     } else if (path == "/success.txt") {

@@ -23,6 +23,39 @@ TEST_CASE("返回 200 且正文匹配时判定为在线") {
     srv.Stop();
 }
 
+TEST_CASE("204 判定为在线") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+
+    auto s = MakeSettings(srv.BaseUrl() + "/generate_204", "");
+    auto r = cnk::ProbeOnce(s);
+    CHECK(r.state == cnk::NetState::Online);
+    srv.Stop();
+}
+
+TEST_CASE("含预期标识但正文超长时判为劫持（长度启发式）") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+
+    auto s = MakeSettings(srv.BaseUrl() + "/big_ncsi.txt", "Microsoft NCSI");
+    auto r = cnk::ProbeOnce(s);
+    CHECK(r.state == cnk::NetState::PortalDetected);
+    srv.Stop();
+}
+
+TEST_CASE("404 判定为 Portal 劫持（保守处理）") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+
+    auto s = MakeSettings(srv.BaseUrl() + "/nonexistent", "Microsoft NCSI");
+    auto r = cnk::ProbeOnce(s);
+    CHECK(r.state == cnk::NetState::PortalDetected);
+    srv.Stop();
+}
+
 TEST_CASE("正文不匹配时判定为 Portal 劫持") {
     cnk::SimServer srv;
     std::string err;
@@ -115,4 +148,33 @@ TEST_CASE("绝对 Location 同 IP 不同端口按异主机判劫持") {
     CHECK(r.state == cnk::NetState::PortalDetected);
     CHECK(r.state != cnk::NetState::Offline);
     srv.Stop();
+}
+
+TEST_CASE("协议相对与大写 scheme 的 Location 判为劫持") {
+    // Location 头可能用 //host/path（协议相对）或大写 scheme 写的绝对地址——
+    // 两种情况都必须识别为异主机，否则劫持会被静默误判为在线
+    {
+        cnk::SimServer srv;
+        cnk::SimOptions o;
+        o.fail_mode = 3;
+        o.redirect_location = "//evil.example/x";
+        std::string err;
+        REQUIRE(srv.Start(o, err));
+        auto s = MakeSettings(srv.BaseUrl() + "/ncsi.txt", "Microsoft NCSI");
+        auto r = cnk::ProbeOnce(s);
+        CHECK(r.state == cnk::NetState::PortalDetected);
+        srv.Stop();
+    }
+    {
+        cnk::SimServer srv;
+        cnk::SimOptions o;
+        o.fail_mode = 3;
+        o.redirect_location = "HTTP://EVIL.EXAMPLE/x";
+        std::string err;
+        REQUIRE(srv.Start(o, err));
+        auto s = MakeSettings(srv.BaseUrl() + "/ncsi.txt", "Microsoft NCSI");
+        auto r = cnk::ProbeOnce(s);
+        CHECK(r.state == cnk::NetState::PortalDetected);
+        srv.Stop();
+    }
 }

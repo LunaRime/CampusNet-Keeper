@@ -73,3 +73,13 @@ TEST_CASE("ResolveUrl 处理绝对、根相对与路径相对") {
     CHECK(cnk::ResolveUrl("", "http://10.0.0.1/login")
           == "http://10.0.0.1/login");
 }
+
+TEST_CASE("ResolveUrl 处理大小写 scheme 与协议相对地址") {
+    // Location 头的写法不受 RFC 约束：scheme 大小写不敏感、可用协议相对形式
+    CHECK(cnk::ResolveUrl("HTTP://a/b", "http://x/") == "HTTP://a/b");
+    CHECK(cnk::ResolveUrl("Https://a/b", "http://x/") == "Https://a/b");
+    CHECK(cnk::ResolveUrl("//evil.com/x", "http://127.0.0.1:9/ncsi.txt")
+          == "http://evil.com/x");
+    // 协议相对沿用 base 的 scheme
+    CHECK(cnk::ResolveUrl("//h/x", "https://a.example/") == "https://h/x");
+}

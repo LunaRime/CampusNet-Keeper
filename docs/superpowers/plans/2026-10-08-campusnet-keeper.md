@@ -1731,10 +1731,33 @@ bool SplitHostPort(const std::string& url, std::string& scheme_host,
     return true;
 }
 
+namespace {
+
+// scheme 前缀大小写不敏感比较（prefix 传小写）
+bool StartsWithCI(const std::string& s, const char* prefix) {
+    const size_t n = std::strlen(prefix);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::tolower((unsigned char)s[i]) != prefix[i]) return false;
+    return true;
+}
+
+}  // namespace
+
 std::string ResolveUrl(const std::string& action, const std::string& base) {
     if (action.empty()) return base;
-    if (action.rfind("http://", 0) == 0 || action.rfind("https://", 0) == 0)
+    // 绝对地址：scheme 大小写不敏感（Location 头的写法不受 RFC 约束）
+    // ⚠ 审阅注记（2026-10-13，任务 13 深度审阅）：原实现只认小写 http://，
+    // 大写 scheme 与协议相对地址会被当相对路径 → 探测劫持判定静默漏判
+    if (StartsWithCI(action, "http://") || StartsWithCI(action, "https://"))
         return action;
+
+    // 协议相对（//host/path）：沿用 base 的 scheme 拼接
+    if (action.rfind("//", 0) == 0) {
+        const size_t se = base.find("://");
+        if (se == std::string::npos) return base + action;
+        return base.substr(0, se + 1) + action;  // "http:" + "//host/path"
+    }
 
     // 取 base 的 origin
     const size_t scheme_end = base.find("://");
@@ -4295,13 +4318,34 @@ namespace cnk {
 
 namespace {
 
+// 取 URL 的主机部分（含非默认端口），用于劫持判定的主机比较。
+// ⚠ 审阅注记（2026-10-13）：归一化保证等价写法不被误判为异主机——
+//   剥离 userinfo、剥离 scheme 默认端口（host 与 host:80 同主机）、主机名小写。
+// 含端口比较是刻意的：Portal 与本机同 IP、不同端口时也必须判为异主机。
 std::string HostOf(const std::string& url) {
     size_t scheme = url.find("://");
     if (scheme == std::string::npos) return {};
     size_t start = scheme + 3;
     size_t end = url.find('/', start);
-    return url.substr(start, end == std::string::npos ? std::string::npos
-                                                      : end - start);
+    std::string host = url.substr(start, end == std::string::npos ? std::string::npos
+                                                                  : end - start);
+    if (host.empty()) return {};
+
+    size_t at = host.rfind('@');
+    if (at != std::string::npos) host = host.substr(at + 1);
+
+    std::string scheme_str = url.substr(0, scheme);
+    for (char& c : scheme_str) c = (char)std::tolower((unsigned char)c);
+    size_t colon = host.rfind(':');
+    if (colon != std::string::npos && host.find('[') == std::string::npos) {
+        const std::string port = host.substr(colon + 1);
+        if ((scheme_str == "http" && port == "80") ||
+            (scheme_str == "https" && port == "443"))
+            host = host.substr(0, colon);
+    }
+
+    for (char& c : host) c = (char)std::tolower((unsigned char)c);
+    return host;
 }
 
 }  // namespace
@@ -4317,7 +4361,11 @@ ProbeResult ProbeOnce(const Settings& s) {
     HttpRequest req;
     req.url = s.probe_url;
     req.method = "GET";
-    req.timeout_ms = (s.probe_timeout_seconds > 0 ? s.probe_timeout_seconds : 3) * 1000;
+    // 夹取上限防 int 溢出（UI 可能被填入极大值）；<=0 走 3 秒兜底
+    int secs = s.probe_timeout_seconds;
+    if (secs <= 0) secs = 3;
+    if (secs > 600) secs = 600;
+    req.timeout_ms = secs * 1000;
     req.follow_redirects = false;
 
     std::string err;
@@ -4352,7 +4400,9 @@ ProbeResult ProbeOnce(const Settings& s) {
         // 同主机重定向：能收到重定向本身就说明目标服务可达，网络是通的
         // （Portal 劫持的典型形态是重定向到内网 Portal 地址，即不同主机）。
         r.state = NetState::Online;
-        r.message = "重定向但目标主机相同，判定为在线：" + loc_abs;
+        r.message = r.response.location.empty()
+            ? "3xx 无 Location 头，按可达处理"
+            : "重定向但目标主机相同，判定为在线：" + loc_abs;
         return r;
     }
 
@@ -4372,6 +4422,8 @@ ProbeResult ProbeOnce(const Settings& s) {
         return r;
     }
 
+    // 4xx/5xx 等其余状态：spec §6.1 未定义，取偏保守的 PortalDetected——
+    // 宁可多试一次登录，也不把可疑响应当在线
     r.state = NetState::PortalDetected;
     r.message = "HTTP " + std::to_string(status);
     return r;
