@@ -2861,6 +2861,10 @@ git commit -m "feat: 厂商识别，Dr.COM 优先于锐捷判定"
 
 **SelectProbeTarget 的规则**（spec §6.1）：按优先级 `www.msftncsi.com` → `ncsi.txt` → `detectportal.firefox.com` → `success.txt` → `captive.apple.com` 匹配黑名单条目；命中即产出对应 URL 与期望正文。无一命中返回 false。
 
+> ⚠ 实现注记（2026-10-13 复核）：实际候选顺序为 `msftncsi → detectportal → ncsi.txt → success.txt → captive.apple`
+> （路径型候选 `ncsi.txt`/`success.txt` 后置为兜底）。仅当清单**同时含 `ncsi.txt` 与 `detectportal` 但无 msftncsi 域名**时，
+> 与上面字面分组顺序不同（会选 firefox 而非 msftncsi）——两者均为清单内合法地址，且实测真实清单首个候选即命中，不受影响。
+
 - [ ] **Step 1: 写失败测试**
 
 `tests/carrier_test.cpp`:
