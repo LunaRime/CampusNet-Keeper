@@ -27,6 +27,7 @@ add_library(cnk_core STATIC
   src/native/auth/CustomTemplateAuth.cpp
   src/native/auth/Stubs.cpp
   src/native/core/ProbeTarget.cpp
+  src/native/core/Probe.cpp
   src/native/core/Template.cpp
   src/native/sim/SimServer.cpp
 )
@@ -54,6 +55,7 @@ add_executable(cnk_tests
   tests/auth_factory_test.cpp
   tests/drcom_auth_test.cpp
   tests/custom_auth_test.cpp
+  tests/probe_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
