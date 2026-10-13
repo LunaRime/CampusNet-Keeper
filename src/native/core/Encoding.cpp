@@ -1,4 +1,5 @@
 #include "core/Encoding.h"
+#include "core/Log.h"
 #include <windows.h>
 #include <algorithm>
 #include <cctype>
@@ -27,19 +28,28 @@ UINT CodePageFor(const std::string& charset) {
         cs == "cp936" || cs == "x-gbk") return 936;
     if (cs == "big5") return 950;
     if (cs == "iso-8859-1" || cs == "latin1") return 28591;
-    return CP_UTF8;  // 未知编码按 UTF-8 兜底
+    return 0;  // 0 = 未知编码（非空且不认识），由调用方决定兜底策略
 }
 
 }  // namespace
 
 std::string ParseCharset(const std::string& content_type) {
     std::string lower = ToLower(content_type);
-    size_t pos = lower.find("charset=");
-    if (pos == std::string::npos) return {};
+    size_t pos = 0;
+    for (;;) {
+        pos = lower.find("charset=", pos);
+        if (pos == std::string::npos) return {};
+        // 要求 'charset' 前是字符串开头或参数分隔符，避免 xcharset= 之类的名称误命中
+        if (pos == 0) break;
+        const char prev = lower[pos - 1];
+        if (prev == ';' || prev == ' ' || prev == '\t' || prev == ',') break;
+        pos += 8;
+    }
     std::string val = content_type.substr(pos + 8);
     val = Trim(val);
-    if (!val.empty() && val.front() == '"') {
-        size_t end = val.find('"', 1);
+    if (!val.empty() && (val.front() == '"' || val.front() == '\'')) {
+        const char quote = val.front();
+        size_t end = val.find(quote, 1);
         val = val.substr(1, end == std::string::npos ? std::string::npos : end - 1);
     } else {
         size_t end = val.find_first_of("; \t\r\n");
@@ -51,6 +61,12 @@ std::string ParseCharset(const std::string& content_type) {
 std::string ToUtf8(const std::string& bytes, const std::string& charset) {
     if (bytes.empty()) return {};
     UINT cp = CodePageFor(charset);
+    if (cp == 0) {
+        // 未知字符集按 UTF-8 兜底（契约）。记一条 debug 日志：乱码类问题
+        // 十有八九是这里发生的，日志提供了最小的排查线索。
+        LogDebug("未知字符集 \"" + charset + "\"，按 UTF-8 处理");
+        cp = CP_UTF8;
+    }
     if (cp == CP_UTF8) return bytes;
 
     int n = MultiByteToWideChar(cp, 0, bytes.c_str(), (int)bytes.size(),

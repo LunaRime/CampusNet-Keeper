@@ -37,14 +37,36 @@ bool SplitHostPort(const std::string& url, std::string& scheme_host,
         path_start == std::string::npos ? std::string::npos : path_start - host_start);
     if (authority.empty()) return false;
 
-    const size_t colon = authority.rfind(':');
-    if (colon != std::string::npos) {
-        scheme_host = url.substr(0, host_start) + authority.substr(0, colon);
-        port = authority.substr(colon + 1);
+    // authority = [userinfo@]host[:port]，host 可为 [IPv6 字面量]。
+    // 先剥 userinfo（RFC 3986 中 '@' 不属于 userinfo 字符集，取最后一个即可）。
+    std::string hostport = authority;
+    const size_t at = hostport.rfind('@');
+    if (at != std::string::npos) hostport = hostport.substr(at + 1);
+    if (hostport.empty()) return false;
+
+    std::string host, port_str;
+    if (hostport.front() == '[') {
+        // IPv6 字面量：冒号在括号内不构成端口分隔
+        const size_t close = hostport.find(']');
+        if (close == std::string::npos) return false;  // 未闭合 = 畸形
+        host = hostport.substr(0, close + 1);
+        if (close + 1 < hostport.size()) {
+            if (hostport[close + 1] != ':') return false;
+            port_str = hostport.substr(close + 2);
+        }
     } else {
-        scheme_host = url.substr(0, host_start) + authority;
-        port = fallback_port;
+        const size_t colon = hostport.rfind(':');
+        if (colon != std::string::npos) {
+            host = hostport.substr(0, colon);
+            port_str = hostport.substr(colon + 1);
+        } else {
+            host = hostport;
+        }
     }
+    if (host.empty()) return false;
+
+    scheme_host = url.substr(0, host_start) + host;
+    port = port_str.empty() ? fallback_port : port_str;
     return true;
 }
 

@@ -7262,7 +7262,14 @@ git commit -m "feat: BCrypt 哈希工具与深澜 srun 认证（未实测）"
 1. 从 `portal_body` 中找第一个 `<form>`，取其 `action` 与 `method`
 2. 收集表单内所有 `<input>` 的 `name` 与 `value`
 3. 按上表匹配用户名字段与密码字段，填入凭据；运营商字段填入 `IspSuffix`
-4. `action` 为相对路径时相对 `auth_url` 解析；为空时用 `auth_url` 本身
+4. `action` 为相对路径时解析为绝对 URL；为空时用 `auth_url` 本身。
+   **⚠ 审阅注记（2026-10-13，任务 5 审阅发现）**：解析基准应**优先取 `NetContext.portal_url`**
+   （表单所在页面的 URL，与 spec §4.2「relative action 相对 Portal **页面** URL 解析」对齐），
+   仅在其为空时退回 `auth_url`。另注意 `ResolveUrl`（任务 5）对不以 `/` 开头的 path-relative
+   action 按 base 的 **origin** 拼接，非 RFC 3986 目录语义（见 `core/Url.h` 警示）：本项目
+   实测 Portal 为根路径部署、action 是 `/eportal/?...` 根相对，结果正确；但若目标站点页面位于
+   子路径且 action 为 path-relative（如 `doLogin.jsp`），会丢目录前缀 —— 届时需扩展
+   `ResolveUrl` 支持目录解析，或在调用处显式处理
 5. 提交方式取 `method`（默认 POST）
 6. 成功判定：响应含 `成功` / `success` / `result":1` 之一；否则交由上层探测判定
 7. **找不到 `<form>`** 时返回明确失败，提示用户改用自定义模板
@@ -7617,6 +7624,7 @@ public:
             body += UrlEncode(pairs[i].first) + "=" + UrlEncode(pairs[i].second);
         }
 
+        // ⚠ 解析基准见「行为」第 4 条审阅注记：优先 ctx.portal_url，其次 p.auth_url
         r.request_url = ResolveUrl(form.action, p.auth_url);
         r.request_body = body;
 

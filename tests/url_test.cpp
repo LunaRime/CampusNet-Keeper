@@ -43,6 +43,27 @@ TEST_CASE("SplitHostPort 对畸形 URL 返回 false") {
     CHECK_FALSE(cnk::SplitHostPort("", host, port, "80"));
 }
 
+TEST_CASE("SplitHostPort 处理 IPv6 字面量与 userinfo") {
+    std::string host, port;
+    REQUIRE(cnk::SplitHostPort("http://[::1]:801/x", host, port, "80"));
+    CHECK(host == "http://[::1]");
+    CHECK(port == "801");
+
+    std::string host2, port2;
+    REQUIRE(cnk::SplitHostPort("http://[::1]/x", host2, port2, "80"));
+    CHECK(host2 == "http://[::1]");
+    CHECK(port2 == "80");
+
+    std::string host3, port3;
+    REQUIRE(cnk::SplitHostPort("http://user@10.0.0.1:801/", host3, port3, "80"));
+    CHECK(host3 == "http://10.0.0.1");
+    CHECK(port3 == "801");
+
+    // 未闭合的 '[' 是畸形，不得静默返回错误结果
+    std::string host4, port4;
+    CHECK_FALSE(cnk::SplitHostPort("http://[::1", host4, port4, "80"));
+}
+
 TEST_CASE("ResolveUrl 处理绝对、根相对与路径相对") {
     CHECK(cnk::ResolveUrl("http://a/b", "http://x/") == "http://a/b");
     CHECK(cnk::ResolveUrl("/doLogin", "http://10.0.0.1/portal/")
