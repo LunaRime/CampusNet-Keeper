@@ -19,6 +19,18 @@ TEST_CASE("ExpandTemplate 对空模板返回空") {
     CHECK(cnk::ExpandTemplate("", {}) == "");
 }
 
+TEST_CASE("ExpandTemplate 边界：未闭合/空键/嵌套/值内花括号") {
+    std::map<std::string, std::string> vars = {{"a", "1"}, {"w", "p{w}d"}};
+    // 未闭合的 '{' 起整段原样保留
+    CHECK(cnk::ExpandTemplate("x{y", vars) == "x{y");
+    // 空键不做替换，原样保留
+    CHECK(cnk::ExpandTemplate("{}", vars) == "{}");
+    // 嵌套/畸形：以首个 '}' 为界，查不到则整段原样保留（内外层都不展开）
+    CHECK(cnk::ExpandTemplate("{{a}}", vars) == "{{a}}");
+    // 替换值中的花括号不再递归展开
+    CHECK(cnk::ExpandTemplate("{w}", vars) == "p{w}d");
+}
+
 TEST_CASE("自定义模板能对模拟服务器登录成功") {
     cnk::SimServer srv;
     cnk::SimOptions o;
@@ -36,6 +48,35 @@ TEST_CASE("自定义模板能对模拟服务器登录成功") {
     p.custom_template.url = srv.BaseUrl() + "/eportal/?c=ACSetting&a=Login";
     p.custom_template.body = "DDDDD={username}&upass={password}";
     p.custom_template.success_regex = "Dr\\.COMWebLoginID_3";
+
+    auto auth = cnk::CreateAuth(cnk::Vendor::Unknown, p);
+    cnk::NetContext ctx;
+    auto r = auth->Login(p, ctx);
+    CHECK(r.success);
+    CHECK(r.request_body.find("DDDDD=carol") != std::string::npos);
+    srv.Stop();
+}
+
+TEST_CASE("302 跳转时成功正则也匹配 Location 头") {
+    // 与 DrcomAuth 的判定维度保持一致：302 场景下成功标志可能只出现在
+    // Location 头（body 为空），正则应同时匹配 Location
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    o.fail_mode = 3;
+    o.redirect_location = "http://portal/success-page.htm";
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::Profile p;
+    p.vendor = "custom";
+    p.username = "u";
+    p.password = "p";
+    p.custom_template.method = "POST";
+    p.custom_template.url = srv.BaseUrl() + "/eportal/?c=ACSetting&a=Login";
+    p.custom_template.body = "DDDDD={username}&upass={password}";
+    p.custom_template.success_regex = "success-page";
 
     auto auth = cnk::CreateAuth(cnk::Vendor::Unknown, p);
     cnk::NetContext ctx;
