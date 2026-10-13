@@ -28,7 +28,7 @@ bool SingleInstance::Acquire() {
 
 void SingleInstance::Release() {
     if (!handle_) return;
-    CloseHandle((HANDLE)handle_);
+    CloseHandle(handle_);
     handle_ = nullptr;
 }
 

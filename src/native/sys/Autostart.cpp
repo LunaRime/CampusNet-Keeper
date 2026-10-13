@@ -32,8 +32,9 @@ std::string ExecutablePath() {
 bool SetAutostart(bool enable, std::string& error) {
     error.clear();
     HKEY key = nullptr;
+    // 启用与禁用都只需写权限（删除值同样属于写操作）
     LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0,
-                            KEY_SET_VALUE | KEY_QUERY_VALUE, &key);
+                            KEY_SET_VALUE, &key);
     if (rc != ERROR_SUCCESS) {
         error = "无法打开自启动注册表项，错误码 " + std::to_string(rc);
         return false;
@@ -80,8 +81,27 @@ bool IsAutostartEnabled() {
         return false;
     DWORD type = 0, size = 0;
     LONG rc = RegQueryValueExW(key, kValueName, nullptr, &type, nullptr, &size);
+    if (rc != ERROR_SUCCESS || size == 0 || type != REG_SZ) {
+        RegCloseKey(key);
+        return false;
+    }
+    std::wstring buf((size_t)(size / sizeof(wchar_t)), L'\0');
+    rc = RegQueryValueExW(key, kValueName, nullptr, nullptr,
+                          (BYTE*)buf.data(), &size);
     RegCloseKey(key);
-    return rc == ERROR_SUCCESS && size > 0;
+    if (rc != ERROR_SUCCESS) return false;
+    while (!buf.empty() && buf.back() == L'\0') buf.pop_back();
+
+    // 校验指向的确实是本程序：exe 被移动/改名后不得误报「已启用」
+    std::string exe = ExecutablePath();
+    if (exe.empty()) return false;
+    int wn = MultiByteToWideChar(CP_UTF8, 0, exe.c_str(), (int)exe.size(),
+                                 nullptr, 0);
+    if (wn <= 0) return false;
+    std::wstring wexe((size_t)wn, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, exe.c_str(), (int)exe.size(),
+                        wexe.data(), wn);
+    return buf == (L"\"" + wexe + L"\"");
 }
 
 }  // namespace cnk

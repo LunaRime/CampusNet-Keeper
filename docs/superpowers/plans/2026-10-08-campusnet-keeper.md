@@ -5884,12 +5884,14 @@ bool SingleInstance::ConsumeUiRequest() {
 }  // namespace cnk
 ```
 
-**说明**：`ConsumeUiRequest` 的完整实现依赖任务 17 的消息窗口。本任务先提供 `NotifyExistingInstance`（发送端）与互斥体（互斥保证），接收端在任务 17 的托盘消息循环中处理 `WM_APP+1`。因此本任务需在 `SingleInstance.h` 中额外导出消息常量：
+**说明**：`ConsumeUiRequest` 的完整实现依赖任务 17 的消息窗口。本任务先提供 `NotifyExistingInstance`（发送端）与互斥体（互斥保证），接收端在任务 17 的托盘消息循环中处理 `kMsgShowUiRequest`。因此本任务需在 `SingleInstance.h` 中额外导出消息常量：
 
 ```cpp
 // 守护进程应向 FindWindowW(L"CampusNetKeeperHidden", nullptr) 的窗口
 // 处理此消息：弹出设置界面。
-constexpr UINT kMsgShowUiRequest = WM_APP + 1;   // 定义在头文件的 cnk 命名空间内
+// ⚠ 审阅注记（2026-10-14）：编号定为 WM_APP+100 而非 WM_APP+1——
+// 后者是托盘图标回调消息（WM_TRAYICON）的惯用编号，会同窗口相撞。
+inline constexpr UINT kMsgShowUiRequest = WM_APP + 100;
 ```
 
 （头文件需 `#include <windows.h>` 才能用 `WM_APP`。）
@@ -6018,6 +6020,12 @@ git commit -m "feat: 单实例互斥体与开机自启注册"
 ---
 
 ## 任务 17：托盘图标与消息循环
+
+> **⚠ 审阅注记（2026-10-14，任务 16 审阅）**：隐藏消息窗口需要处理两个跨进程/跨完整性级别的细节：
+> 1. 窗口创建后调用 `ChangeWindowMessageFilterEx(hwnd, kMsgShowUiRequest, MSGFLT_ALLOW, nullptr)`
+>    放行「弹 UI 请求」——`kMsgShowUiRequest`（WM_APP+100）> WM_USER，提权启动或未来服务化时，
+>    第二实例的 `PostMessage` 会被 UIPI 静默拦截（FindWindow 不受影响，故障隐蔽难排查）；
+> 2. 托盘回调消息（WM_TRAYICON）用 `WM_APP + 1`，与 `kMsgShowUiRequest` 的编号已错开，勿再合并。
 
 **Files:**
 - Create: `src/native/tray/TrayIcon.h`

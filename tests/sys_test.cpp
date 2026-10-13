@@ -1,11 +1,13 @@
 #include "doctest.h"
 #include "sys/SingleInstance.h"
 #include "sys/Autostart.h"
+#include <filesystem>
 
 TEST_CASE("ExecutablePath 返回存在的文件") {
     std::string p = cnk::ExecutablePath();
     CHECK(p.size() > 0);
     CHECK(p.find(".exe") != std::string::npos);
+    CHECK(std::filesystem::exists(std::filesystem::u8path(p)));
 }
 
 TEST_CASE("互斥体可获取与释放") {
