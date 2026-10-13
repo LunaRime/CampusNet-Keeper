@@ -237,7 +237,7 @@ bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& er
         if (!ofs) { error = "写入临时配置文件失败"; return false; }
     }
     std::error_code ec;
-    fs::rename(tmp, fs::u8path(path), ec);  // MSVC 实现可覆盖已存在的目标
+    fs::rename(tmp, fs::u8path(path), ec);  // MSVC 的 rename 可覆盖已存在目标（依赖平台行为）
     if (ec) {
         // rename 失败（权限/占用等）时保留旧配置原样，只清理 .tmp 并报错。
         // 绝不能「先删旧配置再重试」：第二次 rename 若因同样原因失败，
@@ -292,7 +292,11 @@ bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error)
 
 bool ConfigLoad(AppConfig& out, std::string& error) {
     const std::string path = ConfigPath();
-    if (path.empty()) { error = "无法确定配置目录"; return false; }
+    if (path.empty()) {
+        out = AppConfig{};  // 与 ConfigLoadFrom 语义一致：失败时不向调用方留下旧值
+        error = "无法确定配置目录";
+        return false;
+    }
     return ConfigLoadFrom(path, out, error);
 }
 
