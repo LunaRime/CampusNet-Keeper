@@ -412,3 +412,38 @@ TEST_CASE("登录计数随请求累加") {
     CHECK(srv.LoginCount() == 2);
     srv.Stop();
 }
+
+TEST_CASE("sim_probe 在登录成功后模拟网络恢复") {
+    // 端到端验证「探测 → 劫持 → 登录 → 恢复」依赖该会话状态切换；
+    // 一旦被破坏，单测必须能发现（否则只有人工 E2E 才能暴露）
+    cnk::SimOptions opts;
+    opts.valid_user = "alice";
+    opts.valid_pass = "pw";
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(opts, err));
+
+    // 登录前：返回门户页（被劫持形态），且不含 nCSI 应答
+    std::string before = RawHttp(srv.Port(), "GET", "/sim_probe", "");
+    CHECK(before.find("Dr.COMWebLoginID_") != std::string::npos);
+    CHECK(before.find("Microsoft NCSI") == std::string::npos);
+    CHECK_FALSE(srv.LoggedIn());
+
+    // 失败的登录不得建立会话
+    RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=alice&upass=WRONG");
+    CHECK_FALSE(srv.LoggedIn());
+
+    // 成功登录后：切换为 nCSI 应答（网络恢复）
+    RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=alice&upass=pw");
+    CHECK(srv.LoggedIn());
+    std::string after = RawHttp(srv.Port(), "GET", "/sim_probe", "");
+    CHECK(after.find("Microsoft NCSI") != std::string::npos);
+
+    // 既有路径的行为不随会话状态变化
+    CHECK(RawHttp(srv.Port(), "GET", "/ncsi.txt", "")
+              .find("Microsoft NCSI") != std::string::npos);
+    CHECK(RawHttp(srv.Port(), "GET", "/", "")
+              .find("Dr.COMWebLoginID_") != std::string::npos);
+
+    srv.Stop();
+}

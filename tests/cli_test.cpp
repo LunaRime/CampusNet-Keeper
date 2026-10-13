@@ -73,3 +73,20 @@ TEST_CASE("末尾的 --config 无值时安全忽略而不崩溃") {
     CHECK(opts.mode == cnk::CliMode::ProbeNow);
     CHECK(opts.config_path.empty());
 }
+
+TEST_CASE("带值参数的空格分隔、无值安全与前缀吞噬回归") {
+    // 空格分隔形式
+    auto o1 = cnk::ParseCli({"--simulate-user", "bob", "--config", "a.json"});
+    CHECK(o1.simulate_user == "bob");
+    CHECK(o1.config_path == "a.json");
+
+    // 末尾无值：安全忽略
+    auto o2 = cnk::ParseCli({"--probe-now", "--simulate-user"});
+    CHECK(o2.mode == cnk::CliMode::ProbeNow);
+    CHECK(o2.simulate_user.empty());
+
+    // 前缀吞噬回归：--configuration 不得被当作 --config
+    auto o3 = cnk::ParseCli({"--version", "--configuration=x"});
+    CHECK(o3.config_path.empty());
+    CHECK(o3.unknown.size() == 1);
+}

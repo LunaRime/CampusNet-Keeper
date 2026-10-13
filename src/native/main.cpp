@@ -157,7 +157,8 @@ int RunTestLogin(cnk::AppConfig& cfg) {
 int RunDaemon(cnk::AppConfig& cfg) {
     cnk::Scheduler sch(cfg);
     PrintLine("CampusNet-Keeper 守护模式已启动，按 Ctrl+C 退出。");
-    PrintLine("（任务 16-17 会替换为托盘驻留；当前为控制台轮询）");
+    PrintLine("（任务 16-17 会替换为托盘驻留并接入地址变更监听；");
+    PrintLine("  当前为控制台轮询，网络切换的即时探测能力尚未接线。）");
     for (;;) {
         sch.Tick();
         std::printf("\r状态: %-16s %s          ",
@@ -209,6 +210,10 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
     cfg.settings.probe_timeout_seconds = 2;
     for (auto& p : cfg.profiles) {
         p.auth_url = sim.server.BaseUrl() + "/";
+        // 档案存在但凭据为空时（如拷贝来的配置）用模拟凭据填充内存副本，
+        // 保证 --simulate 的登录链路可测；profiles 循环只改内存，不写盘
+        if (p.username.empty()) p.username = so.valid_user;
+        if (p.password.empty()) p.password = so.valid_pass;
         p.custom_template.url = sim.server.BaseUrl()
                                 + "/eportal/?c=ACSetting&a=Login";
         p.custom_template.body = "DDDDD={username}&upass={password}";
@@ -252,6 +257,15 @@ int wmain(int, wchar_t**) {
         return 0;
     }
 
+    // 给了参数却一个都不认识且未显式指定任何模式：疑似拼写错误，
+    // 绝不能静默落入守护模式（否则是"按了没反应"的脚枪）
+    if (opts.mode == cnk::CliMode::Daemon && !args.empty() && !opts.unknown.empty()) {
+        PrintLine("无法识别的参数：");
+        for (const auto& u : opts.unknown) PrintLine("  " + u);
+        PrintLine("运行 --help 查看用法。");
+        return 64;  // 用法错误
+    }
+
     std::string log_dir = cnk::AppDataSubDir("logs");
     if (!log_dir.empty())
         cnk::LogInit(log_dir, cnk::LogLevel::Info, 512 * 1024, 3);
@@ -274,8 +288,13 @@ int wmain(int, wchar_t**) {
         case cnk::CliMode::ProbeNow:  rc = RunProbeNow(cfg); break;
         case cnk::CliMode::Detect:    rc = RunDetect(cfg); break;
         case cnk::CliMode::TestLogin: rc = RunTestLogin(cfg); break;
+        case cnk::CliMode::Ui:
+            // UI 形态在任务 23-26 实现；当前明确提示而不是静默进入守护循环
+            PrintLine("设置界面将在后续版本提供（当前为 M1 命令行形态）。");
+            PrintLine("可先用 --probe-now / --test-login / --detect 诊断，或直接运行守护。");
+            rc = 0;
+            break;
         case cnk::CliMode::Daemon:
-        case cnk::CliMode::Ui:        // UI 形态在任务 23-26 实现，当前回落到守护
         default:                      rc = RunDaemon(cfg); break;
     }
 

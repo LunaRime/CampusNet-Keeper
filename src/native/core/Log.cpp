@@ -72,7 +72,9 @@ bool IsSecretKey(const std::string& key) {
     static const char* kKeys[] = {
         "upass", "password", "pwd", "pass", "user_password", "passwd",
         // Dr.COM 的账号字段：学号属敏感信息，日志/诊断输出里与密码同等对待
-        "ddddd"
+        "ddddd",
+        // 通用表单的账号字段：任务 21 的 GenericFormAuth 会用它提交学号
+        "username"
     };
     // ASCII 大小写折叠后比较，键名大小写不影响脱敏。
     std::string lower;

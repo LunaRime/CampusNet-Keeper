@@ -29,6 +29,9 @@ TEST_CASE("RedactSecrets 键名大小写不敏感") {
     CHECK(cnk::RedactSecrets("User_Password=q") == "User_Password=***");
     CHECK(cnk::RedactSecrets("PASSWD=q") == "PASSWD=***");
     CHECK(cnk::RedactSecrets("ddddd=alice") == "ddddd=***");
+    // 通用表单的账号字段（任务 21 会用它提交学号）
+    CHECK(cnk::RedactSecrets("username=stu001&domain=cmcc")
+          == "username=***&domain=cmcc");
 }
 
 TEST_CASE("日志写入后可被 LogTail 读回") {
