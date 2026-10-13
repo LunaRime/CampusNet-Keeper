@@ -2512,16 +2512,15 @@ bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& er
         if (!ofs) { error = "写入临时配置文件失败"; return false; }
     }
     std::error_code ec;
+    // MSVC 的 rename 可覆盖已存在的目标。失败（权限/占用等）时保留旧配置原样，
+    // 只清理 .tmp 并报错 —— 绝不能「先删旧配置再重试」，否则第二次 rename 若
+    // 同样失败，用户配置将彻底丢失（任务 6 审阅 P1，回归见 config_io_test）。
     fs::rename(tmp, fs::u8path(path), ec);
     if (ec) {
-        fs::remove(fs::u8path(path), ec);
-        fs::rename(tmp, fs::u8path(path), ec);
-        if (ec) {
-            std::error_code e3;
-            fs::remove(tmp, e3);  // 不留临时文件
-            error = "替换配置文件失败";
-            return false;
-        }
+        std::error_code e3;
+        fs::remove(tmp, e3);  // 不留临时文件
+        error = "替换配置文件失败: " + ec.message();
+        return false;
     }
     return true;
 }
@@ -2547,7 +2546,11 @@ bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error)
         fs::path bak = fs::u8path(path + ".bak");
         std::error_code e2;
         fs::copy_file(fs::u8path(path), bak, fs::copy_options::overwrite_existing, e2);
-        LogError("配置文件损坏，已备份到 " + std::string(path) + ".bak：" + parse_err);
+        if (e2) {
+            LogError("配置文件损坏，且备份失败（" + e2.message() + "），已回落默认配置：" + parse_err);
+        } else {
+            LogError("配置文件损坏，已备份到 " + path + ".bak：" + parse_err);
+        }
         out = AppConfig{};
         error = parse_err;
         return false;
@@ -2556,11 +2559,15 @@ bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error)
 }
 
 bool ConfigSave(const AppConfig& cfg, std::string& error) {
-    return ConfigSaveTo(ConfigPath(), cfg, error);
+    const std::string path = ConfigPath();
+    if (path.empty()) { error = "无法确定配置目录"; return false; }
+    return ConfigSaveTo(path, cfg, error);
 }
 
 bool ConfigLoad(AppConfig& out, std::string& error) {
-    return ConfigLoadFrom(ConfigPath(), out, error);
+    const std::string path = ConfigPath();
+    if (path.empty()) { error = "无法确定配置目录"; return false; }
+    return ConfigLoadFrom(path, out, error);
 }
 ```
 
