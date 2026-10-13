@@ -20,6 +20,7 @@ add_library(cnk_core STATIC
   src/native/core/Url.cpp
   src/native/store/Dpapi.cpp
   src/native/store/Config.cpp
+  src/native/auth/Detector.cpp
   src/native/sim/SimServer.cpp
 )
 target_include_directories(cnk_core PUBLIC src/native third_party)
@@ -40,6 +41,7 @@ add_executable(cnk_tests
   tests/url_test.cpp
   tests/config_test.cpp
   tests/config_io_test.cpp
+  tests/detector_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
