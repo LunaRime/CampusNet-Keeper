@@ -1,12 +1,22 @@
 #include "auth/Carrier.h"
 #include "json.hpp"
-#include <cstdlib>
 
 using json = nlohmann::json;
 
 namespace cnk {
 
 namespace {
+
+// 字段取值：字符串原样返回；数值型（如 "defaultID":1）转字符串；其他类型返回空。
+// 不能直接用 nlohmann 的 value()：类型不匹配会抛异常，而服务器下发数值型
+// id 是合法变体，曾导致解析直接终止进程（审阅实测）。
+std::string StrField(const json& j, const char* key) {
+    if (!j.contains(key)) return {};
+    const auto& v = j[key];
+    if (v.is_string()) return v.get<std::string>();
+    if (v.is_number()) return v.dump();
+    return {};
+}
 
 // 找到 carrier='...' 或 carrier="..." 的赋值，返回引号内的原文
 bool ExtractCarrierLiteral(const std::string& body, std::string& out) {
@@ -48,29 +58,30 @@ bool ParseCarrier(const std::string& utf8_body, CarrierList& out) {
     std::string literal;
     if (!ExtractCarrierLiteral(utf8_body, literal)) return false;
 
-    json j;
+    // 解析与字段提取整体保护：任何 JSON 形态问题（非法语法、字段类型异常）
+    // 都转为普通 false，绝不抛出（守护进程依赖本函数永不崩溃）
     try {
-        j = json::parse(literal);
-    } catch (const std::exception&) {
-        return false;
-    }
-    if (!j.is_object() || !j.contains("yys") || !j["yys"].is_object()) return false;
+        json j = json::parse(literal);
+        if (!j.is_object() || !j.contains("yys") || !j["yys"].is_object()) return false;
 
-    const auto& yys = j["yys"];
-    out.title = yys.value("title", std::string{});
-    out.default_id = yys.value("defaultID", std::string{});
-    if (out.default_id.empty() && yys.contains("defaultid"))
-        out.default_id = yys.value("defaultid", std::string{});
+        const auto& yys = j["yys"];
+        out.title = StrField(yys, "title");
+        out.default_id = StrField(yys, "defaultID");
+        if (out.default_id.empty()) out.default_id = StrField(yys, "defaultid");
 
-    if (yys.contains("data") && yys["data"].is_array()) {
-        for (const auto& item : yys["data"]) {
-            if (!item.is_object()) continue;
-            CarrierOption o;
-            o.id = item.value("id", std::string{});
-            o.name = item.value("name", std::string{});
-            o.suffix = item.value("suffix", std::string{});
-            out.options.push_back(o);
+        if (yys.contains("data") && yys["data"].is_array()) {
+            for (const auto& item : yys["data"]) {
+                if (!item.is_object()) continue;
+                CarrierOption o;
+                o.id = StrField(item, "id");
+                o.name = StrField(item, "name");
+                o.suffix = StrField(item, "suffix");
+                out.options.push_back(o);
+            }
         }
+    } catch (const std::exception&) {
+        out = CarrierList{};
+        return false;
     }
     return !out.options.empty();
 }

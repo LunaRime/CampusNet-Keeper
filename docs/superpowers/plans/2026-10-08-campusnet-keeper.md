@@ -3015,12 +3015,32 @@ namespace cnk {
 
 namespace {
 
-// 找到 carrier='...' 或 carrier="..." 的赋值，返回括号内的原文
+// 字段取值：字符串原样返回；数值型（如 "defaultID":1）转字符串；其他类型返回空。
+std::string StrField(const json& j, const char* key) {
+    if (!j.contains(key)) return {};
+    const auto& v = j[key];
+    if (v.is_string()) return v.get<std::string>();
+    if (v.is_number()) return v.dump();
+    return {};
+}
+
+// 找到 carrier='...' 或 carrier="..." 的赋值，返回引号内的原文
 bool ExtractCarrierLiteral(const std::string& body, std::string& out) {
     size_t pos = body.find("carrier");
     while (pos != std::string::npos) {
         size_t eq = body.find('=', pos + 7);
         if (eq == std::string::npos) return false;
+
+        // 'carrier' 与 '=' 之间必须只有空白，防 carrierXXX= 型误命中
+        bool between_ok = true;
+        for (size_t k = pos + 7; k < eq; ++k) {
+            if (body[k] != ' ' && body[k] != '\t') { between_ok = false; break; }
+        }
+        if (!between_ok) {
+            pos = body.find("carrier", pos + 7);
+            continue;
+        }
+
         // 跳过 = 与引号之间的空白
         size_t i = eq + 1;
         while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) ++i;
@@ -3044,29 +3064,31 @@ bool ParseCarrier(const std::string& utf8_body, CarrierList& out) {
     std::string literal;
     if (!ExtractCarrierLiteral(utf8_body, literal)) return false;
 
-    json j;
+    // ⚠ 审阅注记（2026-10-13）：字段取值不得直接用 nlohmann 的 value() ——
+    // 服务器下发数值型 id/defaultID（如 "defaultID":1）时它会抛未捕获异常
+    // 并终止进程（已实测复现）。用 StrField 兼容字符串/数值，并整体兜底 try/catch。
     try {
-        j = json::parse(literal);
-    } catch (const std::exception&) {
-        return false;
-    }
-    if (!j.is_object() || !j.contains("yys") || !j["yys"].is_object()) return false;
+        json j = json::parse(literal);
+        if (!j.is_object() || !j.contains("yys") || !j["yys"].is_object()) return false;
 
-    const auto& yys = j["yys"];
-    out.title = yys.value("title", std::string{});
-    out.default_id = yys.value("defaultID", std::string{});
-    if (out.default_id.empty() && yys.contains("defaultid"))
-        out.default_id = yys.value("defaultid", std::string{});
+        const auto& yys = j["yys"];
+        out.title = StrField(yys, "title");
+        out.default_id = StrField(yys, "defaultID");
+        if (out.default_id.empty()) out.default_id = StrField(yys, "defaultid");
 
-    if (yys.contains("data") && yys["data"].is_array()) {
-        for (const auto& item : yys["data"]) {
-            if (!item.is_object()) continue;
-            CarrierOption o;
-            o.id = item.value("id", std::string{});
-            o.name = item.value("name", std::string{});
-            o.suffix = item.value("suffix", std::string{});
-            out.options.push_back(o);
+        if (yys.contains("data") && yys["data"].is_array()) {
+            for (const auto& item : yys["data"]) {
+                if (!item.is_object()) continue;
+                CarrierOption o;
+                o.id = StrField(item, "id");
+                o.name = StrField(item, "name");
+                o.suffix = StrField(item, "suffix");
+                out.options.push_back(o);
+            }
         }
+    } catch (const std::exception&) {
+        out = CarrierList{};
+        return false;
     }
     return !out.options.empty();
 }
@@ -3126,17 +3148,30 @@ struct Candidate {
     const char* expect;
 };
 
-// 优先级顺序即数组顺序
+// 优先级顺序即数组顺序：先域名型候选（msftncsi / firefox），
+// 再路径型候选作为清单只给路径时的兜底，最后 captive.apple。
+// ⚠ 审阅注记（2026-10-13）：原表缺 ncsi.txt 独立层级、captive.apple 位置也与 spec §6.1 不符，已修正
 const Candidate kCandidates[] = {
     {"msftncsi",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
     {"detectportal",  "http://detectportal.firefox.com/success.txt",   "success"},
-    {"captive.apple", "http://captive.apple.com/hotspot-detect.html",  "Success"},
+    {"ncsi.txt",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
     {"success.txt",   "http://detectportal.firefox.com/success.txt",   "success"},
+    {"captive.apple", "http://captive.apple.com/hotspot-detect.html",  "Success"},
 };
 
+// 域名/标识符边界匹配：needle 必须位于串首或 '.'、'/' 之后，且后随 '.' 或串尾。
+// 纯子串匹配会让 evil-msftncsi.com 误命中 msftncsi。
 bool ListContains(const std::vector<std::string>& list, const std::string& needle) {
-    for (const auto& s : list)
-        if (s.find(needle) != std::string::npos) return true;
+    for (const auto& s : list) {
+        size_t p = s.find(needle);
+        while (p != std::string::npos) {
+            const bool left_ok = (p == 0) || (s[p - 1] == '.') || (s[p - 1] == '/');
+            const size_t end = p + needle.size();
+            const bool right_ok = (end == s.size()) || (s[end] == '.');
+            if (left_ok && right_ok) return true;
+            p = s.find(needle, p + 1);
+        }
+    }
     return false;
 }
 
@@ -3145,12 +3180,23 @@ bool ListContains(const std::vector<std::string>& list, const std::string& needl
 bool ParseVisitBlacklist(const std::string& utf8_body,
                          std::vector<std::string>& out) {
     out.clear();
-    size_t pos = utf8_body.find("visit_blacklist");
+    // ⚠ 审阅注记（2026-10-13）：真实响应是 JSONP dr1003({"visit_blacklist":[...]})，
+    // 键值之间是**冒号**——原实现只认 '='，对真实数据永远返回 false（曾被单测掩盖）。
+    // 兼容两种形态：JSONP/JSON 的 "visit_blacklist":[ ... ] 与页面内 JS 的 visit_blacklist=[ ... ]
+    static const char kKey[] = "visit_blacklist";
+    size_t pos = utf8_body.find(kKey);
     if (pos == std::string::npos) return false;
-    size_t eq = utf8_body.find('=', pos);
-    if (eq == std::string::npos) return false;
-    size_t lb = utf8_body.find('[', eq);
+    size_t lb = utf8_body.find('[', pos);
     if (lb == std::string::npos) return false;
+
+    // 键与 '[' 之间只允许分隔符、引号与空白，防跨越大段文本误配对
+    for (size_t k = pos + sizeof(kKey) - 1; k < lb; ++k) {
+        const char c = utf8_body[k];
+        if (c != '"' && c != '\'' && c != ':' && c != '=' &&
+            c != ' ' && c != '\t' && c != '\r' && c != '\n')
+            return false;
+    }
+
     size_t rb = utf8_body.find(']', lb);
     if (rb == std::string::npos) return false;
 
@@ -3169,6 +3215,7 @@ bool ParseVisitBlacklist(const std::string& utf8_body,
 }
 
 bool SelectProbeTarget(const std::vector<std::string>& blacklist, ProbeTarget& out) {
+    out = ProbeTarget{};  // 失败时不残留上一次的选中结果
     if (blacklist.empty()) return false;
     for (const auto& c : kCandidates) {
         if (ListContains(blacklist, c.key)) {

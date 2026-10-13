@@ -41,3 +41,16 @@ TEST_CASE("DefaultCarrierIndex 返回默认项下标") {
     REQUIRE(cnk::ParseCarrier(kPage, list));
     CHECK(cnk::DefaultCarrierIndex(list) == 0);
 }
+
+TEST_CASE("数值型 defaultID 与 id 不崩溃且被转为字符串") {
+    // 服务器可能下发数值型字段（JSON 合法变体）；早期实现会因
+    // nlohmann value() 的类型检查抛出未捕获异常并终止进程（审阅实测复现）
+    cnk::CarrierList list;
+    REQUIRE(cnk::ParseCarrier(
+        "carrier='{\"yys\":{\"title\":\"T\",\"data\":[{\"id\":1,"
+        "\"name\":\"A\",\"suffix\":\"\"}],\"defaultID\":1}}';", list));
+    REQUIRE(list.options.size() == 1);
+    CHECK(list.options[0].id == "1");
+    CHECK(list.default_id == "1");
+    CHECK(cnk::DefaultCarrierIndex(list) == 0);
+}
