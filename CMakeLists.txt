@@ -28,12 +28,14 @@ add_library(cnk_core STATIC
   src/native/auth/Stubs.cpp
   src/native/core/ProbeTarget.cpp
   src/native/core/Probe.cpp
+  src/native/core/Scheduler.cpp
+  src/native/core/NetworkChange.cpp
   src/native/core/Template.cpp
   src/native/sim/SimServer.cpp
 )
 target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
-  winhttp crypt32 bcrypt shell32 advapi32 ole32 user32 ws2_32)
+  winhttp crypt32 bcrypt shell32 advapi32 ole32 user32 ws2_32 iphlpapi)
 
 add_executable(CampusNet-Keeper src/native/main.cpp)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
@@ -56,6 +58,7 @@ add_executable(cnk_tests
   tests/drcom_auth_test.cpp
   tests/custom_auth_test.cpp
   tests/probe_test.cpp
+  tests/scheduler_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
