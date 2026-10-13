@@ -24,7 +24,9 @@ public:
         }
 
         std::string scheme_host, port;
-        if (!SplitHostPort(p.auth_url, scheme_host, port, "801")) {
+        // spec §7.1：eportal HTTP 端口 801、HTTPS 端口 802；无显式端口时按 scheme 兜底
+        const bool https = p.auth_url.rfind("https://", 0) == 0;
+        if (!SplitHostPort(p.auth_url, scheme_host, port, https ? "802" : "801")) {
             r.message = "认证网址格式不正确：" + p.auth_url +
                         "（应形如 http://10.0.0.1/）";
             return r;
@@ -64,15 +66,45 @@ public:
         LogInfo("Dr.COM 登录响应 HTTP " + std::to_string(resp.status) +
                 "，正文 " + std::to_string(page.size()) + " 字节");
 
-        if (page.find("Dr.COMWebLoginID_3.htm") != std::string::npos ||
-            page.find("3.htm") != std::string::npos) {
+        // 4xx/5xx 是服务器错误页，其中的文本不构成有效的登录结果判定
+        if (resp.status >= 400) {
+            r.vendor_code = -1;
+            r.success = false;
+            r.message = "服务器返回错误状态码 " + std::to_string(resp.status) +
+                        "，将由网络探测确认实际状态";
+            return r;
+        }
+
+        const std::string& loc = resp.location;
+
+        // 完整标记可信度最高；Location 只认完整标记——短形会误伤
+        // http://x/error3.htm 这类无关 URL
+        const bool hit3_full =
+            page.find("Dr.COMWebLoginID_3.htm") != std::string::npos ||
+            loc.find("Dr.COMWebLoginID_3.htm") != std::string::npos;
+        const bool hit2_full =
+            page.find("Dr.COMWebLoginID_2.htm") != std::string::npos ||
+            loc.find("Dr.COMWebLoginID_2.htm") != std::string::npos;
+        // 短形标记仅用于正文（spec §7.2 的宽松判据，常见于跳转脚本）
+        const bool hit3 = hit3_full || page.find("3.htm") != std::string::npos;
+        const bool hit2 = hit2_full || page.find("2.htm") != std::string::npos;
+
+        // 两个方向同时命中（失败响应回显了含 authsuccess/authfail 的框架脚本，
+        // 真实首页即同时含两标记）时不猜，交探测裁决——乐观判成功会使
+        // 调度器跳过探测复验并绕过凭据错误的停止重试逻辑
+        if (hit3 && hit2) {
+            r.vendor_code = -1;
+            r.success = false;
+            r.message = "响应同时含成功与失败标志，将由网络探测确认实际状态";
+            return r;
+        }
+        if (hit3) {
             r.success = true;
             r.vendor_code = 3;
             r.message = "服务器返回登录成功";
             return r;
         }
-        if (page.find("Dr.COMWebLoginID_2.htm") != std::string::npos ||
-            page.find("2.htm") != std::string::npos) {
+        if (hit2) {
             r.vendor_code = 2;
             r.success = false;
             r.message = "服务器返回登录失败（账号或密码错误，或该账号不可用）";

@@ -262,7 +262,14 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         }
         bool user_ok = !opts.valid_user.empty() && user == opts.valid_user + opts.isp_suffix;
         bool pass_ok = !opts.valid_pass.empty() && pass == opts.valid_pass;
-        if (opts.fail_mode == 1 || !user_ok || !pass_ok) {
+        if (opts.fail_mode == 4) {
+            // 失败时回显完整登录页：框架脚本同时含成功与失败两个标志
+            //（真实登录页即有 authsuccess/authfail 两个变量定义）。
+            // 客户端必须因此返回「无法判定」（-1）交探测裁决，而不是乐观判成功。
+            resp_body = "<html><script>authsuccess='Dr.COMWebLoginID_3.htm';"
+                        "authfail='Dr.COMWebLoginID_2.htm';</script>"
+                        "<body>login failed</body></html>";
+        } else if (opts.fail_mode == 1 || !user_ok || !pass_ok) {
             resp_body = "<html><body><!--Dr.COMWebLoginID_2.htm-->login failed</body></html>";
         } else {
             resp_body = "<html><body><!--Dr.COMWebLoginID_3.htm-->"

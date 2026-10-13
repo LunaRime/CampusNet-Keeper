@@ -3532,7 +3532,10 @@ TEST_CASE("错误密码返回失败") {
     cnk::NetContext ctx;
     auto r = auth->Login(p, ctx);
     CHECK_FALSE(r.success);
-    CHECK(r.vendor_code == -1);
+    // ⚠ 审阅注记（2026-10-13）：原期望值 -1 与 spec §4.1「vendor_code = 厂商返回的
+    // 原始码」及三级判定语义矛盾（-1 是「无法判定」的保留值）；且任务 14 调度器以
+    // vendor_code==2 作为凭据错误「停止重试」的唯一信号，-1 会导致错误密码无限重试。
+    CHECK(r.vendor_code == 2);
     srv.Stop();
 }
 
@@ -3680,7 +3683,9 @@ public:
         }
 
         std::string scheme_host, port;
-        if (!SplitHostPort(p.auth_url, scheme_host, port, "801")) {
+        // spec §7.1：eportal HTTP 端口 801、HTTPS 端口 802；无显式端口时按 scheme 兜底
+        const bool https = p.auth_url.rfind("https://", 0) == 0;
+        if (!SplitHostPort(p.auth_url, scheme_host, port, https ? "802" : "801")) {
             r.message = "认证网址格式不正确：" + p.auth_url +
                         "（应形如 http://10.0.0.1/）";
             return r;
@@ -3720,15 +3725,34 @@ public:
         LogInfo("Dr.COM 登录响应 HTTP " + std::to_string(resp.status) +
                 "，正文 " + std::to_string(page.size()) + " 字节");
 
-        if (page.find("Dr.COMWebLoginID_3.htm") != std::string::npos ||
-            page.find("3.htm") != std::string::npos) {
+        // ⚠ 审阅注记（2026-10-13）：判定逻辑已按审阅修正为
+        //   ① 4xx/5xx 错误页不构成判定依据；② Location 纳入判定但只认完整标记
+        //   （短形会误伤 error3.htm 类 URL）；③ 双标记同现时不猜、交探测裁决
+        //   （真实首页即同时含 authsuccess/authfail 两个标记，乐观判成功会使调度器
+        //   跳过探测复验并绕过凭据错误的停止重试）
+        const std::string& loc = resp.location;
+        const bool hit3_full =
+            page.find("Dr.COMWebLoginID_3.htm") != std::string::npos ||
+            loc.find("Dr.COMWebLoginID_3.htm") != std::string::npos;
+        const bool hit2_full =
+            page.find("Dr.COMWebLoginID_2.htm") != std::string::npos ||
+            loc.find("Dr.COMWebLoginID_2.htm") != std::string::npos;
+        const bool hit3 = hit3_full || page.find("3.htm") != std::string::npos;
+        const bool hit2 = hit2_full || page.find("2.htm") != std::string::npos;
+
+        if (hit3 && hit2) {
+            r.vendor_code = -1;
+            r.success = false;
+            r.message = "响应同时含成功与失败标志，将由网络探测确认实际状态";
+            return r;
+        }
+        if (hit3) {
             r.success = true;
             r.vendor_code = 3;
             r.message = "服务器返回登录成功";
             return r;
         }
-        if (page.find("Dr.COMWebLoginID_2.htm") != std::string::npos ||
-            page.find("2.htm") != std::string::npos) {
+        if (hit2) {
             r.vendor_code = 2;
             r.success = false;
             r.message = "服务器返回登录失败（账号或密码错误，或该账号不可用）";
