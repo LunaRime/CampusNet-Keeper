@@ -61,6 +61,7 @@ TEST_CASE("AppConfig JSON 往返保持一致") {
     REQUIRE(back.profiles.size() == 1);
     CHECK(back.profiles[0].username == "u");
     CHECK(back.profiles[0].password == "pw");
+    CHECK(back.profiles[0].has_password);
     CHECK(back.profiles[0].isp.preset == "cmcc");
 }
 

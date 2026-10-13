@@ -55,7 +55,7 @@ std::string Base64Decode(const std::string& in) {
     return out;
 }
 
-json ProfileToJson(const Profile& p) {
+bool ProfileToJson(const Profile& p, json& out) {
     json j;
     j["name"] = p.name;
     j["auth_url"] = p.auth_url;
@@ -65,8 +65,9 @@ json ProfileToJson(const Profile& p) {
 
     if (!p.password.empty()) {
         std::string blob;
-        if (DpapiProtect(p.password, blob))
-            j["password_enc"] = Base64Encode(blob);
+        // 加密失败必须显式失败：静默跳过会让「保存成功」变成密码丢失
+        if (!DpapiProtect(p.password, blob)) return false;
+        j["password_enc"] = Base64Encode(blob);
     } else {
         j["password_enc"] = "";
     }
@@ -78,7 +79,8 @@ json ProfileToJson(const Profile& p) {
         {"headers", p.custom_template.headers},
         {"success_regex", p.custom_template.success_regex},
     };
-    return j;
+    out = std::move(j);
+    return true;
 }
 
 Profile ProfileFromJson(const json& j) {
@@ -99,6 +101,9 @@ Profile ProfileFromJson(const json& j) {
         if (DpapiUnprotect(blob, p.password)) {
             p.has_password = true;
         } else {
+            // 已知行为：解密失败后 password 为空，后续任何 ConfigSave 都会把
+            // password_enc 清空。该密文在本机本不可解（换机/换用户才会发生），
+            // spec §8 要求此时提示用户重新输入，故此处不保留原密文。
             LogWarn("配置中的密码无法解密（可能来自其他机器或用户），需重新输入");
             p.has_password = false;
         }
@@ -126,28 +131,38 @@ std::string ConfigPath() {
 }
 
 bool ConfigToJson(const AppConfig& cfg, std::string& out_json) {
-    json j;
-    j["version"] = cfg.version;
-    j["active_profile"] = cfg.active_profile;
+    try {
+        json j;
+        j["version"] = cfg.version;
+        j["active_profile"] = cfg.active_profile;
 
-    j["settings"] = {
-        {"probe_interval_seconds", cfg.settings.probe_interval_seconds},
-        {"probe_timeout_seconds", cfg.settings.probe_timeout_seconds},
-        {"probe_url", cfg.settings.probe_url},
-        {"probe_expect", cfg.settings.probe_expect},
-        {"retry_backoff_seconds", cfg.settings.retry_backoff_seconds},
-        {"autostart", cfg.settings.autostart},
-        {"notify_on_reconnect", cfg.settings.notify_on_reconnect},
-        {"log_level", cfg.settings.log_level},
-        {"log_max_kb", cfg.settings.log_max_kb},
-        {"log_keep_files", cfg.settings.log_keep_files},
-    };
+        j["settings"] = {
+            {"probe_interval_seconds", cfg.settings.probe_interval_seconds},
+            {"probe_timeout_seconds", cfg.settings.probe_timeout_seconds},
+            {"probe_url", cfg.settings.probe_url},
+            {"probe_expect", cfg.settings.probe_expect},
+            {"retry_backoff_seconds", cfg.settings.retry_backoff_seconds},
+            {"autostart", cfg.settings.autostart},
+            {"notify_on_reconnect", cfg.settings.notify_on_reconnect},
+            {"log_level", cfg.settings.log_level},
+            {"log_max_kb", cfg.settings.log_max_kb},
+            {"log_keep_files", cfg.settings.log_keep_files},
+        };
 
-    j["profiles"] = json::array();
-    for (const auto& p : cfg.profiles) j["profiles"].push_back(ProfileToJson(p));
+        j["profiles"] = json::array();
+        for (const auto& p : cfg.profiles) {
+            json pj;
+            if (!ProfileToJson(p, pj)) return false;  // 密码加密失败
+            j["profiles"].push_back(std::move(pj));
+        }
 
-    out_json = j.dump(2);
-    return true;
+        out_json = j.dump(2);
+        return true;
+    } catch (const std::exception&) {
+        // 与 ConfigFromJson 对称：序列化任何异常（如字段含非法 UTF-8 时
+        // dump 抛 type_error.316）都转为显式失败，不向上抛
+        return false;
+    }
 }
 
 bool ConfigFromJson(const std::string& json_str, AppConfig& out, std::string& error) {
@@ -223,12 +238,15 @@ bool ConfigSave(const AppConfig& cfg, std::string& error) {
         if (!ofs) { error = "写入临时配置文件失败"; return false; }
     }
     std::error_code ec;
-    fs::rename(tmp, fs::u8path(path), ec);
+    fs::rename(tmp, fs::u8path(path), ec);  // MSVC 实现可覆盖已存在的目标
     if (ec) {
-        // Windows 上 rename 不能覆盖已存在的目标，退化为「删旧再改名」
-        fs::remove(fs::u8path(path), ec);
-        fs::rename(tmp, fs::u8path(path), ec);
-        if (ec) { error = "替换配置文件失败"; return false; }
+        // rename 失败（权限/占用等）时保留旧配置原样，只清理 .tmp 并报错。
+        // 绝不能「先删旧配置再重试」：第二次 rename 若因同样原因失败，
+        // 用户配置将彻底丢失（杀毒软件瞬时锁定 .tmp 即可触发）。
+        std::error_code e2;
+        fs::remove(tmp, e2);
+        error = "替换配置文件失败: " + ec.message();
+        return false;
     }
     return true;
 }
@@ -256,7 +274,11 @@ bool ConfigLoad(AppConfig& out, std::string& error) {
         fs::path bak = fs::u8path(path + ".bak");
         std::error_code e2;
         fs::copy_file(fs::u8path(path), bak, fs::copy_options::overwrite_existing, e2);
-        LogError("配置文件损坏，已备份到 config.json.bak：" + parse_err);
+        if (e2) {
+            LogError("配置文件损坏，且备份失败（" + e2.message() + "），已回落默认配置：" + parse_err);
+        } else {
+            LogError("配置文件损坏，已备份到 config.json.bak：" + parse_err);
+        }
         out = AppConfig{};
         error = parse_err;
         return false;

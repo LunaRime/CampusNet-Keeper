@@ -15,8 +15,9 @@ bool DpapiProtect(const std::string& plain, std::string& blob) {
     blob.clear();
     if (plain.empty()) return true;
 
+    // CryptProtectData 不修改输入，但 API 声明为非 const，故去 const
     DATA_BLOB in{};
-    in.pbData = (BYTE*)plain.data();
+    in.pbData = const_cast<BYTE*>(reinterpret_cast<const BYTE*>(plain.data()));
     in.cbData = (DWORD)plain.size();
 
     DATA_BLOB entropy{};
@@ -37,8 +38,9 @@ bool DpapiUnprotect(const std::string& blob, std::string& plain) {
     plain.clear();
     if (blob.empty()) return true;
 
+    // CryptUnprotectData 不修改输入，但 API 声明为非 const，故去 const
     DATA_BLOB in{};
-    in.pbData = (BYTE*)blob.data();
+    in.pbData = const_cast<BYTE*>(reinterpret_cast<const BYTE*>(blob.data()));
     in.cbData = (DWORD)blob.size();
 
     DATA_BLOB entropy{};
