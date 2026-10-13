@@ -16,6 +16,8 @@ add_library(cnk_core STATIC
   src/native/core/Paths.cpp
   src/native/core/Log.cpp
   src/native/core/Http.cpp
+  src/native/core/Encoding.cpp
+  src/native/core/Url.cpp
   src/native/sim/SimServer.cpp
 )
 target_include_directories(cnk_core PUBLIC src/native third_party)
@@ -32,6 +34,8 @@ add_executable(cnk_tests
   tests/log_test.cpp
   tests/sim_test.cpp
   tests/http_test.cpp
+  tests/encoding_test.cpp
+  tests/url_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
