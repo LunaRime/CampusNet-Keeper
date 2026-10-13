@@ -26,6 +26,8 @@ add_library(cnk_core STATIC
   src/native/auth/DrcomAuth.cpp
   src/native/auth/CustomTemplateAuth.cpp
   src/native/auth/Stubs.cpp
+  src/native/sys/SingleInstance.cpp
+  src/native/sys/Autostart.cpp
   src/native/core/ProbeTarget.cpp
   src/native/core/Probe.cpp
   src/native/core/Scheduler.cpp
@@ -61,6 +63,7 @@ add_executable(cnk_tests
   tests/probe_test.cpp
   tests/scheduler_test.cpp
   tests/cli_test.cpp
+  tests/sys_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
