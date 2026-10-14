@@ -31,6 +31,7 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
         if (a == "--probe-now")      { o.mode = CliMode::ProbeNow; continue; }
         if (a == "--test-login")     { o.mode = CliMode::TestLogin; continue; }
         if (a == "--detect")         { o.mode = CliMode::Detect; continue; }
+        if (a == "--set-password")   { o.mode = CliMode::SetPassword; continue; }
         if (a == "--version" || a == "-v") { o.mode = CliMode::Version; continue; }
         if (a == "--help" || a == "-h" || a == "/?") {
             o.mode = CliMode::Help; continue;
@@ -45,6 +46,7 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
         if (TakePrefixed(args, i, "--simulate-fail", o.simulate_fail)) continue;
         if (TakePrefixed(args, i, "--simulate", o.simulate_vendor)) continue;
         if (TakePrefixed(args, i, "--config", o.config_path)) continue;
+        if (TakePrefixed(args, i, "--user", o.user)) continue;
 
         o.unknown.push_back(a);
     }
@@ -62,6 +64,8 @@ std::string CliHelpText() {
         "  --probe-now           执行一次网络探测并输出结果，然后退出\n"
         "  --test-login          执行一次探测 + 登录尝试，输出完整请求（已脱敏）\n"
         "  --detect              只做厂商识别并输出结果\n"
+        "  --set-password        为账号录入密码（环境变量 CNK_PASSWORD 或交互输入，\n"
+        "                        DPAPI 加密保存；可配 --user=账号 指定目标）\n"
         "  --config=<路径>       使用指定的配置文件\n"
         "  --simulate=<厂商>     使用本地模拟 Portal 服务器（测试用）\n"
         "                        drcom 为完整实现；其余厂商待后续任务\n"

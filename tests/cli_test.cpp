@@ -90,3 +90,15 @@ TEST_CASE("带值参数的空格分隔、无值安全与前缀吞噬回归") {
     CHECK(o3.config_path.empty());
     CHECK(o3.unknown.size() == 1);
 }
+
+TEST_CASE("解析 --set-password 与 --user") {
+    auto o1 = cnk::ParseCli({"--set-password"});
+    CHECK(o1.mode == cnk::CliMode::SetPassword);
+
+    auto o2 = cnk::ParseCli({"--set-password", "--user=2024147xxxx"});
+    CHECK(o2.mode == cnk::CliMode::SetPassword);
+    CHECK(o2.user == "2024147xxxx");
+
+    auto o3 = cnk::ParseCli({"--set-password", "--user", "stu001"});
+    CHECK(o3.user == "stu001");
+}

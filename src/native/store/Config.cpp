@@ -317,4 +317,40 @@ const Profile* ActiveProfile(const AppConfig& cfg) {
     return &cfg.profiles.front();
 }
 
+bool SetProfilePassword(AppConfig& cfg, const std::string& user,
+                        const std::string& password, std::string& error) {
+    error.clear();
+    if (password.empty()) {
+        error = "密码为空";
+        return false;
+    }
+
+    Profile* target = nullptr;
+    if (!user.empty()) {
+        for (auto& p : cfg.profiles)
+            if (p.username == user) { target = &p; break; }
+        if (!target) {
+            // 无同名档案：新建（首次录入的常规路径）
+            Profile p;
+            p.name = user;
+            p.username = user;
+            cfg.profiles.push_back(p);
+            if (cfg.profiles.size() == 1) cfg.active_profile = p.name;
+            target = &cfg.profiles.back();
+        }
+    } else {
+        for (auto& p : cfg.profiles)
+            if (p.name == cfg.active_profile) { target = &p; break; }
+        if (!target && !cfg.profiles.empty()) target = &cfg.profiles.front();
+        if (!target) {
+            error = "配置中没有档案，请用 --user=账号 指定账号";
+            return false;
+        }
+    }
+
+    target->password = password;
+    target->has_password = true;
+    return true;
+}
+
 }  // namespace cnk

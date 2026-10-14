@@ -74,4 +74,11 @@ std::string IspSuffix(const Profile& p);
 // active_profile 命中的项；不存在时返回第一个；无 profile 时返回 nullptr
 const Profile* ActiveProfile(const AppConfig& cfg);
 
+// 为指定账号设置密码（供 --set-password 使用；调用方负责随后 ConfigSave）。
+//   user 非空：命中同名档案则更新；无同名档案则新建一份（vendor=auto）
+//   user 为空：更新 active_profile 对应的档案（或第一份档案）
+// 空密码返回 false。密码在保存时由 DPAPI 加密写入 password_enc。
+bool SetProfilePassword(AppConfig& cfg, const std::string& user,
+                        const std::string& password, std::string& error);
+
 }  // namespace cnk

@@ -4,7 +4,7 @@
 
 namespace cnk {
 
-enum class CliMode { Daemon, ProbeNow, TestLogin, Detect, Version, Help, Ui };
+enum class CliMode { Daemon, ProbeNow, TestLogin, Detect, SetPassword, Version, Help, Ui };
 
 struct CliOptions {
     CliMode mode = CliMode::Daemon;
@@ -13,6 +13,7 @@ struct CliOptions {
     std::string simulate_user;
     std::string simulate_pass;
     std::string simulate_fail;   // "" | "badcred" | "timeout"
+    std::string user;            // --set-password 的目标账号
     std::vector<std::string> unknown;
 };
 

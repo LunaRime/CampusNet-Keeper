@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include "core/Version.h"
@@ -180,6 +181,74 @@ int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst) {
     return 0;
 }
 
+// 交互式读取密码（不回显）。仅适用于真实控制台；非控制台环境返回空串，
+// 由调用方提示改用环境变量 CNK_PASSWORD。
+std::string ReadPasswordFromConsole() {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    if (!hIn || hIn == INVALID_HANDLE_VALUE || !GetConsoleMode(hIn, &mode)) {
+        return {};
+    }
+    std::printf("请输入校园网密码（输入不回显，回车确认）：");
+    std::fflush(stdout);
+    SetConsoleMode(hIn, mode & ~ENABLE_ECHO_INPUT);
+
+    std::string pw;
+    for (;;) {
+        wchar_t wc = 0;
+        DWORD n = 0;
+        if (!ReadConsoleW(hIn, &wc, 1, &n, nullptr) || n == 0) break;
+        if (wc == L'\r' || wc == L'\n') break;
+        if (wc == L'\b') { if (!pw.empty()) pw.pop_back(); continue; }
+        char buf[8] = {0};
+        int len = WideCharToMultiByte(CP_UTF8, 0, &wc, 1, buf,
+                                      (int)sizeof(buf), nullptr, nullptr);
+        if (len > 0) pw.append(buf, (size_t)len);
+    }
+    SetConsoleMode(hIn, mode);
+    FlushConsoleInputBuffer(hIn);
+    std::printf("\n");
+    return pw;
+}
+
+int RunSetPassword(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
+    std::string password;
+    // 环境变量优先：脚本化/自动化场景（也是失败提示里推荐的替代方式）
+    const char* envpw = std::getenv("CNK_PASSWORD");
+    if (envpw && *envpw) {
+        password = envpw;
+        std::printf("已从环境变量 CNK_PASSWORD 读取密码。\n");
+    } else {
+        password = ReadPasswordFromConsole();
+        if (password.empty()) {
+            std::printf("未能读取密码。请在终端窗口中交互输入，\n"
+                        "或先设置环境变量（如 set CNK_PASSWORD=... ）后重试。\n");
+            return 1;
+        }
+    }
+
+    std::string err;
+    if (!cnk::SetProfilePassword(cfg, opts.user, password, err)) {
+        std::printf("设置密码失败：%s\n", err.c_str());
+        return 1;
+    }
+    // 保存回配置的加载来源（与 wmain 的加载逻辑对称）：
+    // 指定了 --config 就写该文件，否则写默认路径
+    const bool saved = opts.config_path.empty()
+        ? cnk::ConfigSave(cfg, err)
+        : cnk::ConfigSaveTo(opts.config_path, cfg, err);
+    if (!saved) {
+        std::printf("保存配置失败：%s\n", err.c_str());
+        return 1;
+    }
+    std::printf("密码已用 Windows DPAPI 加密保存。\n");
+    if (!opts.user.empty()) {
+        std::printf("目标账号：%s\n", opts.user.c_str());
+        std::printf("提示：还需在配置文件中确认 auth_url 与 isp.preset 指向你的学校。\n");
+    }
+    return 0;
+}
+
 // 模拟模式：启动本机模拟服务器，并把配置里的地址全部改指向它。
 // 这些覆盖只作用于内存中的配置，绝不写回配置文件。
 struct SimSession {
@@ -261,7 +330,8 @@ int wmain(int, wchar_t**) {
     const bool console_mode =
         opts.mode == cnk::CliMode::Help || opts.mode == cnk::CliMode::Version ||
         opts.mode == cnk::CliMode::ProbeNow || opts.mode == cnk::CliMode::TestLogin ||
-        opts.mode == cnk::CliMode::Detect || opts.mode == cnk::CliMode::Ui ||
+        opts.mode == cnk::CliMode::Detect || opts.mode == cnk::CliMode::SetPassword ||
+        opts.mode == cnk::CliMode::Ui ||
         !opts.unknown.empty();
     if (console_mode) EnsureConsoleForOutput();
     SetConsoleOutputCP(CP_UTF8);
@@ -319,6 +389,7 @@ int wmain(int, wchar_t**) {
         case cnk::CliMode::ProbeNow:  rc = RunProbeNow(cfg); break;
         case cnk::CliMode::Detect:    rc = RunDetect(cfg); break;
         case cnk::CliMode::TestLogin: rc = RunTestLogin(cfg); break;
+        case cnk::CliMode::SetPassword: rc = RunSetPassword(cfg, opts); break;
         case cnk::CliMode::Ui:
             // UI 形态在任务 23-26 实现；当前明确提示而不是静默进入守护循环
             PrintLine("设置界面将在后续版本提供（当前为 M1 命令行形态）。");

@@ -189,3 +189,65 @@ TEST_CASE("临时文件被锁时替换失败且旧配置保留") {
 
     CleanDir(dir);
 }
+
+TEST_CASE("SetProfilePassword 创建档案并加密落盘，回读可解密") {
+    auto dir = FreshDir("cnk_io_setpw");
+    auto path = (dir / "config.json").string();
+
+    cnk::AppConfig cfg;
+    std::string err;
+    REQUIRE(cnk::SetProfilePassword(cfg, "stu001", "p@ss!", err));
+    REQUIRE(cfg.profiles.size() == 1);
+    CHECK(cfg.profiles[0].username == "stu001");
+    CHECK(cfg.profiles[0].has_password);
+    CHECK(cfg.active_profile == "stu001");   // 首份档案自动激活
+
+    REQUIRE(cnk::ConfigSaveTo(path, cfg, err));
+    CHECK(ReadFile(path).find("p@ss!") == std::string::npos);  // 磁盘无明文
+
+    cnk::AppConfig back;
+    REQUIRE(cnk::ConfigLoadFrom(path, back, err));
+    REQUIRE(back.profiles.size() == 1);
+    CHECK(back.profiles[0].password == "p@ss!");
+    CHECK(back.profiles[0].has_password);
+
+    CleanDir(dir);
+}
+
+TEST_CASE("SetProfilePassword 更新匹配账号/未指定时更新激活档案/未知账号新建") {
+    cnk::AppConfig cfg;
+    cnk::Profile a;
+    a.name = "甲";
+    a.username = "stu001";
+    cfg.profiles.push_back(a);
+    cnk::Profile b;
+    b.name = "乙";
+    b.username = "stu002";
+    cfg.profiles.push_back(b);
+    cfg.active_profile = "甲";
+
+    std::string err;
+    // 匹配已有账号：更新而非新建
+    REQUIRE(cnk::SetProfilePassword(cfg, "stu002", "pw2", err));
+    CHECK(cfg.profiles[1].password == "pw2");
+    CHECK(cfg.profiles.size() == 2);
+
+    // 未指定账号：更新激活档案
+    REQUIRE(cnk::SetProfilePassword(cfg, "", "pw1", err));
+    CHECK(cfg.profiles[0].password == "pw1");
+
+    // 未知账号：新建且不改变激活档案
+    REQUIRE(cnk::SetProfilePassword(cfg, "stu003", "pw3", err));
+    CHECK(cfg.profiles.size() == 3);
+    CHECK(cfg.profiles[2].username == "stu003");
+    CHECK(cfg.active_profile == "甲");
+
+    // 空密码拒绝
+    CHECK_FALSE(cnk::SetProfilePassword(cfg, "stu001", "", err));
+    CHECK(err.size() > 0);
+
+    // 无档案且未指定账号 → 明确报错
+    cnk::AppConfig empty_cfg;
+    CHECK_FALSE(cnk::SetProfilePassword(empty_cfg, "", "x", err));
+    CHECK(err.size() > 0);
+}
