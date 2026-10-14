@@ -222,6 +222,61 @@ bool ConfigFromJson(const std::string& json_str, AppConfig& out, std::string& er
     return true;
 }
 
+namespace {
+
+// 检测路径是否可被创建（成功返回 0 并清理探针文件；失败返回 Win32 错误码）
+DWORD ProbeWritable(const fs::path& p) {
+    HANDLE h = CreateFileW(p.wstring().c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return GetLastError();
+    CloseHandle(h);
+    std::error_code e2;
+    fs::remove(p, e2);
+    return 0;
+}
+
+// 进程权限上下文（提升/普通）——排查"为何写入被拒绝"的关键维度
+std::string TokenContext() {
+    HANDLE tok = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return "未知";
+    TOKEN_ELEVATION el{};
+    DWORD sz = 0;
+    const BOOL ok = GetTokenInformation(tok, TokenElevation, &el, sizeof(el), &sz);
+    CloseHandle(tok);
+    if (!ok) return "未知";
+    return el.TokenIsElevated ? "提升进程" : "普通进程";
+}
+
+// 保存失败时的诊断：量化"写入被拒"的作用范围（仅失败路径调用）——
+// 用于区分：只拒该文件名 / 只拒该目录 / 全盘拒绝 / 瞬时问题
+std::string SaveFailureDiagnostics(const fs::path& tmp, DWORD last, int en) {
+    const fs::path dir = tmp.parent_path();
+    const DWORD e_tmp   = ProbeWritable(tmp);
+    const DWORD e_txt   = ProbeWritable(dir / L"cnk_diag_probe.txt");
+    const DWORD e_noext = ProbeWritable(dir / L"cnk_diag_probe");
+    DWORD e_sys = 9999;
+    {
+        std::error_code e2;
+        const fs::path t = fs::temp_directory_path(e2);
+        if (!e2) e_sys = ProbeWritable(t / L"cnk_diag_probe.txt");
+    }
+    std::error_code e2;
+    const bool dir_ok = fs::is_directory(dir, e2);
+
+    std::string s = "（路径=" + tmp.u8string() +
+                    "，Win32=" + std::to_string(last) +
+                    "，errno=" + std::to_string(en) +
+                    "，父目录" + (dir_ok ? "存在" : "不存在") +
+                    "，进程=" + TokenContext() +
+                    "，探测[原名=" + std::to_string(e_tmp) +
+                    ", txt=" + std::to_string(e_txt) +
+                    ", 无后缀=" + std::to_string(e_noext) +
+                    ", 系统临时目录=" + std::to_string(e_sys) + "]）";
+    return s;
+}
+
+}  // namespace
+
 bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& error) {
     error.clear();
     if (path.empty()) { error = "配置路径为空"; return false; }
@@ -252,26 +307,19 @@ bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& er
         }
         std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
         if (!ofs) {
-            // 诊断增强：附带确切错误与上下文，供环境侧问题一击定位
-            //（曾出现用户环境偶发失败而开发机多次无法复现的情况）
-            const DWORD last = GetLastError();
-            const int en = errno;
-            std::error_code e2;
-            const bool dir_ok = fs::is_directory(tmp.parent_path(), e2);
-            error = "无法写入临时配置文件（路径=" + tmp.u8string() +
-                    "，Win32=" + std::to_string(last) +
-                    "，errno=" + std::to_string(en) +
-                    "，父目录" + (dir_ok ? "存在" : "不存在") + "）";
+            // 诊断增强：量化被拒范围（仅拒该文件名/该目录/全盘/瞬时），
+            // 供环境侧问题一击定位（曾出现开发机多次无法复现的偶发失败）
+            error = "无法写入临时配置文件" +
+                    SaveFailureDiagnostics(tmp, GetLastError(), errno);
             return false;
         }
         ofs << json_str;
         ofs.flush();
         if (!ofs) {
-            const DWORD last = GetLastError();
+            const std::string diag = SaveFailureDiagnostics(tmp, GetLastError(), errno);
             std::error_code e2;
             fs::remove(tmp, e2);   // 清理半截文件
-            error = "写入临时配置文件失败（路径=" + tmp.u8string() +
-                    "，Win32=" + std::to_string(last) + "）";
+            error = "写入临时配置文件失败" + diag;
             return false;
         }
     }
