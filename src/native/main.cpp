@@ -347,8 +347,15 @@ int wmain(int, wchar_t**) {
     }
 
     std::string log_dir = cnk::AppDataSubDir("logs");
-    if (!log_dir.empty())
+    if (log_dir.empty()) {
+        // 此前该场景是静默的：日志系统不工作且无任何提示，事后难以诊断
+        //（用户环境曾出现"配置保存失败且无日志"的偶发情况，与此吻合）。
+        std::printf("[警告] 无法访问应用数据目录（%%APPDATA%%\\CampusNet-Keeper）。\n");
+        std::printf("       配置保存与日志写入将不可用，请检查目录是否存在、权限是否正常，\n");
+        std::printf("       或是否有安全软件阻止了本程序写入该目录。\n");
+    } else {
         cnk::LogInit(log_dir, cnk::LogLevel::Info, 512 * 1024, 3);
+    }
     cnk::LogInfo("启动，模式=" + std::to_string((int)opts.mode));
 
     cnk::AppConfig cfg;

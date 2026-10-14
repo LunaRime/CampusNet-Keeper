@@ -214,8 +214,7 @@ TEST_CASE("SetProfilePassword 创建档案并加密落盘，回读可解密") {
     CleanDir(dir);
 }
 
-TEST_CASE("SetProfilePassword 更新匹配账号/未指定时更新激活档案/未知账号新建") {
-    cnk::AppConfig cfg;
+TEST_CASE("SetProfilePassword 更新匹配账号/未指定时更新激活档案/未知账号新建") {    cnk::AppConfig cfg;
     cnk::Profile a;
     a.name = "甲";
     a.username = "stu001";
@@ -250,4 +249,36 @@ TEST_CASE("SetProfilePassword 更新匹配账号/未指定时更新激活档案/
     cnk::AppConfig empty_cfg;
     CHECK_FALSE(cnk::SetProfilePassword(empty_cfg, "", "x", err));
     CHECK(err.size() > 0);
+}
+
+TEST_CASE("保存到尚不存在的目录会自动创建父目录") {
+    auto dir = FreshDir("cnk_io_newdir");
+    auto path = (dir / "sub" / "deep" / "config.json").string();
+
+    cnk::AppConfig cfg;
+    std::string err;
+    REQUIRE(cnk::ConfigSaveTo(path, cfg, err));
+    CHECK(fs::exists(fs::u8path(path)));
+
+    CleanDir(dir);
+}
+
+TEST_CASE("保存前会清理卡住的只读 .tmp 残留") {
+    auto dir = FreshDir("cnk_io_tmpresidue");
+    auto path = (dir / "config.json").string();
+    const std::string tmp = path + ".tmp";
+    // 预置一个只读的 .tmp 残留：不清理的话后续保存永久失败
+    {
+        std::ofstream ofs(tmp, std::ios::binary);
+        ofs << "stale garbage";
+    }
+    REQUIRE(SetFileAttributesW(fs::u8path(tmp).wstring().c_str(),
+                               FILE_ATTRIBUTE_READONLY));
+
+    cnk::AppConfig cfg;
+    std::string err;
+    REQUIRE(cnk::ConfigSaveTo(path, cfg, err));
+    CHECK(fs::exists(fs::u8path(path)));
+
+    CleanDir(dir);
 }

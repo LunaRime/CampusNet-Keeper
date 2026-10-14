@@ -3,6 +3,8 @@
 #include "core/Paths.h"
 #include "core/Log.h"
 #include "json.hpp"
+#include <windows.h>
+#include <cerrno>
 #include <fstream>
 #include <filesystem>
 
@@ -227,14 +229,51 @@ bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& er
     std::string json_str;
     if (!ConfigToJson(cfg, json_str)) { error = "序列化失败"; return false; }
 
+    // 目标目录可能尚不存在（如 --config 指向新目录）——确保父目录存在
+    {
+        std::error_code ec;
+        fs::path parent = fs::u8path(path).parent_path();
+        if (!parent.empty()) fs::create_directories(parent, ec);
+    }
+
     // 先写临时文件再改名，避免写入中断留下半截文件
     fs::path tmp = fs::u8path(path + ".tmp");
     {
+        // 清掉可能卡住的旧残留（上次异常中断留下的 .tmp 会让后续每次保存
+        // 都失败）。只读属性会阻止删除，先清属性再删；不存在或删除失败
+        // 都不影响后续正常路径。
+        {
+            std::error_code e2;
+            if (!fs::remove(tmp, e2) && fs::exists(tmp, e2)) {
+                fs::permissions(tmp, fs::perms::owner_all,
+                                fs::perm_options::add, e2);
+                fs::remove(tmp, e2);
+            }
+        }
         std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
-        if (!ofs) { error = "无法写入临时配置文件"; return false; }
+        if (!ofs) {
+            // 诊断增强：附带确切错误与上下文，供环境侧问题一击定位
+            //（曾出现用户环境偶发失败而开发机多次无法复现的情况）
+            const DWORD last = GetLastError();
+            const int en = errno;
+            std::error_code e2;
+            const bool dir_ok = fs::is_directory(tmp.parent_path(), e2);
+            error = "无法写入临时配置文件（路径=" + tmp.u8string() +
+                    "，Win32=" + std::to_string(last) +
+                    "，errno=" + std::to_string(en) +
+                    "，父目录" + (dir_ok ? "存在" : "不存在") + "）";
+            return false;
+        }
         ofs << json_str;
         ofs.flush();
-        if (!ofs) { error = "写入临时配置文件失败"; return false; }
+        if (!ofs) {
+            const DWORD last = GetLastError();
+            std::error_code e2;
+            fs::remove(tmp, e2);   // 清理半截文件
+            error = "写入临时配置文件失败（路径=" + tmp.u8string() +
+                    "，Win32=" + std::to_string(last) + "）";
+            return false;
+        }
     }
     std::error_code ec;
     fs::rename(tmp, fs::u8path(path), ec);  // MSVC 的 rename 可覆盖已存在目标（依赖平台行为）
