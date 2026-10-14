@@ -102,7 +102,9 @@ bool TrayIcon::Create(HINSTANCE hinst, const char* tooltip) {
 
     // 放行跨完整性级别的「弹 UI 请求」：提权启动或未来服务化时，
     // 第二实例的 PostMessage 会被 UIPI 静默拦截（FindWindow 不受影响，故障隐蔽）
-    ChangeWindowMessageFilterEx(hwnd_, kMsgShowUiRequest, MSGFLT_ALLOW, nullptr);
+    if (!ChangeWindowMessageFilterEx(hwnd_, kMsgShowUiRequest, MSGFLT_ALLOW, nullptr)) {
+        LogWarn("放行 UI 请求消息失败（跨权限场景下第二实例的唤起可能不生效）");
+    }
 
     nid_.cbSize = sizeof(nid_);
     nid_.hWnd = hwnd_;
@@ -187,6 +189,8 @@ void TrayIcon::ShowContextMenu() {
     POINT pt;
     GetCursorPos(&pt);
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    // 标准收尾（MSDN KB135788）：确保菜单在点击别处时可靠消失
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
     DestroyMenu(menu);
 }
 
@@ -224,7 +228,12 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg) {
         },
         [&tray]() { tray.Destroy(); PostQuitMessage(0); });
 
-    SetTimer(tray.Hwnd(), kTimerId, kTimerIntervalMs, nullptr);
+    if (!SetTimer(tray.Hwnd(), kTimerId, kTimerIntervalMs, nullptr)) {
+        LogError("定时器创建失败，守护循环无法驱动探测");
+        netwatch.Stop();
+        tray.Destroy();
+        return false;
+    }
 
     RunState last_state = RunState::Disconnected;
     bool has_last = false;          // 首次状态更新（含 tooltip 初始化）必发生
@@ -257,10 +266,12 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg) {
 
             // 恢复通知：必须「曾经在线过」再「离开」再「回来」才弹——
             // 启动瞬态的初始 Disconnected（Tick 之前的显示）与「首次连通」
-            // 都不是恢复，否则会把「启动即在线」误报为「已自动重新登录」
-            if (st == RunState::Online && ever_was_online && !prev_online) {
-                tray.ShowBalloon("网络已恢复", "已自动重新登录校园网");
-                LogInfo("已自动重新登录并恢复在线");
+            // 都不是恢复，否则会把「启动即在线」误报为「已自动重新登录」。
+            // 文案保持中性：网络抖动（WiFi 重连/无 Portal）的恢复并不经过登录。
+            if (st == RunState::Online && ever_was_online && !prev_online &&
+                cfg.settings.notify_on_reconnect) {
+                tray.ShowBalloon("网络已恢复", "网络连接已恢复正常");
+                LogInfo("连接恢复：网络已回到在线状态");
             }
             if (st == RunState::AuthFailed || st == RunState::NotCampusNetwork) {
                 tray.ShowBalloon("需要处理", sch->LastMessage());
@@ -271,8 +282,9 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg) {
             has_last = true;
         }
 
-        // 空闲等待：有消息立刻醒，否则最多等 20ms
-        MsgWaitForMultipleObjects(0, nullptr, FALSE, 20, QS_ALLINPUT);
+        // 空闲等待：有消息（含定时器到期）立刻醒，否则最多等 250ms。
+        // 状态变化只由 WM_TIMER→Tick 产生，等待会被其唤醒，无需高频空转。
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 250, QS_ALLINPUT);
     }
 }
 
