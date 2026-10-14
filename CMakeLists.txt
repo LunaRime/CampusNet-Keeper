@@ -41,13 +41,10 @@ target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
   winhttp crypt32 bcrypt shell32 advapi32 ole32 user32 ws2_32 iphlpapi)
 
-# GUI 子系统：守护形态不显示控制台黑窗；诊断命令按需附着控制台
-# （见 main.cpp 的 EnsureConsoleForOutput）。GUI 子系统下需显式指定
-# wmain 入口，否则链接器按缺省找 WinMain。
-add_executable(CampusNet-Keeper WIN32 src/native/main.cpp)
-if(MSVC)
-  target_link_options(CampusNet-Keeper PRIVATE /ENTRY:wmainCRTStartup)
-endif()
+# 控制台子系统：CLI 输出（cmd/管道/重定向）在任何环境下原生可靠。
+# 守护形态不依赖子系统差异——由程序自身在"独占控制台"时隐藏窗口
+#（见 main.cpp 的 HideConsoleIfStandalone），兼顾无黑窗与输出可靠性。
+add_executable(CampusNet-Keeper src/native/main.cpp)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
 
 enable_testing()

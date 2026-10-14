@@ -23,24 +23,6 @@
 
 namespace {
 
-// 仅诊断/信息类模式需要控制台输出。本程序为 GUI 子系统（守护无黑窗），
-// 故按需附着：若 stdout 已被重定向（管道/文件），保持原样——GUI 子系统
-// 进程同样会收到继承的句柄，脚本化调用（如自动化验证）依赖这一点；
-// 否则附到父进程的控制台（在终端里直接运行的场景）。
-void EnsureConsoleForOutput() {
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (h && h != INVALID_HANDLE_VALUE) {
-        DWORD t = GetFileType(h);
-        if (t == FILE_TYPE_PIPE || t == FILE_TYPE_DISK) return;
-    }
-    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
-    FILE* f = nullptr;
-    freopen_s(&f, "CONOUT$", "w", stdout);
-    freopen_s(&f, "CONOUT$", "w", stderr);
-    freopen_s(&f, "CONIN$", "r", stdin);
-    SetConsoleOutputCP(CP_UTF8);
-}
-
 std::vector<std::string> WideArgsToUtf8() {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -173,7 +155,25 @@ int RunTestLogin(cnk::AppConfig& cfg) {
     return lr.success ? 0 : 2;
 }
 
+// 守护形态：若进程拥有独占控制台（双击 / 开机自启等独立启动方式），
+// 隐藏它以避免黑窗常驻；从终端启动时控制台是共享的（不能隐藏，
+// 否则会把用户自己的终端窗口一起隐藏）。
+// 注意：曾尝试 WIN32 子系统 + AttachConsole 方案（完全无黑窗），
+// 但在真实 cmd 环境下 attach 链路失效导致所有 CLI 输出丢失
+//（2026-10-14 用户实测），已回退为控制台子系统 + 选择性隐藏。
+void HideConsoleIfStandalone() {
+    DWORD pids[2] = {0, 0};
+    if (GetConsoleProcessList(pids, 2) == 1) {
+        HWND wnd = GetConsoleWindow();
+        if (wnd) ShowWindow(wnd, SW_HIDE);
+    }
+}
+
 int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst) {
+    std::printf("CampusNet-Keeper 守护模式已启动（托盘驻留）。\n");
+    std::printf("从终端启动时可按 Ctrl+C 退出；其它情况请使用托盘菜单退出。\n");
+    std::fflush(stdout);
+    HideConsoleIfStandalone();
     if (!cnk::RunDaemonLoop(hinst, cfg)) {
         std::printf("守护循环启动失败\n");
         return 1;
@@ -323,18 +323,10 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
 }  // namespace
 
 int wmain(int, wchar_t**) {
+    SetConsoleOutputCP(CP_UTF8);
+
     auto args = WideArgsToUtf8();
     auto opts = cnk::ParseCli(args);
-
-    // 仅需要向用户输出文本的模式附着控制台（守护/UI 形态保持无窗口）
-    const bool console_mode =
-        opts.mode == cnk::CliMode::Help || opts.mode == cnk::CliMode::Version ||
-        opts.mode == cnk::CliMode::ProbeNow || opts.mode == cnk::CliMode::TestLogin ||
-        opts.mode == cnk::CliMode::Detect || opts.mode == cnk::CliMode::SetPassword ||
-        opts.mode == cnk::CliMode::Ui ||
-        !opts.unknown.empty();
-    if (console_mode) EnsureConsoleForOutput();
-    SetConsoleOutputCP(CP_UTF8);
 
     if (opts.mode == cnk::CliMode::Help) {
         std::printf("%s", cnk::CliHelpText().c_str());

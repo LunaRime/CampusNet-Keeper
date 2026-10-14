@@ -6415,6 +6415,13 @@ if (opts.mode == cnk::CliMode::Daemon && !single.Acquire()) {
 add_executable(CampusNet-Keeper WIN32 src/native/main.cpp)
 ```
 
+> **⚠⚠ 已弃用（2026-10-14 用户实测）**：上述 WIN32 子系统 + `AttachConsole` 方案在**真实 cmd 环境**
+> 下 attach 链路失效——所有 CLI 命令（`--version`/`--probe-now`/`--detect`/`--set-password`）完全无输出。
+> 开发期未发现的原因是测试全在 bash 管道下进行，走的是"保持重定向"分支，attach 分支从未被真实控制台验证。
+> **现行方案**：控制台子系统（输出在任何环境原生可靠）+ 守护形态由程序自身在
+> `GetConsoleProcessList()==1`（独占控制台，即双击/开机自启）时隐藏控制台窗口
+>（见 `main.cpp` 的 `HideConsoleIfStandalone`）。下方 AttachConsole 方案仅作历史记录保留。
+
 但 CLI 诊断命令（`--probe-now` 等）需要控制台输出。方案：保持 `WIN32` 子系统，并在需要输出的模式下调 `AttachConsole(ATTACH_PARENT_PROCESS)` 并重定向 `stdout`。在 `wmain` 开头实现：
 
 ```cpp
