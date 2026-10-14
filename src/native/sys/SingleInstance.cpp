@@ -38,10 +38,4 @@ bool SingleInstance::NotifyExistingInstance() {
     return PostMessageW(hwnd, kMsgShowUiRequest, 0, 0) != FALSE;
 }
 
-bool SingleInstance::ConsumeUiRequest() {
-    // 由任务 17 的托盘消息循环在处理 kMsgShowUiRequest 时消费；
-    // 本任务先提供发送端与互斥保证，此处为占位实现。
-    return false;
-}
-
 }  // namespace cnk

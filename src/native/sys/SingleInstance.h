@@ -33,11 +33,8 @@ public:
     void Release();
 
     // 通知已在运行的实例弹出设置界面。返回是否成功送达。
+    // 接收端在守护进程的隐藏消息窗口（TrayIcon 的 WndProc）里处理。
     static bool NotifyExistingInstance();
-
-    // 守护进程在消息循环中轮询此标志，为 true 时弹 UI。
-    // 完整实现依赖任务 17 的消息窗口；当前为占位。
-    static bool ConsumeUiRequest();
 
 private:
     HANDLE handle_ = nullptr;

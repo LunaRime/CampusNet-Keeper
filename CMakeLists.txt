@@ -28,6 +28,7 @@ add_library(cnk_core STATIC
   src/native/auth/Stubs.cpp
   src/native/sys/SingleInstance.cpp
   src/native/sys/Autostart.cpp
+  src/native/tray/TrayIcon.cpp
   src/native/core/ProbeTarget.cpp
   src/native/core/Probe.cpp
   src/native/core/Scheduler.cpp
@@ -40,7 +41,13 @@ target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
   winhttp crypt32 bcrypt shell32 advapi32 ole32 user32 ws2_32 iphlpapi)
 
-add_executable(CampusNet-Keeper src/native/main.cpp)
+# GUI 子系统：守护形态不显示控制台黑窗；诊断命令按需附着控制台
+# （见 main.cpp 的 EnsureConsoleForOutput）。GUI 子系统下需显式指定
+# wmain 入口，否则链接器按缺省找 WinMain。
+add_executable(CampusNet-Keeper WIN32 src/native/main.cpp)
+if(MSVC)
+  target_link_options(CampusNet-Keeper PRIVATE /ENTRY:wmainCRTStartup)
+endif()
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
 
 enable_testing()

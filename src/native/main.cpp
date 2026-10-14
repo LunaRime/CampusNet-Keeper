@@ -1,8 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <cstdio>
-#include <chrono>
-#include <thread>
 #include <string>
 #include <vector>
 #include "core/Version.h"
@@ -19,8 +17,28 @@
 #include "auth/Detector.h"
 #include "store/Config.h"
 #include "sim/SimServer.h"
+#include "sys/SingleInstance.h"
+#include "tray/TrayIcon.h"
 
 namespace {
+
+// 仅诊断/信息类模式需要控制台输出。本程序为 GUI 子系统（守护无黑窗），
+// 故按需附着：若 stdout 已被重定向（管道/文件），保持原样——GUI 子系统
+// 进程同样会收到继承的句柄，脚本化调用（如自动化验证）依赖这一点；
+// 否则附到父进程的控制台（在终端里直接运行的场景）。
+void EnsureConsoleForOutput() {
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (h && h != INVALID_HANDLE_VALUE) {
+        DWORD t = GetFileType(h);
+        if (t == FILE_TYPE_PIPE || t == FILE_TYPE_DISK) return;
+    }
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    freopen_s(&f, "CONIN$", "r", stdin);
+    SetConsoleOutputCP(CP_UTF8);
+}
 
 std::vector<std::string> WideArgsToUtf8() {
     int argc = 0;
@@ -154,17 +172,10 @@ int RunTestLogin(cnk::AppConfig& cfg) {
     return lr.success ? 0 : 2;
 }
 
-int RunDaemon(cnk::AppConfig& cfg) {
-    cnk::Scheduler sch(cfg);
-    PrintLine("CampusNet-Keeper 守护模式已启动，按 Ctrl+C 退出。");
-    PrintLine("（任务 16-17 会替换为托盘驻留并接入地址变更监听；");
-    PrintLine("  当前为控制台轮询，网络切换的即时探测能力尚未接线。）");
-    for (;;) {
-        sch.Tick();
-        std::printf("\r状态: %-16s %s          ",
-                    cnk::RunStateName(sch.State()), sch.LastMessage().c_str());
-        std::fflush(stdout);
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst) {
+    if (!cnk::RunDaemonLoop(hinst, cfg)) {
+        std::printf("守护循环启动失败\n");
+        return 1;
     }
     return 0;
 }
@@ -243,10 +254,17 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
 }  // namespace
 
 int wmain(int, wchar_t**) {
-    SetConsoleOutputCP(CP_UTF8);
-
     auto args = WideArgsToUtf8();
     auto opts = cnk::ParseCli(args);
+
+    // 仅需要向用户输出文本的模式附着控制台（守护/UI 形态保持无窗口）
+    const bool console_mode =
+        opts.mode == cnk::CliMode::Help || opts.mode == cnk::CliMode::Version ||
+        opts.mode == cnk::CliMode::ProbeNow || opts.mode == cnk::CliMode::TestLogin ||
+        opts.mode == cnk::CliMode::Detect || opts.mode == cnk::CliMode::Ui ||
+        !opts.unknown.empty();
+    if (console_mode) EnsureConsoleForOutput();
+    SetConsoleOutputCP(CP_UTF8);
 
     if (opts.mode == cnk::CliMode::Help) {
         std::printf("%s", cnk::CliHelpText().c_str());
@@ -283,6 +301,19 @@ int wmain(int, wchar_t**) {
     SimSession sim;
     SetupSimulation(opts, cfg, sim);
 
+    // 守护形态获取单实例；已有实例则请求它弹出设置界面后退出
+    cnk::SingleInstance single;
+    const HINSTANCE hinst = GetModuleHandleW(nullptr);
+    if (opts.mode == cnk::CliMode::Daemon && !single.Acquire()) {
+        if (cnk::SingleInstance::NotifyExistingInstance())
+            PrintLine("CampusNet-Keeper 已在运行，已请求其打开设置界面。");
+        else
+            PrintLine("CampusNet-Keeper 已在运行。");
+        if (sim.active) sim.server.Stop();
+        cnk::LogShutdown();
+        return 0;
+    }
+
     int rc = 0;
     switch (opts.mode) {
         case cnk::CliMode::ProbeNow:  rc = RunProbeNow(cfg); break;
@@ -295,7 +326,7 @@ int wmain(int, wchar_t**) {
             rc = 0;
             break;
         case cnk::CliMode::Daemon:
-        default:                      rc = RunDaemon(cfg); break;
+        default:                      rc = RunDaemon(cfg, hinst); break;
     }
 
     if (sim.active) sim.server.Stop();
