@@ -18,6 +18,7 @@ add_library(cnk_core STATIC
   src/native/core/Http.cpp
   src/native/core/Encoding.cpp
   src/native/core/Url.cpp
+  src/native/core/Integrity.cpp
   src/native/store/Dpapi.cpp
   src/native/store/Config.cpp
   src/native/auth/Detector.cpp
@@ -68,6 +69,7 @@ add_executable(cnk_tests
   tests/scheduler_test.cpp
   tests/cli_test.cpp
   tests/sys_test.cpp
+  tests/integrity_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)

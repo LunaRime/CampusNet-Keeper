@@ -7,6 +7,7 @@
 #include "core/Version.h"
 #include "core/Cli.h"
 #include "core/Encoding.h"
+#include "core/Integrity.h"
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/Probe.h"
@@ -19,6 +20,7 @@
 #include "store/Config.h"
 #include "sim/SimServer.h"
 #include "sys/SingleInstance.h"
+#include "sys/Autostart.h"
 #include "tray/TrayIcon.h"
 
 namespace {
@@ -211,6 +213,37 @@ std::string ReadPasswordFromConsole() {
     return pw;
 }
 
+// 低完整性导致写入被拒时的指引。低完整性有两种来源，处置方式相反，必须分开：
+//   A) 可执行文件自身带低完整性标签——Windows 取「min(父进程令牌, 可执行文件
+//      标签)」作为新进程完整性，因此从任何终端启动都是低完整性，换终端无效；
+//   B) 启动链（终端/启动器/沙盒）本身是低完整性——换常规终端即可。
+// 给错分支会让人白折腾（曾把 A 当成 B，指引"改用常规 cmd"，在 A 下永远不生效）。
+void PrintLowIntegrityHint() {
+    const std::string exe = cnk::ExecutablePath();
+    const long long rid = cnk::FileIntegrityRid(exe);
+    std::printf("\n[提示] 进程完整性=低：低完整性进程对 %%APPDATA%%、%%TEMP%% 等常规目录的\n");
+    std::printf("       一切写入都会被 Windows 的 No-Write-Up 规则拒绝，与文件权限无关。\n");
+    if (rid >= 0 && rid < SECURITY_MANDATORY_MEDIUM_RID) {
+        std::printf("       原因：本程序的可执行文件自身带「低」完整性标签，"
+                    "Windows 取 min(父进程, 可执行\n");
+        std::printf("       文件标签) 作为新进程完整性，所以从任何终端启动都是低完整性——"
+                    "换常规 cmd 无效。\n");
+        std::printf("       诊断：icacls \"%s\"\n", exe.c_str());
+        std::printf("       修复：icacls \"<上面路径所在目录>\" /setintegritylevel medium /t\n");
+        std::printf("             或把本程序复制到其它目录（如 %%LOCALAPPDATA%%\\CampusNet-Keeper）\n");
+        std::printf("             运行：副本不继承原标签。\n");
+    } else if (rid == -1) {
+        std::printf("       本程序文件没有低完整性标签，说明是启动它的终端/启动器处于受限\n");
+        std::printf("       （沙盒/隔离）环境。请改用常规终端重试：开始菜单 → 搜索 cmd → 打开，\n");
+        std::printf("       然后执行：\"%s\" --set-password --user=你的账号\n", exe.c_str());
+    } else {
+        std::printf("       未能读到可执行文件的完整性标签，请依次排查：\n");
+        std::printf("       1) icacls \"%s\" 是否显示 Low Mandatory Level；\n", exe.c_str());
+        std::printf("          是则：icacls \"<其所在目录>\" /setintegritylevel medium /t\n");
+        std::printf("       2) 否则从开始菜单新开 cmd 重试（脱离受限启动链）。\n");
+    }
+}
+
 int RunSetPassword(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
     std::string password;
     // 环境变量优先：脚本化/自动化场景（也是失败提示里推荐的替代方式）
@@ -239,14 +272,7 @@ int RunSetPassword(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
         : cnk::ConfigSaveTo(opts.config_path, cfg, err);
     if (!saved) {
         std::printf("保存配置失败：%s\n", err.c_str());
-        // 低完整性级别进程对所有常规目录的写入都会被系统拒绝——
-        // 这通常意味着终端本身处于受限环境（沙盒/安全软件隔离模式）
-        if (err.find("完整性=低") != std::string::npos) {
-            std::printf("\n[提示] 当前终端处于受限环境（低完整性级别），无法写入任何用户文件。\n");
-            std::printf("       请改用常规终端重试：开始菜单 → 搜索 cmd → 打开，然后执行：\n");
-            std::printf("       cd /d D:\\Code\\CampusNet-Keeper\\build\\Release\n");
-            std::printf("       CampusNet-Keeper.exe --set-password --user=你的账号\n");
-        }
+        if (err.find("完整性=低") != std::string::npos) PrintLowIntegrityHint();
         return 1;
     }
     std::printf("密码已用 Windows DPAPI 加密保存。\n");

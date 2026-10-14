@@ -2,6 +2,7 @@
 #include "store/Dpapi.h"
 #include "core/Paths.h"
 #include "core/Log.h"
+#include "core/Integrity.h"
 #include "json.hpp"
 #include <windows.h>
 #include <cerrno>
@@ -235,43 +236,6 @@ DWORD ProbeWritable(const fs::path& p) {
     return 0;
 }
 
-// 进程权限上下文（提升/普通 + 完整性级别）——排查"为何写入被拒绝"的关键维度。
-// 完整性级别是进程属性（继承自父进程链）：低完整性进程对所有常规用户目录
-// 的写入会被系统强制拒绝（No-Write-Up），表现为全盘 ACCESS_DENIED。
-std::string TokenContext() {
-    HANDLE tok = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return "未知";
-    std::string s;
-    TOKEN_ELEVATION el{};
-    DWORD sz = 0;
-    if (GetTokenInformation(tok, TokenElevation, &el, sizeof(el), &sz)) {
-        s = el.TokenIsElevated ? "提升进程" : "普通进程";
-    } else {
-        s = "未知进程";
-    }
-    // 完整性级别（TokenIntegrityLevel）
-    sz = 0;
-    GetTokenInformation(tok, TokenIntegrityLevel, nullptr, 0, &sz);
-    if (sz > 0) {
-        std::vector<BYTE> buf(sz);
-        if (GetTokenInformation(tok, TokenIntegrityLevel, buf.data(), sz, &sz)) {
-            auto* label = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf.data());
-            const DWORD rid = *GetSidSubAuthority(
-                label->Label.Sid,
-                (DWORD)(*GetSidSubAuthorityCount(label->Label.Sid) - 1));
-            if (rid < SECURITY_MANDATORY_MEDIUM_RID) {
-                s += "，完整性=低（受限环境）";
-            } else if (rid < SECURITY_MANDATORY_HIGH_RID) {
-                s += "，完整性=中";
-            } else {
-                s += "，完整性=高";
-            }
-        }
-    }
-    CloseHandle(tok);
-    return s;
-}
-
 // 保存失败时的诊断：量化"写入被拒"的作用范围（仅失败路径调用）——
 // 用于区分：只拒该文件名 / 只拒该目录 / 全盘拒绝 / 瞬时问题
 std::string SaveFailureDiagnostics(const fs::path& tmp, DWORD last, int en) {
@@ -292,7 +256,7 @@ std::string SaveFailureDiagnostics(const fs::path& tmp, DWORD last, int en) {
                     "，Win32=" + std::to_string(last) +
                     "，errno=" + std::to_string(en) +
                     "，父目录" + (dir_ok ? "存在" : "不存在") +
-                    "，进程=" + TokenContext() +
+                    "，进程=" + cnk::ProcessTokenContext() +
                     "，探测[原名=" + std::to_string(e_tmp) +
                     ", txt=" + std::to_string(e_txt) +
                     ", 无后缀=" + std::to_string(e_noext) +
