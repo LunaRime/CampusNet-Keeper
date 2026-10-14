@@ -235,16 +235,41 @@ DWORD ProbeWritable(const fs::path& p) {
     return 0;
 }
 
-// 进程权限上下文（提升/普通）——排查"为何写入被拒绝"的关键维度
+// 进程权限上下文（提升/普通 + 完整性级别）——排查"为何写入被拒绝"的关键维度。
+// 完整性级别是进程属性（继承自父进程链）：低完整性进程对所有常规用户目录
+// 的写入会被系统强制拒绝（No-Write-Up），表现为全盘 ACCESS_DENIED。
 std::string TokenContext() {
     HANDLE tok = nullptr;
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) return "未知";
+    std::string s;
     TOKEN_ELEVATION el{};
     DWORD sz = 0;
-    const BOOL ok = GetTokenInformation(tok, TokenElevation, &el, sizeof(el), &sz);
+    if (GetTokenInformation(tok, TokenElevation, &el, sizeof(el), &sz)) {
+        s = el.TokenIsElevated ? "提升进程" : "普通进程";
+    } else {
+        s = "未知进程";
+    }
+    // 完整性级别（TokenIntegrityLevel）
+    sz = 0;
+    GetTokenInformation(tok, TokenIntegrityLevel, nullptr, 0, &sz);
+    if (sz > 0) {
+        std::vector<BYTE> buf(sz);
+        if (GetTokenInformation(tok, TokenIntegrityLevel, buf.data(), sz, &sz)) {
+            auto* label = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf.data());
+            const DWORD rid = *GetSidSubAuthority(
+                label->Label.Sid,
+                (DWORD)(*GetSidSubAuthorityCount(label->Label.Sid) - 1));
+            if (rid < SECURITY_MANDATORY_MEDIUM_RID) {
+                s += "，完整性=低（受限环境）";
+            } else if (rid < SECURITY_MANDATORY_HIGH_RID) {
+                s += "，完整性=中";
+            } else {
+                s += "，完整性=高";
+            }
+        }
+    }
     CloseHandle(tok);
-    if (!ok) return "未知";
-    return el.TokenIsElevated ? "提升进程" : "普通进程";
+    return s;
 }
 
 // 保存失败时的诊断：量化"写入被拒"的作用范围（仅失败路径调用）——

@@ -239,6 +239,14 @@ int RunSetPassword(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
         : cnk::ConfigSaveTo(opts.config_path, cfg, err);
     if (!saved) {
         std::printf("保存配置失败：%s\n", err.c_str());
+        // 低完整性级别进程对所有常规目录的写入都会被系统拒绝——
+        // 这通常意味着终端本身处于受限环境（沙盒/安全软件隔离模式）
+        if (err.find("完整性=低") != std::string::npos) {
+            std::printf("\n[提示] 当前终端处于受限环境（低完整性级别），无法写入任何用户文件。\n");
+            std::printf("       请改用常规终端重试：开始菜单 → 搜索 cmd → 打开，然后执行：\n");
+            std::printf("       cd /d D:\\Code\\CampusNet-Keeper\\build\\Release\n");
+            std::printf("       CampusNet-Keeper.exe --set-password --user=你的账号\n");
+        }
         return 1;
     }
     std::printf("密码已用 Windows DPAPI 加密保存。\n");
