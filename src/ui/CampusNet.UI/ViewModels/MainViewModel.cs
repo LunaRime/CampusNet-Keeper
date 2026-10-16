@@ -323,6 +323,51 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// 用当前档案做一次「探测 → 识别 → 登录」并回报结果（现场排查用）。
+    /// ⚠ 这是**用户点击触发**的联网动作：会真的尝试登录一次。
+    /// </summary>
+    [RelayCommand]
+    private async Task TestProfileAsync()
+    {
+        if (SelectedProfile is null)
+        {
+            LastError = "请先选择一个配置档案";
+            return;
+        }
+        if (!DaemonRunning)
+        {
+            LastError = "守护进程未运行，无法测试";
+            return;
+        }
+
+        var name = SelectedProfile.Name;
+        StatusText = $"正在测试「{name}」…（会真的尝试登录一次）";
+        LastError = null;
+        try
+        {
+            var resp = await _ipc.SendAsync("test_profile", new JsonObject { ["profile"] = name });
+            if (resp?["ok"]?.GetValue<bool>() != true)
+            {
+                LastError = resp?["error"]?.GetValue<string>() ?? "测试失败";
+                StatusText = "测试未完成";
+                return;
+            }
+
+            var d = resp["data"];
+            var ok = d?["success"]?.GetValue<bool>() == true;
+            var detail = d?["message"]?.GetValue<string>() ?? "";
+            StatusText = ok
+                ? $"测试成功（{d?["strategy"]?.GetValue<string>()}）"
+                : $"测试未成功（{d?["strategy"]?.GetValue<string>()}）：{detail}";
+            if (!ok) LastError = detail;   // 失败细节留在底部，便于照抄排查
+        }
+        catch (IpcException ex)
+        {
+            LastError = ex.Message;
+        }
+    }
+
     private static List<int> ParseBackoff(string text)
     {
         var list = new List<int>();

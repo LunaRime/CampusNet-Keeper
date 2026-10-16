@@ -297,6 +297,8 @@
         <TextBlock Grid.Column="0" Classes="error" VerticalAlignment="Center"
                    Text="{Binding LastError}"/>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+          <Button Classes="outline" Content="测试登录"
+                  Command="{Binding TestProfileCommand}"/>
           <Button Classes="outline" Content="刷新" Command="{Binding RefreshCommand}"/>
           <Button Classes="primary" Content="保存" Command="{Binding SaveCommand}"/>
         </StackPanel>

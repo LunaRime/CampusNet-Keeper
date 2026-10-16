@@ -9677,9 +9677,20 @@ git commit -m "feat: 日志面板与守护进程 IPC 命令实现"
 > **⚠ 两处按更严的规矩执行 / 记档的偏差**：
 > ① **刻意不实现 `get_password`**：任务 24 明令「UI 进程从头到尾不接触已存密码的明文」，
 > 而该命令会把明文交给界面；冲突时按更严的执行（界面上的「显示」只揭示用户本回合输入的字符）。
-> ② `get_status` 的 `last_success` 目前恒为 0（界面显示「从未」）：计划引用的
-> `sch->LastSuccessUnix()` **在代码里并不存在**（Scheduler 只暴露 State/LastMessage/LocalIp/
-> LastPortalBody/RunProbeNow/ForceReconnect/SetConfig），需要补一个访问器才能真正上报。
+> ② ~~`get_status` 的 `last_success` 目前恒为 0：计划引用的 `sch->LastSuccessUnix()` 在代码里
+> 并不存在~~ —— **这条更正：是我查错了**。`Scheduler::LastSuccessUnix()` 一直存在
+> （`Scheduler.h:39` / `Scheduler.cpp:317`），我先前的 grep 模式漏了 `long long` 就下了结论。
+> 现已接上真值（`d["last_success"] = sch.LastSuccessUnix()`）。
+>
+> **✅ 同日补齐（`test_profile` + `last_success`）**：
+> - `test_profile` 已实现：按 `args.profile` 选档案（找不到则用第一份）→ `ProbeOnce` 探测 →
+>   `DetectVendor` 识别 → `CreateAuth(...)->Login()` → 回 `probe_state/probe_message/vendor/
+>   strategy/success/message/request_url/request_body`，其中**请求照 `--test-login` 的规矩脱敏**
+>   （`RedactSecrets`）；无密码的档案直接拒绝并提示先保存密码。界面上新增「测试登录」按钮，
+>   会明确提示"**会真的尝试登录一次**"（这是用户点击触发的联网动作，不是后台行为）。
+> - `last_success` 改用真值，界面「上次登录」不再是"从未"。
+> - 验证：C++ 全量 247 用例 / 245 通过（仍只剩 2 项环境性）；UI 构建零错误零警告；
+>   令牌检查 4/4；核心自检 17/17。
 >
 > **验证**：新增 `tests/config_for_ui_test.cpp` 7 条用例钉住两段安全逻辑（**给 UI 的配置绝不
 > 含 `password_enc`、只给 `has_password`**；新密码优先、否则按档案名沿用旧密码、空串视为不改、

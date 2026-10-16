@@ -1,8 +1,12 @@
 #include "ipc/DaemonCommands.h"
 
+#include "auth/AuthFactory.h"
 #include "auth/Carrier.h"
+#include "auth/Detector.h"
 #include "core/ConfigForUi.h"
+#include "core/Encoding.h"
 #include "core/Log.h"
+#include "core/Probe.h"
 #include "store/Config.h"
 #include "json.hpp"
 
@@ -34,9 +38,8 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
         d["state"] = RunStateName(sch.State());
         d["message"] = sch.LastMessage();
         d["local_ip"] = sch.LocalIp();
-        // TODO(任务 25 收尾)：Scheduler 目前没有暴露"上次成功时间"，先给 0（界面显示"从未"）。
-        // 计划原文引用的 sch->LastSuccessUnix() 在代码里并不存在。
-        d["last_success"] = 0;
+        // 真实的"上次登录成功时间"（Scheduler::LastSuccessUnix 一直存在；此前误判为缺失）
+        d["last_success"] = sch.LastSuccessUnix();
         return Ok(req, d.dump());
     }
 
@@ -91,6 +94,57 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
         sch.SetConfig(merged);   // 热重载：不重启即生效
         LogInfo("配置已由设置界面更新并热重载");
         return Ok(req, "{}");
+    }
+
+    if (req.cmd == "test_profile") {
+        // 用指定档案做一次「探测 → 识别 → 登录」，把全过程回给界面（现场排查用）。
+        // ⚠ 这是**用户主动触发**的联网动作（会真的尝试登录），不是后台自动行为。
+        const nlohmann::json args = nlohmann::json::parse(req.args_json, nullptr, false);
+        const std::string want =
+            args.is_object() ? args.value("profile", std::string{}) : std::string{};
+
+        AppConfig cfg;
+        std::string err;
+        if (!ConfigLoad(cfg, err)) return Fail(req, "读取配置失败：" + err);
+
+        const Profile* target = nullptr;
+        for (const auto& p : cfg.profiles)
+            if (p.name == want) {
+                target = &p;
+                break;
+            }
+        if (target == nullptr && !cfg.profiles.empty()) target = &cfg.profiles.front();
+        if (target == nullptr) return Fail(req, "没有可用的配置档案");
+        if (target->password.empty())
+            return Fail(req, "该档案没有可用密码（请先在设置界面输入并保存）");
+
+        const ProbeResult pr = ProbeOnce(cfg.settings);
+        const Vendor vendor = DetectVendor(pr.response);
+
+        NetContext ctx;
+        ctx.local_ip = sch.LocalIp();
+        ctx.portal_url = cfg.settings.probe_url;
+        ctx.portal_body = DecodeBody(pr.response);
+        ctx.server_header = pr.response.server;
+
+        auto auth = CreateAuth(vendor, *target);
+        const LoginResult lr = auth->Login(*target, ctx);
+
+        nlohmann::json d;
+        d["probe_state"] = pr.state == NetState::Online    ? "online"
+                           : pr.state == NetState::Offline ? "offline"
+                                                           : "portal";
+        d["probe_message"] = pr.message;
+        d["vendor"] = VendorName(vendor);
+        d["strategy"] = auth->Name();
+        d["success"] = lr.success;
+        d["message"] = lr.message;
+        // 请求一律脱敏后再回给界面（与 --test-login 的输出同规矩）
+        d["request_url"] = RedactSecrets(lr.request_url);
+        d["request_body"] = RedactSecrets(lr.request_body);
+        LogInfo(std::string("界面触发测试登录：") + (lr.success ? "成功" : "失败") +
+                "，策略=" + auth->Name());
+        return Ok(req, d.dump());
     }
 
     if (req.cmd == "get_carrier_options") {
