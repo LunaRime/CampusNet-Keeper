@@ -13,7 +13,11 @@ on:
 
 jobs:
   windows:
-    runs-on: windows-latest
+    # 固定用 windows-2022：windows-latest 已随新版 Visual Studio（2026）迁移，
+    # 上面没有再装 VS 2022，CMake 的 "Visual Studio 17 2022" 生成器会报
+    # "could not find any instance of Visual Studio"（2026-10-17 实测失败原因）。
+    # 2022 镜像自带 MSVC + C++ 工作负载，正是本项目需要的工具链。
+    runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +89,7 @@ jobs:
     # 打 tag（v*）时把产物附到 GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: windows
-    runs-on: windows-latest
+    runs-on: windows-2022
     permissions:
       contents: write
     steps:
