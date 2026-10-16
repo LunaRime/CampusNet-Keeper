@@ -57,7 +57,7 @@ target_link_libraries(cnk_core PUBLIC
 # 控制台子系统：CLI 输出（cmd/管道/重定向）在任何环境下原生可靠。
 # 守护形态不依赖子系统差异——由程序自身在"独占控制台"时隐藏窗口
 #（见 main.cpp 的 HideConsoleIfStandalone），兼顾无黑窗与输出可靠性。
-add_executable(CampusNet-Keeper src/native/main.cpp)
+add_executable(CampusNet-Keeper src/native/main.cpp src/native/app.rc)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
 
 # 测试工具（不随产品发布）：让任务 23 的 C# 客户端能对着**真实的** PipeServer

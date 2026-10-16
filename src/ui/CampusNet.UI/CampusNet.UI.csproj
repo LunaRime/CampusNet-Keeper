@@ -16,6 +16,8 @@
     <AssemblyName>CampusNet.UI</AssemblyName>
     <RootNamespace>CampusNet.UI</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- 与守护进程共用同一个图标（assets/app.ico 由仓库根统一维护） -->
+    <ApplicationIcon>..\..\assets\app.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
   </PropertyGroup>
