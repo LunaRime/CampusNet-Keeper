@@ -9726,6 +9726,35 @@ git commit -m "feat: 日志面板与守护进程 IPC 命令实现"
 
 ## 任务 26：按需加载 CLR 与内嵌 UI
 
+> **📐 开工前的设计结论（2026-10-17，供下次直接动手）**
+>
+> **难点与取舍：ZIP 解压需要 deflate 解码器，而本项目没有 zlib。** 三条路：
+> ① 引第三方 inflate（如 miniz，~2k 行，需评审与许可确认）；
+> ② 调 Windows 的 `compressapi.dll`（只有 XPRESS/LZMS/LZ4，**没有 deflate**）→ 不行；
+> ③ **让载荷 ZIP 只用"存储"（不压缩）条目** —— 打包时用 .NET 的
+> `ZipArchive(..., CompressionLevel.NoCompression)`（PowerShell 一行即可），
+> C++ 侧只需解析中央目录 + 按偏移拷数据，**约 60 行、无依赖、可单测**。
+> **建议走 ③**：体积大一点（Avalonia 发布产物约 20–30MB，直接进 exe 会让 exe 变大），
+> 换来"零依赖 + 可测试"；若体积不可接受，再单独立项引 inflate。
+>
+> **实施顺序（每步都能单独验证）**：
+> 1. `ui_host/PayloadExtract`：RCDATA 读取 + 中央目录解析（仅存储条目，遇到压缩条目
+>    必须返回**明确错误**而不是解出坏数据）+ 版本戳（`.version` 与 `Version.h` 比对）+
+>    解压到 `%LOCALAPPDATA%\CampusNet-Keeper\ui\`（先解到临时目录再改名，避免半成品）。
+>    **单测**：用测试里构造的存储型 ZIP 覆盖正常/缺 central directory/压缩条目/版本变化重解/只读目标目录。
+> 2. `scripts/embed_ui.ps1`：`dotnet publish` UI → 生成存储型 ZIP → 写 `UI_PAYLOAD.rc`
+>    （`UI_PAYLOAD RCDATA "…zip"`）→ 交给 CMake 编进 exe；`build.ps1` 增加 `-SingleExe` 开关。
+> 3. `main.cpp`：新增 `--ui` 形态（`RunUiMode()` 用 `hostfxr` 加载托管入口）；
+>    托盘「打开设置界面」把占位气泡换成 `LaunchUiProcess()`（`CreateProcess(自身, "--ui")`）。
+>    `hostfxr` 通过 `LoadLibrary("hostfxr.dll")` + `get_hostfxr_path` 解析，加载失败要
+>    给出**可诊断提示**（未装 .NET 运行时 / 版本不符），并回退为提示用户装 .NET。
+> 4. 验证：`pwsh -File build.ps1 -SingleExe` → 删掉 `build-ui` 与 `%LOCALAPPDATA%\...\ui` →
+>    从**单个 exe** 启动托盘 → 点「打开设置界面」应释放载荷并弹出界面；
+>    再跑一次确认版本戳命中（不重复解压）。
+>
+> **遗留提醒**：契约自检的 `echo`/`blob` 是探针专用命令，对真守护进程跑会误报失败；
+> `get_status.local_ip` 为空。
+
 **Files:**
 - Create: `src/native/ui_host/Hostfxr.h` / `.cpp`
 - Create: `src/native/ui_host/PayloadExtract.h` / `.cpp`
