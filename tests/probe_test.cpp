@@ -12,6 +12,41 @@ cnk::Settings MakeSettings(const std::string& url, const std::string& expect) {
 }
 }
 
+TEST_CASE("登录后复探：轮询到在线即停，且有尝试次数上界") {
+    // 2026-10-16 真机实测：登录接口已返回成功，但紧跟着的单次复探得到「仍不在线」
+    //（AC 数据面放行滞后数秒），稍后探测才是 Online。复探必须轮询，不能探一次就下结论。
+    int calls = 0;
+    auto flaky = [&calls] {
+        ++calls;
+        cnk::ProbeResult r;
+        r.state = calls < 3 ? cnk::NetState::PortalDetected : cnk::NetState::Online;
+        return r;
+    };
+    auto r = cnk::ProbeWithRetry(flaky, 5, 0);
+    CHECK(r.state == cnk::NetState::Online);
+    CHECK(calls == 3);  // 第 3 次成功即停，不浪费探测
+
+    // 一直不在线时必须收敛：次数用尽后返回最后一次结果（含 message，便于如实报告原因）
+    calls = 0;
+    auto always_hijacked = [&calls] {
+        ++calls;
+        cnk::ProbeResult r;
+        r.state = cnk::NetState::PortalDetected;
+        r.message = "被重定向到 http://portal/a79.htm";
+        return r;
+    };
+    auto r2 = cnk::ProbeWithRetry(always_hijacked, 4, 0);
+    CHECK(r2.state == cnk::NetState::PortalDetected);
+    CHECK(calls == 4);
+    CHECK(r2.message.find("重定向") != std::string::npos);
+
+    // 次数参数的下界保护：给 0 也至少探一次
+    calls = 0;
+    auto once = [&calls] { ++calls; return cnk::ProbeResult{}; };
+    (void)cnk::ProbeWithRetry(once, 0, 0);
+    CHECK(calls == 1);
+}
+
 TEST_CASE("返回 200 且正文匹配时判定为在线") {
     cnk::SimServer srv;
     std::string err;

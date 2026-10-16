@@ -46,6 +46,22 @@ void PrintLine(const std::string& s) {
     std::printf("%s\n", s.c_str());
 }
 
+// 网络状态的中文名（探测输出与日志共用）
+const char* StateText(cnk::NetState s) {
+    switch (s) {
+        case cnk::NetState::Online: return "在线";
+        case cnk::NetState::Offline: return "离线";
+        case cnk::NetState::PortalDetected: return "被劫持";
+        case cnk::NetState::Unknown: return "未配置探测地址";
+    }
+    return "未知";
+}
+
+// 登录成功后的复探参数：AC 数据面放行有秒级延迟（2026-10-16 真机实测：
+// 紧跟登录的单次复探得「仍不在线」，稍后探测即 Online）
+constexpr int kAfterLoginProbes = 5;
+constexpr int kAfterLoginDelayMs = 1500;
+
 int RunProbeNow(cnk::AppConfig& cfg) {
     PrintLine("== 探测 ==");
     PrintLine("探测地址: " + cfg.settings.probe_url);
@@ -139,10 +155,7 @@ int RunTestLogin(cnk::AppConfig& cfg) {
 
     PrintLine("== 探测 ==");
     auto pr = cnk::ProbeOnce(cfg.settings);
-    PrintLine("状态: " + std::string(pr.state == cnk::NetState::Online ? "在线"
-                       : pr.state == cnk::NetState::Offline ? "离线"
-                       : pr.state == cnk::NetState::Unknown ? "未配置探测地址"
-                                                            : "被劫持"));
+    PrintLine(std::string("状态: ") + StateText(pr.state));
     PrintLine("说明: " + pr.message);
     if (pr.state == cnk::NetState::Online) {
         PrintLine("当前已在线，无需登录。若要测试登录请先注销或等待会话失效。");
@@ -185,13 +198,29 @@ int RunTestLogin(cnk::AppConfig& cfg) {
     PrintLine("== 结果 ==");
     PrintLine(std::string("成功: ") + (lr.success ? "是" : "否"));
     PrintLine("信息: " + lr.message);
+    // 把结果也写进日志（含时间戳），便于事后核对「登录成功 → 何时真正放行」
+    cnk::LogInfo(std::string("--test-login 结果：") + (lr.success ? "成功" : "失败") +
+                 "，信息=" + cnk::RedactSecrets(lr.message));
 
     if (lr.success) {
         PrintLine("");
         PrintLine("复测探测...");
-        auto after = cnk::ProbeOnce(cfg.settings);
-        PrintLine(std::string("复测结果: ") +
-                  (after.state == cnk::NetState::Online ? "已在线 OK" : "仍不在线"));
+        // 登录成功后 AC 数据面放行常有秒级延迟：单次复探会误报「仍不在线」
+        //（2026-10-16 真机实测），故轮询若干次，并如实报告用了几次、最后一态为何。
+        int tries = 0;
+        auto after = cnk::ProbeWithRetry(
+            [&cfg, &tries] { ++tries; return cnk::ProbeOnce(cfg.settings); },
+            kAfterLoginProbes, kAfterLoginDelayMs);
+        if (after.state == cnk::NetState::Online) {
+            PrintLine("复测结果: 已在线 OK（第 " + std::to_string(tries) + " 次探测）");
+            cnk::LogInfo("复测结果：已在线（第 " + std::to_string(tries) + " 次探测）");
+        } else {
+            PrintLine(std::string("复测结果: 仍不在线（") + StateText(after.state) +
+                      "，共探测 " + std::to_string(tries) + " 次）");
+            PrintLine("说明: " + after.message);
+            cnk::LogWarn(std::string("复测结果：仍不在线（") + StateText(after.state) +
+                         "，共探测 " + std::to_string(tries) + " 次）");
+        }
     }
     return lr.success ? 0 : 2;
 }
