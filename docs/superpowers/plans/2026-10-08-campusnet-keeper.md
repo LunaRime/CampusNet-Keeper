@@ -8813,6 +8813,41 @@ git add -A
 git commit -m "feat: Avalonia UI 工程骨架与 IPC 客户端"
 ```
 
+> **🟡 实施注记（2026-10-16，**部分完成**）**：本任务的**核心（Step 2/3 的 IPC 客户端与
+> 协议常量）已实现并完成跨语言验证**；Step 1/4 的 Avalonia 外壳已按结构写好，但
+> **尚未构建验证**——本机校园网 **HTTPS 不通**（实测 `api.nuget.org`、`www.microsoft.com`、
+> `github.com` 的 TLS 握手全部失败，而 HTTP 探测显示网络 Online），NuGet 取不到 Avalonia 包，
+> `~/.nuget/packages` 也无缓存。
+>
+> **已交付并验证的部分**：
+> - `src/ui/CampusNet.UI.Core/`（**只依赖 BCL**，无需 NuGet）：`IpcClient`、`PipeProtocol`
+>   （管道名规则 + 协议常量）。设计上把可测核心与 UI 外壳分开，正是为了在取不到包时
+>   核心仍能构建与验证。
+> - `src/ui/ContractCheck/`（零依赖控制台断言；xunit/nunit 都要 NuGet，故手写）+
+>   `tools/ipc_probe_server.cpp`（CMake 目标 `cnk_ipc_probe`，探针服务端，**测试工具不随产品发布**）
+>   → **跨语言契约自检 12/12 全过**：可达性、ping 往返、中文 args 的 UTF-8 往返、
+>   未知命令错误形态、**连续 30 次请求全成功**、不存在的管道 1.5 秒内快速失败、
+>   超大响应被服务端明确拒绝。
+> - `src/ui/CampusNet.UI/`：`Theme.Light/Dark.axaml`（令牌层，值全部取自 DESIGN.md）、
+>   `App.axaml(.cs)`、`Program.cs`、`Views/MainWindow.axaml(.cs)`（占位窗口，**不出现裸色值**）、
+>   `app.manifest`（PerMonitorV2）。
+> - `tools/check_ui_tokens.ps1`：**不依赖编译器的静态断言**——XML 良构、亮暗键一一对应、
+>   除主题文件外无裸色值、`DynamicResource` 引用可解析；当前 4 项全过（它已经抓到一个真问题：
+>   注释里的 `--radius` 含 `--`，XML 非法，同样会让 Avalonia 构建失败）。
+>
+> **⚠ 与本任务原文的偏差**：
+> ① **目标框架 `net9.0-windows` → `net10.0-windows`**：本机只有 .NET SDK 10.0.401，无 .NET 9 运行时。
+> ② **`IpcClient` 改为「每请求新建连接」**：原文保持长连接复用，但本项目 C++ 服务端的契约是
+> **一个连接只处理一条请求**（见 `PipeServer.h`，且由 `cnk_tests` 的用例钉住），长连接复用下
+> 第二次请求必然失败。同时按服务端契约补上「及时读取并关闭」与「BUSY / FILE_NOT_FOUND 重试」。
+> ③ 不引 `Avalonia.Fonts.Inter`：Inter 不在 DESIGN.md 的字体栈里（字体由 `CnkFontSans/Mono` 决定，
+> 栈尾补系统中文字族是平台必需的回退）。
+> ④ 新增根目录 `Directory.Build.props`：把 `obj/bin` 重定向到 `build-ui/`（受限沙箱不允许在
+> `src/` 下新建文件；同时保持源码树干净）。
+>
+> **未完成（下一步）**：`CampusNet.UI` 的首次 `dotnet build` 与运行、明/暗/键盘焦点三态验收、
+> Step 3 的配置模型镜像（`Models/AppConfig.cs`，任务 24 要用）。等能取到 Avalonia 包后继续。
+
 ---
 
 ## 任务 24：设置界面
