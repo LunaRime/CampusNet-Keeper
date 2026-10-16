@@ -50,10 +50,14 @@ jobs:
         run: |
           $out = & .\build-m1\Release\CampusNet-Keeper.exe --ui-info 2>&1
           $out | ForEach-Object { $_ }
-          if ($LASTEXITCODE -ne 3) {
-            Write-Error "--ui-info 应返回 3（本构建没有 build/generated 载荷），实际 $LASTEXITCODE"
+          $rc = $LASTEXITCODE
+          if ($rc -ne 3) {
+            Write-Error "--ui-info 应返回 3（本构建没有 build/generated 载荷），实际 $rc"
             exit 1
           }
+          # ⚠ 必须显式 exit 0：此刻 $LASTEXITCODE 还留着 3，不写这句 pwsh 进程会以 3 退出
+          #（2026-10-17 实测：这一步因此把整个 job 判成 failure）
+          exit 0
 
       - name: 证据脱敏审计
         shell: pwsh

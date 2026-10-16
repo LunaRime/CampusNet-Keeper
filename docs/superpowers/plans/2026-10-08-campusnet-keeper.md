@@ -10394,6 +10394,13 @@ git commit -m "feat: 按需加载 CLR 并解压内嵌 UI，实现单 exe 双形�
 >
 > **首跑即 dry run**：release job 从未在 CI 执行过（历史 6 次 run 里全是 skipped），所以第一次推 tag
 > 就是它的首跑；失败就删 tag/Release 重来（私有仓库，无外部影响）。
+>
+> **首跑实录（2026-10-17，值得记一笔）**：tag `v0.1.0` 推上去后 `windows` job 在**新增的
+> 「精简版形态自检」**那一步失败——`--ui-info` 打印正确且断言条件为假，但该步**没有显式 `exit 0`**，
+> `$LASTEXITCODE` 仍留着 3，pwsh 进程就以非零退出，GitHub 判 job 失败（release 因 `needs: windows`
+> 被 skip，**没有发出任何 Release**，正是 `needs` 兜底的价值）。修法：断言后补 `exit 0`。
+> 教训：**GitHub Actions 的 pwsh 步骤里，只要末尾留着非零 `$LASTEXITCODE`，即使逻辑上"通过"，
+> 进程也会以非零退出**——凡是以原生命令结尾的步骤都要显式 `exit 0`。
 
 **Files:**
 - Create: `scripts/build.ps1`
