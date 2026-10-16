@@ -3,11 +3,39 @@
 #include "core/Encoding.h"
 #include "core/Url.h"
 #include "core/Log.h"
+#include <cctype>
 #include <sstream>
 
 namespace cnk {
 
 namespace {
+
+// 取信息页里 msga='...' / msga="..." 的值（首个命中，限长防异常回显）。
+// msga 是厂商对该次登录的原始判定码（实测样例：'userid error1'/'userid error2'），
+// 诊断价值高，随失败信息一并呈现。
+std::string ExtractJsString(const std::string& body, const std::string& name) {
+    const std::string needle = name + "=";
+    size_t pos = 0;
+    while ((pos = body.find(needle, pos)) != std::string::npos) {
+        const bool at_boundary =
+            pos == 0 ||
+            !(std::isalnum((unsigned char)body[pos - 1]) || body[pos - 1] == '_');
+        if (at_boundary) {
+            size_t i = pos + needle.size();
+            while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) ++i;
+            if (i >= body.size()) return {};
+            const char quote = body[i];
+            if (quote != '\'' && quote != '"') return {};
+            const size_t end = body.find(quote, i + 1);
+            if (end == std::string::npos) return {};
+            std::string v = body.substr(i + 1, end - i - 1);
+            if (v.size() > 64) v.resize(64);
+            return v;
+        }
+        pos += needle.size();
+    }
+    return {};
+}
 
 class DrcomAuth : public IAuth {
 public:
@@ -24,14 +52,16 @@ public:
         }
 
         std::string scheme_host, port;
-        // spec §7.1：eportal HTTP 端口 801、HTTPS 端口 802；无显式端口时按 scheme 兜底
-        const bool https = p.auth_url.rfind("https://", 0) == 0;
-        if (!SplitHostPort(p.auth_url, scheme_host, port, https ? "802" : "801")) {
+        // spec §7.1 原文称登录端口 801；**2026-10-16 实测修订**：老式 c=ACSetting
+        // 协议与门户页同源——:801 上该请求只得到 SPA 外壳（不处理登录），同源 :80
+        // 才真正处理并返回 Dr.COMWebLoginID_2/3 信息页。故使用 auth_url 自身端口，
+        // 未显式写端口时不补默认端口（按 scheme 缺省 80/443）。
+        if (!SplitHostPort(p.auth_url, scheme_host, port, "")) {
             r.message = "认证网址格式不正确：" + p.auth_url +
                         "（应形如 http://10.0.0.1/）";
             return r;
         }
-        r.request_url = scheme_host + ":" + port +
+        r.request_url = scheme_host + (port.empty() ? "" : ":" + port) +
                         "/eportal/?c=ACSetting&a=Login&url=drappall";
 
         const std::string account = p.username + IspSuffix(p);
@@ -108,6 +138,11 @@ public:
             r.vendor_code = 2;
             r.success = false;
             r.message = "服务器返回登录失败（账号或密码错误，或该账号不可用）";
+            // 附上厂商原始判定码 msga（如 'userid error1/2'）——2026-10-16 实测该码
+            // 能区分「用户不存在 / 已在线」等成因，是本项目的关键现场证据
+            const std::string detail = ExtractJsString(page, "msga");
+            if (!detail.empty())
+                r.message += "；服务器信息：" + RedactSecrets(detail);
             return r;
         }
 

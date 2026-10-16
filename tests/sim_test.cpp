@@ -462,10 +462,11 @@ TEST_CASE("fail_mode=5 复现真实劫持形态：裸 302（无指纹）跳转�
     REQUIRE(srv.Start(opts, err));
     REQUIRE(srv.PortalPort() > 0);
 
-    // 未登录：裸 302 —— 无 Server 头、空正文
+    // 未登录：裸 302 —— Server 为拦截器的 NetEngine（非 Dr.COM 指纹）、空正文
     std::string resp = RawHttp(srv.Port(), "GET", "/sim_probe", "");
     CHECK(resp.find("HTTP/1.1 302") != std::string::npos);
-    CHECK(resp.find("Server:") == std::string::npos);
+    CHECK(resp.find("Server: NetEngine Server 1.0") != std::string::npos);
+    CHECK(resp.find("DrcomServer") == std::string::npos);
     const std::string loc =
         "http://127.0.0.1:" + std::to_string(srv.PortalPort()) + "/a79.htm";
     CHECK(resp.find(loc) != std::string::npos);

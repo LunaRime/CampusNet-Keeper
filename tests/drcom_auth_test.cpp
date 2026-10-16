@@ -52,6 +52,8 @@ TEST_CASE("错误密码返回失败") {
     // （计划此处置 -1，但 -1 是「无法从响应判定」保留值，与 spec §4.1
     //  “vendor_code = 厂商返回的原始码”及三级判定语义矛盾，依 spec 裁决为 2）
     CHECK(r.vendor_code == 2);
+    // 失败信息须附带服务器 msga 判定码（2026-10-16 实测该字段可区分失败成因）
+    CHECK(r.message.find("userid error2") != std::string::npos);
     srv.Stop();
 }
 
@@ -95,7 +97,9 @@ TEST_CASE("正文包含全部 17 个规定字段") {
     srv.Stop();
 }
 
-TEST_CASE("request_url 指向 801 端口的登录路径") {
+TEST_CASE("无端口的 auth_url：登录走同源（不再默认 801）") {
+    // 2026-10-16 实测修订：老式 c=ACSetting 协议与门户页同源（:801 只回 SPA 外壳），
+    // auth_url 未显式写端口时不补默认端口，由 scheme 缺省（http→80 / https→443）
     cnk::Profile p;
     // 回环地址：连接立即被拒，测试无需等超时，也不会把凭据发往外部主机
     p.auth_url = "http://127.0.0.1/";
@@ -105,10 +109,10 @@ TEST_CASE("request_url 指向 801 端口的登录路径") {
     auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
     cnk::NetContext ctx;
     auto r = auth->Login(p, ctx);
-    CHECK(r.request_url.find("/eportal/") != std::string::npos);
+    CHECK(r.request_url.find("http://127.0.0.1/eportal/") == 0);
+    CHECK(r.request_url.find(":801") == std::string::npos);
     CHECK(r.request_url.find("c=ACSetting") != std::string::npos);
     CHECK(r.request_url.find("a=Login") != std::string::npos);
-    CHECK(r.request_url.find(":801") != std::string::npos);
 }
 
 TEST_CASE("auth_url 已带端口时沿用该端口") {
@@ -124,7 +128,7 @@ TEST_CASE("auth_url 已带端口时沿用该端口") {
     CHECK(r.request_url.find(":801") == std::string::npos);
 }
 
-TEST_CASE("https 认证网址默认端口为 802") {
+TEST_CASE("https 无端口 auth_url：登录同源 https（不再补 802）") {
     cnk::Profile p;
     p.auth_url = "https://127.0.0.1/";
     p.username = "u";
@@ -133,7 +137,8 @@ TEST_CASE("https 认证网址默认端口为 802") {
     auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
     cnk::NetContext ctx;
     auto r = auth->Login(p, ctx);
-    CHECK(r.request_url.find(":802") != std::string::npos);
+    CHECK(r.request_url.find("https://127.0.0.1/eportal/") == 0);
+    CHECK(r.request_url.find(":802") == std::string::npos);
 }
 
 TEST_CASE("认证网址缺 scheme 时直接返回格式错误") {

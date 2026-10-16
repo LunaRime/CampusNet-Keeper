@@ -275,7 +275,9 @@ void SimServer::Impl::HandleClient(SOCKET client) {
                         "authfail='Dr.COMWebLoginID_2.htm';</script>"
                         "<body>login failed</body></html>";
         } else if (opts.fail_mode == 1 || !user_ok || !pass_ok) {
-            resp_body = "<html><body><!--Dr.COMWebLoginID_2.htm-->login failed</body></html>";
+            // 失败页结构照实测样本（docs/evidence/portal_login_fail_*）：失败标记 + msga 判定码
+            resp_body = "<html><body><!--Dr.COMWebLoginID_2.htm-->"
+                        "msga='userid error2';login failed</body></html>";
         } else {
             logged_in.store(true);   // 会话建立，/sim_probe 随之切换为正常应答
             resp_body = "<html><body><!--Dr.COMWebLoginID_3.htm-->"
@@ -285,13 +287,14 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         // 端到端模拟专用：登录前相当于被劫持（返回门户页），登录成功后
         // 网络恢复（返回 nCSI 应答）——用于验证「探测 → 劫持 → 登录 → 恢复」整链。
         //
-        // fail_mode==5：劫持以「裸 302」表达——真实形态（2026-10-16 实测）是
-        // 无 Server 指纹、空正文，指纹只在跳转目标页。Location 指向本模拟器的
-        // 第二监听端口（「同 IP、不同端口」——spec 判定规则明确要求判为异主机），
-        // 客户端必须抓取该目标页（/a79.htm）才能完成识别。
+        // fail_mode==5：劫持以「裸 302」表达——真实形态（2026-10-16 实测）为
+        // `Server: NetEngine Server 1.0`（拦截器特征，**非 Dr.COM 指纹**）、空正文，
+        // 指纹只在跳转目标页。Location 指向本模拟器的第二监听端口（「同 IP、不同端口」
+        // ——spec 判定规则明确要求判为异主机），客户端必须抓取该目标页才能完成识别。
         if (opts.fail_mode == 5 && !logged_in.load()) {
             std::ostringstream oss;
             oss << "HTTP/1.1 302 Found\r\n"
+                << "Server: NetEngine Server 1.0\r\n"
                 << "Location: http://127.0.0.1:" << portal_port << "/a79.htm\r\n"
                 << "Content-Length: 0\r\n"
                 << "Connection: close\r\n\r\n";

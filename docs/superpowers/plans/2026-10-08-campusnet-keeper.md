@@ -20,7 +20,7 @@
 - 第三方依赖**仅限** `nlohmann/json` 与 `doctest`，二者均为单头文件，vendored 至 `third_party/`。**不得引入任何其他第三方库**，尤其禁止 UI 库（Qt / MFC / WinForms）。
 - 链接库：`winhttp` `crypt32` `bcrypt` `shell32` `advapi32` `ole32` `user32`。
 - 配置与日志根目录：`%APPDATA%\CampusNet-Keeper\`（经 `SHGetKnownFolderPath(FOLDERID_RoamingAppData)` 获取，不得用 `getenv("APPDATA")`）。
-- 目标 Portal（实测，见 spec §7.1）：`http://10.0.0.1`，eportal 端口 **801**，账号字段 `DDDDD`，密码字段 `upass`，**明文提交**（`en_md5=0`）。
+- 目标 Portal（实测，见 spec §7.1）：`http://10.0.0.1`，账号字段 `DDDDD`，密码字段 `upass`，**明文提交**（`en_md5=0`）。**2026-10-16 晚实测修订**：登录端点（老式 `c=ACSetting` 协议）**与门户页同源（`:80`）**；`:801` 是 SPA/新式 REST API 端口，老协议请求发到那里只会得到 SPA 外壳（详见 `docs/evidence/README.md`「登录端点端口修订」）。
 - **日志中禁止出现密码明文**；URL 中若含凭据参数，写日志前替换为 `***`。
 - 所有对外提交的产物中不得含真实账号、学号、MAC 或非私有的本机标识。
 
@@ -6484,6 +6484,16 @@ git commit -m "feat: 托盘图标与守护消息循环，接上调度与单实�
 > 复现该形态；证据目录补采登录页 `a79.htm`（见 `docs/evidence/README.md`）。
 > 遗留（不阻断 M1）：免劫持清单仍只在 `:801 loadConfig` 响应下发，客户端暂未抓取该接口，
 > 探测地址继续用内置默认（msftncsi，也在真实清单内）。
+>
+> **⚑ 实测回修 2（2026-10-16 晚）**：首轮修复后复测，登录仍返回「无法判定」——深挖发现
+> **登录端口假设错误**：页面声明的 `authloginport=801` 处只有 SPA/新 API，老式
+> `c=ACSetting` 协议实际由**门户同源端口**处理（实测：`:801` 对任何凭据都回 SPA 外壳
+> 11561B；门户同源 `:80` 回真实的 `信息页` —— `<!--Dr.COMWebLoginID_2.htm-->`、
+> `msga='userid error1/2'`、`page.run(2)`，响应头 `Server: DrcomServer1.0`）。
+> 已修：`DrcomAuth` 登录 URL 改用 `auth_url` 自身端口（未显式端口时不补默认，按 scheme
+> 缺省）；失败信息附带服务器 `msga` 判定码（实测可区分失败成因）。模拟器 `fail_mode=5`
+> 的 302 补齐 `Server: NetEngine Server 1.0`（拦截器特征，实测直读）。证据目录新增：
+> 劫持 302 原始响应头、真实 `a=Login` 失败样本 ×2；**成功样本待注销态实登补齐**。
 
 **Files:**
 - Create: `README.md`（M1 版本）

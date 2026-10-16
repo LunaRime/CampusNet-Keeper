@@ -1,0 +1,10 @@
+# 真实劫持 302 原始响应头（2026-10-16 用户实测，注销态）
+# 采集命令：curl.exe -s --noproxy "*" -D - -o NUL --max-time 8 http://www.msftncsi.com/ncsi.txt
+# 关键事实：Server 为拦截器 NetEngine（非 Dr.COM 指纹），正文为空——
+# 识别必须抓取 Location 目标页（a79.htm，见 portal_a79_login_*）。
+HTTP/1.0 302 Moved Temporarily
+Allow: GET,POST,HEAD
+MIME-Version: 1.0
+Server: NetEngine Server 1.0
+Pragma: No-Cache
+Location: http://10.0.0.1/a79.htm

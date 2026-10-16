@@ -5,10 +5,12 @@
 以及实现阶段的测试夹具来源。
 
 - **2026-10-08**：首个抓取批次（首页 / loadConfig）。
-- **2026-10-16**：补采劫持跳转目标页 `a79.htm`（M1 实测回修的直接证据，见下文）。
+- **2026-10-16 下午**：补采劫持跳转目标页 `a79.htm`（M1 实测回修的直接证据，见下文）。
+- **2026-10-16 晚**：劫持 302 原始响应头（用户实测）、真实的 `a=Login` 失败响应样本
+  （首次采到），并据此**修订登录端点端口结论**（见下文「登录端点端口修订」）。
 
 所有文件已脱敏：真实账号替换为 `202400000000`，本机 IP 替换为 `10.0.0.100`，
-设备相关标识（`ss1` / `mip`）清零。
+设备相关标识（`ss1` / `mip` / `mac1`）清零。
 
 | 文件 | 来源 | 编码 | 内容 |
 |---|---|---|---|
@@ -17,6 +19,11 @@
 | `portal_home_utf8.htm` | 同上，转码件 | UTF-8 | 同一页面的可读版本，仅供人工阅读 |
 | `portal_a79_login_gbk_raw.htm` | `GET http://<portal>/a79.htm` | **GBK 原始字节** | **登录页**（"上网登录页"，`Dr.COMWebLoginID_0.htm`）——真实劫持 302 的跳转目标；`authlog*` / `carrier` 等字段与首页同源同值 |
 | `portal_a79_login_utf8.htm` | 同上，转码件 | UTF-8 | 同一页面的可读版本 |
+| `hijack302_headers_20261016.txt` | 注销态 `curl -D -` 抓取 | ASCII | 真实劫持 302 的**原始响应头**：`Server: NetEngine Server 1.0`（拦截器特征，非 Dr.COM 指纹）、空正文、`Location: /a79.htm` |
+| `portal_login_fail_wronguser_gbk_raw.htm` | `POST :80 /eportal/?c=ACSetting&a=Login`（错误账号） | **GBK 原始字节** | 真实 `a=Login` **失败**响应样本：`信息页` 模板、`<!--Dr.COMWebLoginID_2.htm-->`、`msga='userid error1'`、`page.run(2)`；响应头 `Server: DrcomServer1.0` / `charset=gbk` / 200 |
+| `portal_login_fail_wronguser_utf8.htm` | 同上，转码件 | UTF-8 | 可读版本 |
+| `portal_login_fail_alreadyonline_gbk_raw.htm` | 同上（正确账号，在线态复登） | **GBK 原始字节** | 真实 `a=Login` 失败样本（另一种成因）：`msga='userid error2'`、含 `mac1`（已绑 MAC）字段；已脱敏 |
+| `portal_login_fail_alreadyonline_utf8.htm` | 同上，转码件 | UTF-8 | 可读版本 |
 
 ## 两份首页文件的关系（易踩坑，务必注意）
 
@@ -43,7 +50,8 @@ Portal 把配置**分散在两个响应里**，不要假设它们都在同一处
 
 1. **厂商是 Dr.COM 哆点 v4.0**，不是锐捷 —— 尽管两者都用 `/eportal/` 路径。
 2. **`en_md5 = 0`**，密码明文提交，无需实现任何加密。
-3. **登录用 POST**，字段名 `DDDDD`（账号）/ `upass`（密码），端口 **801**。
+3. **登录用 POST**，字段名 `DDDDD`（账号）/ `upass`（密码）。**登录端点与门户页
+   同源**（2026-10-16 晚实测修订，见下节；原「端口 801」结论作废）。
 4. **运营商是账号后缀制**（`@dx`/`@lt`/`@cmcc`/空），列表由服务器下发，不可硬编码。
 5. **探测地址优先取自 `visit_blacklist`**，但它只在 `loadConfig` 响应里 —— 客户端必须
    容忍首页取不到的情形，回退到内置默认值（`www.msftncsi.com/ncsi.txt`，该地址本身就在
@@ -51,10 +59,39 @@ Portal 把配置**分散在两个响应里**，不要假设它们都在同一处
 6. **编码按 Content-Type 动态判定**：首页声明 `charset=gbk`（meta 写 `gb2312`），
    `/eportal/` 路径声明 `charset=utf-8`。硬编码任一种都会让另一条路径乱码。
 7. **劫持指纹只在跳转目标页上**（2026-10-16 实测回修）：真实环境的劫持是
-   「302 → `http://<portal>/a79.htm`」，**302 本身无 `Server` 指纹、正文为空**；
+   「302 → `http://<portal>/a79.htm`」，**302 的 `Server` 是拦截器的
+   `NetEngine Server 1.0`（不是 Dr.COM 指纹）、正文为空**；
    `Server: DrcomServer1.0` 与 `Dr.COMWebLoginID_*`、`carrier` 等全部存在于目标页。
    因此识别的输入必须是**跳转目标页的响应头与 HTML**（spec §7），客户端须先抓取
    目标页再识别（实现：`core/PortalPage.h` 的 `ResolvePortalPage`）。
+
+## 登录端点端口修订（2026-10-16 晚，重要）
+
+设计期依据页面声明的 `authloginport=801` 实现登录，实测证伪：
+
+| 请求 | 结果 |
+|---|---|
+| `POST :801/eportal/?c=ACSetting&a=Login&url=drappall`（无论凭据对错） | **HTTP 200 + SPA 外壳**（`<title>EPortal</title>`，11561 字节，Webpack 空壳；不处理登录） |
+| `POST :80/eportal/?c=ACSetting&a=Login&url=drappall`（老协议与门户同源） | **真正处理登录**：返回 `信息页`（`<!--Dr.COMWebLoginID_2.htm-->`、`msga='userid error1/2'`、`page.run(2)`），响应头 `Server: DrcomServer1.0`、`charset=gbk` |
+| `GET :80/eportal/?c=ACSetting...` | 空响应——该端点**只认 POST** |
+
+- :801 是老 SPA/新式 REST API（`/eportal/portal/...`，`jsonpReturn(...)` 包裹）的端口；
+  老式 c=ACSetting 协议在其上不被处理。**登录 URL 应取 `auth_url` 自身端口**
+  （实现：`auth/DrcomAuth.cpp`，未显式端口时按 scheme 缺省）。
+- 失败页的 `msga` 是厂商原始判定码（已采 `userid error1`＝账号错误、
+  `userid error2`＝在线态复登受阻），客户端已把它附带进失败信息便于诊断。
+- 成功响应（`Dr.COMWebLoginID_3.htm` / `page.run(3)`）尚未采集到真实样本——需在
+  **注销态**用正确凭据触发；现有成功判定沿用 `_3.htm`/`3.htm` 标记推断（失败页模板
+  已印证该命名体系为真）。
+
+## 新式 API 现状（供后续任务参考）
+
+- `/eportal/portal/page/loadConfig` 仍存活（包裹函数已从 `dr1003` 演进为 `jsonpReturn`）。
+- 门户页面 JS（`a41.js`）与 SPA 走的是新式 API：`visitor/checkUserStateByIP`
+  （JSONP；参数 `program_name/page_index/login_method/wlan_user_ip/wlan_user_mac/
+  wlan_ac_ip/wlan_ac_name`；`result=1` 且 `login_result∈{1,2}` 视为在线）、
+  `perceive`、`online_list`；且 `login_method != 0` 时请求体经 **`util.aes_en`
+  加密为单一 `params` 字段**。本客户端 M1 未使用该通道（老式协议已足够且更易验证）。
 
 ## a79.htm 的补充事实（2026-10-16）
 
@@ -67,12 +104,9 @@ Portal 把配置**分散在两个响应里**，不要假设它们都在同一处
 
 ## 尚未采集的证据（下次接入校园网时应补）
 
-- **劫持 302 的原始响应头**（确认其不含 `Server` 指纹这一事实的直读证据；
-  2026-10-16 已由程序实测输出（识别为 `unknown`）推定，原始抓取可用
-  `curl.exe -s --noproxy "*" -D - -o NUL --max-time 8 http://www.msftncsi.com/ncsi.txt`
-  在注销态补采）。
-- **真实的 `a=Login` 响应**（成功与错误密码各一次，含状态码与响应头）。目前任务 11 的
-  成功判定完全依赖"响应体含 `Dr.COMWebLoginID_3.htm`/`3.htm`"这一**推断**，它与首页自身的
-  `<!--Dr.COMWebLoginID_1.htm-->` 注释模式同构，但未经证实。若推断有误，认证会在模拟器上
-  全绿、在真实网络里永远判失败。
-- **`http://<portal>/` 与 `/eportal/` 的完整响应头**（本目录只保存了正文）。
+- **真实的 `a=Login` 成功响应**（注销态 + 正确凭据，含状态码与响应头）。现有成功判定
+  基于「响应体含 `Dr.COMWebLoginID_3.htm`/`3.htm`」推断；失败页模板（`_2` 体系）已实证，
+  成功页（`_3`）待一次注销态实登即可补齐。
+- **错误密码的真实失败样本**（在线态被状态检查遮蔽：正确/错误密码都先被 `userid error2`
+  拦下，见 `portal_login_fail_alreadyonline_*`）。
+- **`/eportal/` 端点的完整响应头**（首页与登录响应的头已齐；`/eportal/` 老协议缺一组）。
