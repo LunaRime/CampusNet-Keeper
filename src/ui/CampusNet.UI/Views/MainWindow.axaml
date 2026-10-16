@@ -1,0 +1,63 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CampusNet.UI.Views.MainWindow"
+        Title="校园网助手"
+        Width="720" Height="520"
+        Background="{DynamicResource CnkBg}"
+        FontFamily="{DynamicResource CnkFontSans}">
+
+  <!--
+    占位窗口（任务 23 的范围：打通外壳与 IPC，界面本身在任务 24/25）。
+    这里只做两件事：① 用设计令牌渲染（**不出现裸色值**，色值只在 Theme.*.axaml 里）；
+    ② 启动后真的去问守护进程在不在，把结果打出来——外壳与 IPC 的链路因此可验证。
+    视觉语言按 DESIGN.md：卡片=发丝线边框+面色阶、无阴影；主操作=近黑实心按钮。
+  -->
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+
+    <StackPanel Grid.Row="0" Spacing="6">
+      <TextBlock Text="校园网助手"
+                 FontSize="{DynamicResource CnkFontSizeTitle}"
+                 FontWeight="SemiBold"
+                 Foreground="{DynamicResource CnkText}"/>
+      <TextBlock x:Name="StatusText"
+                 Text="正在连接守护进程…"
+                 FontSize="{DynamicResource CnkFontSizeBody}"
+                 Foreground="{DynamicResource CnkTextMuted}"/>
+    </StackPanel>
+
+    <Border Grid.Row="1" Margin="0,16,0,0"
+            Background="{DynamicResource CnkSurface}"
+            BorderBrush="{DynamicResource CnkBorder}"
+            BorderThickness="1"
+            CornerRadius="{DynamicResource CnkRadiusMd}"
+            Padding="16">
+      <StackPanel Spacing="8">
+        <TextBlock Text="待接入（任务 24 / 25）"
+                   FontSize="{DynamicResource CnkFontSizeHeading}"
+                   FontWeight="SemiBold"
+                   Foreground="{DynamicResource CnkText}"/>
+        <TextBlock Text="账号档案 · 高级设置 · 自定义模板 · 日志面板"
+                   FontSize="{DynamicResource CnkFontSizeBody}"
+                   Foreground="{DynamicResource CnkTextSecondary}"/>
+        <TextBlock Text="当前仅为外壳：验证窗口渲染与 IPC 连通性。"
+                   FontSize="{DynamicResource CnkFontSizeCaption}"
+                   Foreground="{DynamicResource CnkTextMuted}"/>
+      </StackPanel>
+    </Border>
+
+    <StackPanel Grid.Row="2" Orientation="Horizontal"
+                HorizontalAlignment="Right" Spacing="8" Margin="0,16,0,0">
+      <Button x:Name="RefreshButton" Content="刷新状态"
+              Height="36" Padding="16,0"
+              CornerRadius="{DynamicResource CnkRadiusSm}"
+              Background="{DynamicResource CnkBrand}"
+              Foreground="{DynamicResource CnkOnBrand}"/>
+      <Button x:Name="CloseButton" Content="关闭"
+              Height="36" Padding="16,0"
+              CornerRadius="{DynamicResource CnkRadiusSm}"
+              Background="{DynamicResource CnkSurfaceStrong}"
+              Foreground="{DynamicResource CnkText}"/>
+    </StackPanel>
+
+  </Grid>
+</Window>

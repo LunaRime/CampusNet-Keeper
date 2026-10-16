@@ -7,3 +7,8 @@ out/
 build-m1/
 # 本地 agent 工作目录（项目记忆/日志），不入库、不随公开仓库分发
 .workbuddy/
+# .NET 构建树（obj/bin 由根目录 Directory.Build.props 统一重定向到这里），不入库
+build-ui/
+# dotnet 的默认产物位置（万一某处没走 Directory.Build.props）
+[Bb]in/
+[Oo]bj/

@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Avalonia 外壳工程（任务 23）。
+    ⚠ 状态：**尚未构建验证** —— 本机校园网 HTTPS 不通，NuGet 取不到 Avalonia 包
+      （见 src/ui/README.md）。文件按计划任务 23 的结构与官方模板形态写好，
+      等能取到包后第一次 `dotnet build` 会暴露需要微调之处。
+    TFM 用 net10.0-windows：本机只有 .NET SDK 10（无 .NET 9），且计划本身也选了 -windows。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CampusNet.UI</AssemblyName>
+    <RootNamespace>CampusNet.UI</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 版本口径：11.x 稳定线；若某版本不可用，三个 Avalonia 包必须一起换（保持同一版本）。
+         刻意不引 Avalonia.Fonts.Inter：Inter 不在 DESIGN.md 的字体栈里，
+         字体由 App.axaml 的 CnkFontSans/CnkFontMono 决定。 -->
+    <PackageReference Include="Avalonia" Version="11.3.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.0" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.0" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- IPC 客户端与配置模型放在零依赖的核心库里，可独立构建与跨语言验证 -->
+    <ProjectReference Include="..\CampusNet.UI.Core\CampusNet.UI.Core.csproj" />
+  </ItemGroup>
+
+</Project>

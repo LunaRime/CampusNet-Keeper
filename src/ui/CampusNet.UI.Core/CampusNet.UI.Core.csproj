@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    UI 的可测核心：只依赖 BCL（含 System.IO.Pipes），**不需要任何 NuGet 包**。
+    这样即使本机取不到 Avalonia（校园网 HTTPS 不通），IPC 客户端与配置模型依然能
+    构建、能对着真实 C++ 服务端跑契约验证。Avalonia 外壳工程引用本项目。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>CampusNet.UI.Core</AssemblyName>
+    <RootNamespace>CampusNet.UI</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

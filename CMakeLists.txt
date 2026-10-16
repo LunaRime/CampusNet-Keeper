@@ -58,6 +58,11 @@ target_link_libraries(cnk_core PUBLIC
 add_executable(CampusNet-Keeper src/native/main.cpp)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
 
+# 测试工具（不随产品发布）：让任务 23 的 C# 客户端能对着**真实的** PipeServer
+# 跑跨语言契约自检（受限沙箱禁止打开命名管道，须在非沙箱下运行）。
+add_executable(cnk_ipc_probe tools/ipc_probe_server.cpp)
+target_link_libraries(cnk_ipc_probe PRIVATE cnk_core)
+
 enable_testing()
 add_executable(cnk_tests
   tests/test_main.cpp

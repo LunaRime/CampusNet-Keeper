@@ -1,0 +1,15 @@
+<Project>
+
+  <!--
+    把 dotnet 的中间目录与输出目录从源码树挪到 build-ui/：
+      ① DSH 受限沙箱不允许在 src/ 下新建文件（obj/ 会被直接拒绝），挪出来才能在沙箱内构建；
+      ② 源码树保持干净——obj/bin 不再散落在 src/ui 下。
+    注意：BaseIntermediateOutputPath 必须在 Directory.Build.props 里设置（NuGet 还原读得早），
+    在项目文件里设置通常已经太晚。
+  -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)build-ui\int\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)build-ui\bin\$(MSBuildProjectName)\</BaseOutputPath>
+  </PropertyGroup>
+
+</Project>

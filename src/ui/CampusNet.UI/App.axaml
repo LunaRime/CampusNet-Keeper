@@ -1,0 +1,31 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CampusNet.UI.App"
+             RequestedThemeVariant="Default">
+
+  <Application.Resources>
+    <ResourceDictionary>
+
+      <!--
+        字体栈：取自 DESIGN.md §3（shadcn/ui 的 sans/mono 栈）。
+        ⚠ Geist 无中日韩字形，故在栈尾追加系统中文字族——这是**平台必需的回退**，
+          不是引入第二套字体（技能明令不得获取专有字体，故不下载 Geist）。
+        刻意不注册 Inter：它不在本设计系统的字体栈里。
+      -->
+      <FontFamily x:Key="CnkFontSans">Geist, Geist Sans, Segoe UI, Microsoft YaHei UI, 微软雅黑, sans-serif</FontFamily>
+      <FontFamily x:Key="CnkFontMono">Geist Mono, JetBrains Mono, Consolas, Microsoft YaHei UI, monospace</FontFamily>
+
+      <!-- 明暗双主题：亮/暗各一份令牌字典，键一一对应（见 Theme.Light/Dark.axaml） -->
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceInclude x:Key="Light" Source="avares://CampusNet.UI/Theme.Light.axaml"/>
+        <ResourceInclude x:Key="Dark" Source="avares://CampusNet.UI/Theme.Dark.axaml"/>
+      </ResourceDictionary.ThemeDictionaries>
+
+    </ResourceDictionary>
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme/>
+  </Application.Styles>
+
+</Application>
