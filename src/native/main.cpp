@@ -61,15 +61,25 @@ const char* StateText(cnk::NetState s) {
 // 紧跟登录的单次复探得「仍不在线」，稍后探测即 Online）
 constexpr int kAfterLoginProbes = 5;
 constexpr int kAfterLoginDelayMs = 1500;
+// 决策前探测参数：单次探测偶发超时（错误码 12002）会得「离线」，
+// 而离线会让整条链路走成「厂商 unknown → GenericFormAuth 尚未实现」的死路
+constexpr int kDecideProbes = 3;
+constexpr int kDecideDelayMs = 1500;
 
 int RunProbeNow(cnk::AppConfig& cfg) {
     PrintLine("== 探测 ==");
     PrintLine("探测地址: " + cfg.settings.probe_url);
-    auto r = cnk::ProbeOnce(cfg.settings);
+    // 离线可能是单次超时（实测），故策略定为「确定结论即停、离线才重试」
+    int tries = 0;
+    auto r = cnk::ProbeUntilDecided(
+        [&cfg, &tries] { ++tries; return cnk::ProbeOnce(cfg.settings); }, kDecideProbes,
+        kDecideDelayMs);
     const char* names[] = {"Unknown", "Online（网络正常）",
                            "PortalDetected（被 Portal 劫持）", "Offline（无连接）"};
     PrintLine(std::string("结果: ") + names[(int)r.state]);
     PrintLine("说明: " + r.message);
+    if (tries > 1)
+        PrintLine("备注: 首次判定为离线，第 " + std::to_string(tries) + " 次探测才得到上述结果");
     if (r.response.status)
         PrintLine("HTTP 状态: " + std::to_string(r.response.status));
     if (!r.response.server.empty())
@@ -154,8 +164,15 @@ int RunTestLogin(cnk::AppConfig& cfg) {
     }
 
     PrintLine("== 探测 ==");
-    auto pr = cnk::ProbeOnce(cfg.settings);
+    // 决策前探测：离线可能只是一次超时，若据此下结论，整条链路会走成
+    // 「厂商 unknown → GenericFormAuth 尚未实现」的死路（2026-10-16 真机实测）
+    int probe_tries = 0;
+    auto pr = cnk::ProbeUntilDecided(
+        [&cfg, &probe_tries] { ++probe_tries; return cnk::ProbeOnce(cfg.settings); },
+        kDecideProbes, kDecideDelayMs);
     PrintLine(std::string("状态: ") + StateText(pr.state));
+    if (probe_tries > 1)
+        PrintLine("（首次探测为离线，第 " + std::to_string(probe_tries) + " 次才得到上述状态）");
     PrintLine("说明: " + pr.message);
     if (pr.state == cnk::NetState::Online) {
         PrintLine("当前已在线，无需登录。若要测试登录请先注销或等待会话失效。");
@@ -208,7 +225,7 @@ int RunTestLogin(cnk::AppConfig& cfg) {
         // 登录成功后 AC 数据面放行常有秒级延迟：单次复探会误报「仍不在线」
         //（2026-10-16 真机实测），故轮询若干次，并如实报告用了几次、最后一态为何。
         int tries = 0;
-        auto after = cnk::ProbeWithRetry(
+        auto after = cnk::ProbeUntilOnline(
             [&cfg, &tries] { ++tries; return cnk::ProbeOnce(cfg.settings); },
             kAfterLoginProbes, kAfterLoginDelayMs);
         if (after.state == cnk::NetState::Online) {

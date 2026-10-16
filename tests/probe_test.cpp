@@ -22,7 +22,7 @@ TEST_CASE("登录后复探：轮询到在线即停，且有尝试次数上界") 
         r.state = calls < 3 ? cnk::NetState::PortalDetected : cnk::NetState::Online;
         return r;
     };
-    auto r = cnk::ProbeWithRetry(flaky, 5, 0);
+    auto r = cnk::ProbeUntilOnline(flaky, 5, 0);
     CHECK(r.state == cnk::NetState::Online);
     CHECK(calls == 3);  // 第 3 次成功即停，不浪费探测
 
@@ -35,7 +35,7 @@ TEST_CASE("登录后复探：轮询到在线即停，且有尝试次数上界") 
         r.message = "被重定向到 http://portal/a79.htm";
         return r;
     };
-    auto r2 = cnk::ProbeWithRetry(always_hijacked, 4, 0);
+    auto r2 = cnk::ProbeUntilOnline(always_hijacked, 4, 0);
     CHECK(r2.state == cnk::NetState::PortalDetected);
     CHECK(calls == 4);
     CHECK(r2.message.find("重定向") != std::string::npos);
@@ -43,8 +43,50 @@ TEST_CASE("登录后复探：轮询到在线即停，且有尝试次数上界") 
     // 次数参数的下界保护：给 0 也至少探一次
     calls = 0;
     auto once = [&calls] { ++calls; return cnk::ProbeResult{}; };
-    (void)cnk::ProbeWithRetry(once, 0, 0);
+    (void)cnk::ProbeUntilOnline(once, 0, 0);
     CHECK(calls == 1);
+}
+
+TEST_CASE("决策前探测：只有「离线」才重试，被劫持与在线都是确定结论") {
+    // 2026-10-16 真机实测：会话正常时也曾单次探测超时得 Offline，紧跟其后的探测即
+    // Online。若据此判定离线，--test-login 会走成「厂商 unknown → GenericFormAuth
+    // 尚未实现」的死路。故决策前的探测对 Offline 重试；而拿到 302/门户页说明链路是
+    // 通的（PortalDetected 是确定结论），应立即返回，别白白等。
+    int calls = 0;
+    auto offline_then_online = [&calls] {
+        ++calls;
+        cnk::ProbeResult r;
+        r.state = calls < 2 ? cnk::NetState::Offline : cnk::NetState::Online;
+        return r;
+    };
+    auto r = cnk::ProbeUntilDecided(offline_then_online, 3, 0);
+    CHECK(r.state == cnk::NetState::Online);
+    CHECK(calls == 2);
+
+    // 被劫持：确定结论，一次即返回（否则每个注销窗口都要白等重试）
+    calls = 0;
+    auto hijacked = [&calls] {
+        ++calls;
+        cnk::ProbeResult r;
+        r.state = cnk::NetState::PortalDetected;
+        return r;
+    };
+    auto r2 = cnk::ProbeUntilDecided(hijacked, 3, 0);
+    CHECK(r2.state == cnk::NetState::PortalDetected);
+    CHECK(calls == 1);
+
+    // 一直离线：重试到上界后如实返回离线
+    calls = 0;
+    auto always_offline = [&calls] {
+        ++calls;
+        cnk::ProbeResult r;
+        r.state = cnk::NetState::Offline;
+        r.message = "连接或发送超时";
+        return r;
+    };
+    auto r3 = cnk::ProbeUntilDecided(always_offline, 3, 0);
+    CHECK(r3.state == cnk::NetState::Offline);
+    CHECK(calls == 3);
 }
 
 TEST_CASE("返回 200 且正文匹配时判定为在线") {
