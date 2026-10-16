@@ -32,8 +32,11 @@ public partial class MainWindow : Window
 
         text.Text = "正在连接守护进程…";
         var running = await _client.IsDaemonRunningAsync();
+        // 界面只说结论：管道名含用户 SID、又长，塞进状态行会溢出（截图里被撑爆过）。
+        // 细节放进 ToolTip，需要排查时鼠标一悬停就能看到。
         text.Text = running
-            ? $"已连接守护进程（管道 {_client.PipeName}）"
+            ? "已连接守护进程"
             : "未连接守护进程：请先启动 CampusNet-Keeper.exe（守护模式）";
+        ToolTip.SetTip(text, $"管道：{_client.PipeName}");
     }
 }

@@ -8847,6 +8847,33 @@ git commit -m "feat: Avalonia UI 工程骨架与 IPC 客户端"
 >
 > **未完成（下一步）**：`CampusNet.UI` 的首次 `dotnet build` 与运行、明/暗/键盘焦点三态验收、
 > Step 3 的配置模型镜像（`Models/AppConfig.cs`，任务 24 要用）。等能取到 Avalonia 包后继续。
+>
+> **✅ 同日续做：上面那个"阻塞"其实是我误判，已全部打通。**
+> 用户提醒"NuGet 不是随 VS 附带吗"，顺着查下去发现：VS 附带的是 NuGet **客户端**，不附带
+> Avalonia 这类第三方包（`D:\Visual Studio 2026\Packages` 只有 2 个 nupkg，所谓"离线源"
+> `Microsoft SDKs\NuGetPackages` 路径根本不存在）——**但真正的拦路虎不是包源，而是沙箱**：
+> 受限模式下**外部 TLS 被拦**（`https://api.nuget.org/v3/index.json` 在非沙箱下返回 200、
+> TCP 443 通，沙箱内 TLS 握手失败）。**所以"校园网 HTTPS 不通"这个结论是错的，特此更正。**
+> 同理，**Avalonia 的 Win32 平台初始化也被沙箱拦**（`--self-test` 在沙箱内卡死且写不出结论文件）。
+> 规律：**"联网取包"与"跑 GUI"都必须非沙箱；包进缓存后 `dotnet build` 在沙箱内可离线完成。**
+>
+> 续做结果（同日）：
+> - `dotnet restore` 在非沙箱下一次成功（Avalonia 11.3.0 + Skia + HarfBuzz + CommunityToolkit
+>   进 `build-ui/nuget` 缓存）；随后 **`dotnet build` 首次即通过**（零错误零警告）。
+> - 新增 `CampusNet.UI.exe --self-test`：**不显示窗口**，真跑 Avalonia 逐个解析令牌并与
+>   DESIGN.md 的色值比对 → **PASS**（23 个颜色键 × 明暗 + 圆角/字号/字体栈全对）。
+>   它抓出两个真问题：`Color.ToString()` 对 `#ffffff` 返回命名色 `White`（应比 `Color` 不比字符串）；
+>   以及 Avalonia 会留下消息循环线程，`Main` 返回后进程不退出（要 `Environment.Exit`）。
+> - **真实窗口跑通并截图核验**：状态行显示「已连接守护进程」⇒ UI → IpcClient → 管道 →
+>   C++ `PipeServer` 整条链路在真实窗口里成立；外观与 DESIGN.md 一致（纯白画布、卡片为
+>   **发丝线边框 + 面色阶、无阴影**、主按钮近黑实心 + 6px 圆角）。截图见
+>   `docs/design/ui-shell-20261016.png`。截图还抓到一个真缺陷：把完整管道名（含用户 SID）
+>   塞进状态行会溢出，已改为只说结论、细节放 ToolTip。
+> - 截图/自检的环境坑记入 `src/ui/README.md`：`WinExe` 用 `&` 启动 PowerShell 不等它、
+>   退出码无意义；`Start-Process` 不重定向子进程 stdout 会被继承句柄挂住；
+>   截图进程要先 `SetProcessDPIAware()` 否则区域偏移。
+> **仍然剩余**：`Models/AppConfig.cs` 配置模型镜像（任务 24 要用）、明/暗/键盘焦点三态的人工
+> 视觉验收（目前是自检 + 截图两级）、任务 24/25 的界面本体。
 
 ---
 
