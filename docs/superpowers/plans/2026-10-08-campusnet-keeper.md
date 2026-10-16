@@ -3495,6 +3495,11 @@ git commit -m "feat: 认证策略接口与工厂，先以桩实现占位"
   - ⚠ **实测修订（2026-10-16，见任务 18「实测回修 2」）**：端口**不再强制 801**——老式
     c=ACSetting 协议与门户页同源（801 只服务 SPA/新 API），实现改为取 `auth_url` 自身端口
     （未显式写端口则按 scheme 缺省 80/443）。下文「成功判定」级别与 17 个字段不变。
+  - ⚠⚠ **再修订（2026-10-16 晚，见「实测回修 3」）**：老式 c=ACSetting 通道在本部署
+    **不做真实认证**（恒回 `userid error2`，与凭据对错无关），故它**已降级为旧部署回退**；
+    **首选通道是新式 API** `GET :801/eportal/portal/login?callback=..&params=<AES(JSON)>`
+    （前置 `chkstatus` + `loadConfig` 取 `rcn`）。本节以下的老式请求构造/成功判定
+    仅在回退分支生效。
 - 方法：`POST`，`Content-Type: application/x-www-form-urlencoded`
 - 正文 17 个字段，`DDDDD` 为 `username + IspSuffix(profile)`，`upass` 为密码，其余按 spec §7.2 的固定值
 
@@ -6497,6 +6502,36 @@ git commit -m "feat: 托盘图标与守护消息循环，接上调度与单实�
 > 缺省）；失败信息附带服务器 `msga` 判定码（实测可区分失败成因）。模拟器 `fail_mode=5`
 > 的 302 补齐 `Server: NetEngine Server 1.0`（拦截器特征，实测直读）。证据目录新增：
 > 劫持 302 原始响应头、真实 `a=Login` 失败样本 ×2；**成功样本待注销态实登补齐**。
+>
+> **⚑ 实测回修 3（2026-10-16 晚，HAR 逆向——本条推翻回修 2 的登录通道结论）**：用户导出
+> 浏览器 F12 的 HAR，其中含**两次真实成功登录**，一举定案：**真实登录走 `:801` 新式 API**，
+> 不是老式 `c=ACSetting`。请求形态为
+> `GET :801/eportal/portal/login?callback=..&params=<AES(JSON)>`，前置
+> `chkstatus`（取本机校园网 IP）与 `loadConfig`（取**页面令牌 `rcn`**，登录必需，缺失回
+> 「当前页面已超时」）；`params` = **AES-128-ECB + PKCS7 + Base64**，密钥
+> `5c1d5ad4dea0e8dd` 取自门户自己的 `a41.js`/`a40.js`（**公开值**，非本项目秘密）；
+> 明文为**固定顺序的 16 字段 JSON**（`login_method`/`user_account` 带 `,0,` 前缀/
+> `user_password`/`wlan_user_ip`/…/`rcn`）。成功响应 `{"result":1,"msg":"Portal协议认证成功！"}`。
+>
+> 由此**平反**上一段的误诊：`POST :80 /eportal/?c=ACSetting` 在本部署**不做真实认证**，
+> 无论凭据对错**恒回 `msga='userid error2'`**。存储凭据与浏览器提交值已做逐字节比对
+> （账号与密码**完全一致**）——即**从来不是密码问题**，公开错误码表把 error2 释为
+> 「密码不匹配」是本次误诊的直接来源。
+>
+> 已落地的修改：`core/Crypto`（BCrypt AES-128-ECB+PKCS7+Base64，含固定向量测试）、
+> `DrcomAuth::TryNewApi`（首选通道；旧部署才回退 `LegacyLogin`）、模拟器新式端点
+> （`loadConfig` 下发 rcn、按 AES 参数校验、`disable_new_api` 用于回退路径测试）、
+> **「已在线」判定改判成功**（线上实测 `{"result":0,"msg":"终端IP已在线！","ret_code":2}`；
+> 若判失败会让调度器走退避直至「非校园网」保护）。测试基线
+> **167/606 → 173 用例 / 636 断言**（另 2 例 `integrity_test` 为沙箱环境性失败）。
+>
+> **安全口径（新增，务必遵守）**：`params` 用**门户页面里的公开密钥**加密，
+> 故**任何真实密文等价于明文** → 原始 HAR 与真实 `params` **绝不入库**；
+> 页面令牌 `rcn` 同样不入库（已把 `loadconfig_185_801.json` 里的真实 rcn 改为占位符，
+> 模拟器夹具改用合成值）。证据见 `docs/evidence/newapi_login_20261016.md`。
+>
+> 遗留（不阻断 M1）：注销态的真实成功登录仍需用户跑一次 `--test-login` 收尾；
+> 新式 API 的**凭据错误文案全集**未采齐（现以「账号/密码/用户」字样启发式归类）。
 
 **Files:**
 - Create: `README.md`（M1 版本）
