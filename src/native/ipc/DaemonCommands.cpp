@@ -33,6 +33,12 @@ IpcResponse Ok(const IpcRequest& req, const std::string& data_json) {
 }  // namespace
 
 IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
+    if (req.cmd == "ping") {
+        // 界面的存活探测。必须有这条：否则界面只能靠"未知命令"这种带错误的应答判断活着，
+        // 语义含糊（2026-10-17 对真实守护进程跑契约时发现）。
+        return Ok(req, R"({"state":"alive"})");
+    }
+
     if (req.cmd == "get_status") {
         nlohmann::json d;
         d["state"] = RunStateName(sch.State());

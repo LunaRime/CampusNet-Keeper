@@ -107,6 +107,41 @@ else
     var big = await client.SendAsync("blob");
     Check(big?["ok"]?.GetValue<bool>() == false, "超大响应 → ok=false（服务端拒绝）");
     Check((big?["error"]?.GetValue<string>() ?? "").Contains("过大"), "超大响应 → error 提示「过大」");
+
+    // ===== 守护进程契约（对真实守护进程跑）=====
+    Console.WriteLine("\n== 守护进程契约 ==");
+    var st = await client.SendAsync("get_status");
+    Check(st?["ok"]?.GetValue<bool>() == true, "get_status → ok");
+    Check(st?["data"]?["state"] is not null, "get_status 含 state");
+
+    var cfgResp = await client.SendAsync("get_config");
+    Check(cfgResp?["ok"]?.GetValue<bool>() == true, "get_config → ok");
+    var uiCfgJson = cfgResp?["data"]?.ToJsonString() ?? "";
+    Check(uiCfgJson.Length > 0, "get_config 返回了配置");
+    Check(!uiCfgJson.Contains("password_enc"), "get_config 不含 password_enc（安全红线）");
+    Check(uiCfgJson.Contains("has_password"), "get_config 含 has_password");
+
+    var logResp = await client.SendAsync("get_log_tail");
+    Check((logResp?["data"]?["lines"] as JsonArray)?.Count > 0, "get_log_tail 有日志行");
+
+    var carriers = await client.SendAsync("get_carrier_options");
+    Check(carriers?["ok"]?.GetValue<bool>() == true, "get_carrier_options → ok");
+
+    // 保存往返：把读到的配置原样写回（幂等）。不带 password_plain 时守护进程按档案名沿用旧密码，
+    // 这正是"界面没改密码也不会把密码清掉"的那条保证。
+    if (cfgResp?["data"] is JsonNode cfgNode)
+    {
+        var save = await client.SendAsync("set_config",
+            new JsonObject { ["config"] = cfgNode.DeepClone() });
+        var ok = save?["ok"]?.GetValue<bool>() == true;
+        Check(ok, "set_config 往返 → ok（保存路径可用）");
+        if (!ok) Console.WriteLine("    set_config 错误：" + save?["error"]?.GetValue<string>());
+
+        var after = await client.SendAsync("get_config");
+        Check(after?["ok"]?.GetValue<bool>() == true, "保存后仍能读回配置");
+        Check(!(after?["data"]?.ToJsonString() ?? "").Contains("password_enc"),
+              "保存后配置仍不含 password_enc");
+    }
 }
 
 Console.WriteLine($"\n通过 {passed}，失败 {failed}");
