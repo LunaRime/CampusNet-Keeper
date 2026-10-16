@@ -83,7 +83,8 @@ int RunDetect(cnk::AppConfig& cfg) {
         if (pp.fetched)
             PrintLine("识别来源: " + pp.portal_url + "（已抓取门户页面）");
         else if (!pp.fetch_error.empty())
-            PrintLine("识别来源: 探测响应（门户页抓取失败：" + pp.fetch_error + "）");
+            PrintLine("识别来源: 探测响应（门户页抓取失败：" +
+                      cnk::RedactSecrets(pp.fetch_error) + "）");
     } else {
         const cnk::Profile* p = cnk::ActiveProfile(cfg);
         if (p && !p->auth_url.empty()) {
@@ -93,7 +94,8 @@ int RunDetect(cnk::AppConfig& cfg) {
                 page = std::move(fetched);
                 PrintLine("识别来源: " + p->auth_url + "（从认证网址抓取）");
             } else {
-                PrintLine("识别来源: 探测响应（认证网址抓取失败：" + ferr + "）");
+                PrintLine("识别来源: 探测响应（认证网址抓取失败：" +
+                          cnk::RedactSecrets(ferr) + "）");
             }
         }
     }
@@ -154,7 +156,8 @@ int RunTestLogin(cnk::AppConfig& cfg) {
     if (pp.fetched)
         PrintLine("门户页面: " + pp.portal_url + "（已抓取，识别基于页面响应）");
     else if (!pp.fetch_error.empty())
-        PrintLine("门户页面: 抓取失败（" + pp.fetch_error + "），识别基于探测响应");
+        PrintLine("门户页面: 抓取失败（" + cnk::RedactSecrets(pp.fetch_error) +
+                  "），识别基于探测响应");
 
     cnk::Vendor v = cnk::DetectVendor(pp.response);
     PrintLine(std::string("识别厂商: ") + cnk::VendorName(v));
@@ -330,18 +333,23 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
                      SimSession& sim) {
     if (opts.simulate_vendor.empty()) return false;
 
+    // 模拟器的账号校验必须与客户端实际提交的账号一致：客户端按**生效档案**
+    // 拼运营商后缀（如 @cmcc），若不设置 isp_suffix，真实配置（preset=cmcc）
+    // 下会把正确凭据误判为错误（审阅 P1-1）。
+    const cnk::Profile* ap = cnk::ActiveProfile(cfg);
+
     cnk::SimOptions so;
     so.vendor = opts.simulate_vendor;
     so.valid_user = opts.simulate_user;
     so.valid_pass = opts.simulate_pass;
-    // 未显式提供模拟凭据时，优先沿用首份配置的账号密码，最后回落到内置默认——
+    if (ap) so.isp_suffix = cnk::IspSuffix(*ap);
+    // 未显式提供模拟凭据时，优先沿用生效档案的账号密码，最后回落到内置默认——
     // 保证「配置为空 + 不给凭据」开箱可用，且用配置账号即可验证登录链路
     if (so.valid_user.empty() || so.valid_pass.empty()) {
-        const cnk::Profile* p0 = cfg.profiles.empty() ? nullptr : &cfg.profiles.front();
         if (so.valid_user.empty())
-            so.valid_user = (p0 && !p0->username.empty()) ? p0->username : "alice";
+            so.valid_user = (ap && !ap->username.empty()) ? ap->username : "alice";
         if (so.valid_pass.empty())
-            so.valid_pass = (p0 && !p0->password.empty()) ? p0->password : "pw123";
+            so.valid_pass = (ap && !ap->password.empty()) ? ap->password : "pw123";
     }
     if (opts.simulate_fail == "badcred") so.fail_mode = 1;
     else if (opts.simulate_fail == "timeout") so.fail_mode = 2;

@@ -470,7 +470,8 @@ TEST_CASE("fail_mode=5 复现真实劫持形态：裸 302（无指纹）跳转�
         "http://127.0.0.1:" + std::to_string(srv.PortalPort()) + "/a79.htm";
     CHECK(resp.find(loc) != std::string::npos);
 
-    // 跳转目标页可抓取：带 DrcomServer 指纹与门户标记（与真实 a79.htm 契约一致）
+    // 跳转目标页可抓取：带 DrcomServer 指纹与门户标记（字段契约同真实门户页；
+    // 真实 a79 为 _0 登录页形态、首页为 _1 注销页形态，识别不区分这两者）
     std::string page = RawHttp(srv.PortalPort(), "GET", "/a79.htm", "");
     CHECK(page.find("DrcomServer1.0") != std::string::npos);
     CHECK(page.find("Dr.COMWebLoginID_") != std::string::npos);

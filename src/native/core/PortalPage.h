@@ -8,6 +8,10 @@ namespace cnk {
 // 抓取门户页面（GET，不跟随重定向）。失败返回 false 并填 error。
 // 不跟随是有意的：拿到的 3xx 也照常交给识别（部分门户存在装饰性跳转链）。
 // timeout_ms 为单步超时；总时限沿用 HttpPerform 默认（max(2*step, 8s)）。
+//
+// 信任边界（审阅 P2-3 注记）：url 来自服务器下发的 Location，本函数对其直接
+// 发 GET——有意为之（浏览器同样会跟随），但已加约束：不跟随重定向、不带任何
+// 凭据（仅 UA / Content-Type / Cache-Control）、正文上限 4MB、总时限有界。
 bool FetchPortalPage(const std::string& url, HttpResponse& out, std::string& error,
                      int timeout_ms = 8000);
 
