@@ -1,0 +1,111 @@
+name: CI
+
+# 每次推送到 master / PR 都跑：构建 → 测试 → 红act 审计 → UI 令牌检查。
+# 注意：本项目的 C++ 测试里有一条"能给文件写完整性标签"的用例，普通构建代理账户
+# 没有该权限，因此 CI 只要求**除 integrity_test 之外**全绿（与 build.ps1 的口径一致）。
+on:
+  push:
+    branches: [ master, main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 CMake
+        run: cmake -S . -B build-m1 -G "Visual Studio 17 2022" -A x64
+
+      - name: 构建（Release，/W4）
+        run: cmake --build build-m1 --config Release
+
+      - name: 运行 C++ 测试
+        shell: pwsh
+        run: |
+          $out = & .\build-m1\Release\cnk_tests.exe 2>&1
+          $out | Select-String -Pattern 'test cases:|assertions:|Status:' | ForEach-Object { $_.Line }
+          $fails = $out | Select-String -Pattern ': ERROR:|: FATAL ERROR:'
+          $other = $fails | Where-Object { $_.Line -notmatch 'integrity_test\.cpp' }
+          if ($other) {
+            $other | ForEach-Object { $_.Line }
+            Write-Error "存在非环境性测试失败：$($other.Count) 条"
+            exit 1
+          }
+          Write-Host "仅 integrity_test 失败（CI 账户无写完整性标签权限，属环境性）"
+
+      - name: 证据脱敏审计
+        shell: pwsh
+        run: |
+          python docs/evidence/audit_redaction.py
+          if ($LASTEXITCODE -ne 0) { Write-Error "证据文件未通过脱敏审计"; exit 1 }
+
+      - name: 安装 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: 构建 Avalonia UI + 核心自检
+        shell: pwsh
+        run: |
+          $env:DOTNET_CLI_HOME = "$PWD\build-ui\dotnet-home"
+          $env:NUGET_PACKAGES  = "$PWD\build-ui\nuget"
+          $env:DOTNET_NOLOGO = '1'
+          dotnet build src/ui/ContractCheck -c Release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          dotnet build src/ui/CampusNet.UI -c Release
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 核心自检（配置镜像 / 密码规则 / 运营商合并）
+        shell: pwsh
+        run: |
+          & .\build-ui\bin\CampusNet.UI.ContractCheck\Release\net10.0-windows\CampusNet.UI.ContractCheck.exe
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: UI 令牌层静态检查（不依赖编译器）
+        shell: pwsh
+        run: |
+          pwsh -File tools/check_ui_tokens.ps1
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: CampusNet-Keeper-win-x64
+          path: |
+            build-m1/Release/CampusNet-Keeper.exe
+            build-m1/Release/cnk_tests.exe
+            build-m1/Release/cnk_ipc_probe.exe
+
+  release:
+    # 打 tag（v*）时把产物附到 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置并构建
+        run: |
+          cmake -S . -B build-m1 -G "Visual Studio 17 2022" -A x64
+          cmake --build build-m1 --config Release
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path stage | Out-Null
+          Copy-Item build-m1\Release\CampusNet-Keeper.exe stage
+          Copy-Item README.md, LICENSE stage
+          Compress-Archive -Path stage\* -DestinationPath CampusNet-Keeper-win-x64.zip -Force
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
+        with:
+          files: CampusNet-Keeper-win-x64.zip
+          generate_release_notes: true

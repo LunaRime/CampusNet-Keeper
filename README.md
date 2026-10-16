@@ -74,11 +74,46 @@
 
 ## 构建
 
-依赖：Visual Studio 2022（含 C++ 桌面开发工作负载）。
+依赖：Visual Studio 2022（含 C++ 桌面开发工作负载）。设置界面额外需要 .NET SDK 10。
 
-    cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-    cmake --build build --config Release
-    ./build/Release/cnk_tests.exe
+一条命令搞定（配置 → 构建 → 测试 → **安装到 `build\Release`** → **校验产物**）：
+
+    pwsh -File build.ps1              # 完整构建
+    pwsh -File build.ps1 -Package     # 额外产出发布压缩包
+    pwsh -File build.ps1 -SkipUi      # 只构建 C++（没装 .NET SDK 也能跑）
+
+脚本最后一步会校验 `build\Release` 的主程序含本次构建的日志标记、并与刚构建的产物比对
+SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发树、用户运行着旧二进制"导致
+「检测不到守护进程 / 无法保存配置」的事故，所以把"同步安装"固化成脚本行为，不靠人记得。
+
+手动构建（等价）：
+
+    cmake -S . -B build-m1 -G "Visual Studio 17 2022" -A x64
+    cmake --build build-m1 --config Release
+    ./build-m1/Release/cnk_tests.exe
+
+设置界面（首次需要联网 restore Avalonia 包）：
+
+    $env:NUGET_PACKAGES = "$PWD\build-ui\nuget"
+    dotnet build src/ui/CampusNet.UI -c Release
+    dotnet build src/ui/ContractCheck -c Release
+
+## 测试与验证
+
+    ./build-m1/Release/cnk_tests.exe              # C++ 全量测试
+    pwsh -File tools/check_ui_tokens.ps1          # UI 令牌层静态检查（不需要编译器）
+    python docs/evidence/audit_redaction.py       # 证据文件脱敏审计
+
+`build-m1\Release\cnk_ipc_probe.exe` 是**测试用探针服务端**（不随发布分发）：用
+`--seconds=45` 起它，再跑 `ContractCheck`，即可验证跨语言 IPC 契约与界面命令。
+
+## CI 与发布
+
+`.github/workflows/ci.yml`：推送/PR 时构建 + 跑测试 + 脱敏审计 + UI 令牌检查；打 `v*`
+tag 时自动打包并创建 GitHub Release。
+
+**推送前必须自查**：跑一次 `python docs/evidence/audit_redaction.py`，并人工确认仓库中不含
+任何真实账号、学号、MAC、密码或其他私有凭据（包括 `docs/evidence/` 下的抓包证据）。
 
 ## 许可证
 
