@@ -44,6 +44,11 @@ jobs:
 
       - name: 证据脱敏审计
         shell: pwsh
+        env:
+          # 脚本会往 stdout 打中文，而 Windows 运行器控制台默认是 cp1252/cp437：
+          # 不强制 UTF-8 会抛 UnicodeEncodeError 让脚本非零退出（2026-10-17 实测的 CI 失败原因）。
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: '1'
         run: |
           python docs/evidence/audit_redaction.py
           if ($LASTEXITCODE -ne 0) { Write-Error "证据文件未通过脱敏审计"; exit 1 }
