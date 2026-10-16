@@ -10401,6 +10401,21 @@ git commit -m "feat: 按需加载 CLR 并解压内嵌 UI，实现单 exe 双形�
 > 被 skip，**没有发出任何 Release**，正是 `needs` 兜底的价值）。修法：断言后补 `exit 0`。
 > 教训：**GitHub Actions 的 pwsh 步骤里，只要末尾留着非零 `$LASTEXITCODE`，即使逻辑上"通过"，
 > 进程也会以非零退出**——凡是以原生命令结尾的步骤都要显式 `exit 0`。
+>
+> **✅ Step 5–8 完成（2026-10-17，发版成功）**：`v0.1.0` 已发布 ——
+> <https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0>
+> 线上资产**下载后解包实测**：`CampusNet-Keeper-v0.1.0-full-win-x64.zip`（9.70 MB，内含 23.33 MB
+> 单 exe，`--version` 0.1.0、`--ui-info` 退 0 且"全部为存储型 + 载荷校验: 通过"）与
+> `CampusNet-Keeper-v0.1.0-lite-win-x64.zip`（0.61 MB，`--ui-info` 退 3）；包内 =
+> exe + README + LICENSE + `docs/M1-实测指南.md` + 两张合成数据截图 + `docs/evidence/newapi_login_20261016.md`。
+> CI 运行 `38956234618`：windows job 与 **release job 首跑**全绿（release 7/7 步）。
+> 脱敏门禁也一并加固：审计覆盖全仓 + 图片资产白名单（未登记即失败），README 的推送前清单强调
+> **新增截图必须逐张打开看过**。
+>
+> **仍未做 / 待定**：① 仓库仍是 **private**（计划 Step 7 写的是 `--public`）——转公开属产品决策，
+> 需要时再定（那张含真实学号的截图已从历史清除，公开前的最大障碍已消除）；② `-SelfContainedPayload`
+> （零依赖形态）仍未实测；③ CI 只在 tag 上构建完整版，分支推送只跑精简版（首次发版已把 tag 首跑
+> 当 dry run，实际抓到并修掉了 `exit 0` 那个坑，`needs: windows` 也保证了失败时不会发出坏 Release）。
 
 **Files:**
 - Create: `scripts/build.ps1`

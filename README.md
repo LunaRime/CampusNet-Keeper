@@ -198,6 +198,9 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
 
 ## CI 与发布
 
+**最新发布**：[v0.1.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0)
+（完整版单 exe + 精简版两个 zip）。
+
 `.github/workflows/ci.yml`：
 
 - **推送 / PR**：配置 → 构建（精简版）→ 跑测试 → 精简版形态自检（`--ui-info` 必须退 3）→
