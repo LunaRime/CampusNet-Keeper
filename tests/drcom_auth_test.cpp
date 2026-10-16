@@ -30,8 +30,15 @@ TEST_CASE("正确凭据登录成功") {
     ctx.portal_url = srv.BaseUrl() + "/";
     auto r = auth->Login(MakeProfile(srv.BaseUrl(), "alice", "pw123", "campus"), ctx);
     CHECK(r.success);
-    CHECK(r.request_body.find("DDDDD=alice") != std::string::npos);
-    CHECK(r.request_body.find("upass=pw123") != std::string::npos);
+    // 线上真实载荷（模拟器解密后留存）：账号带 ,0, 前缀
+    CHECK(srv.LastLoginBody().find(",0,alice") != std::string::npos);
+    CHECK(srv.LastLoginBody().find("\"user_password\":\"pw123\"") != std::string::npos);
+    // 展示用请求体必须整体打码：密码、账号（含学号）与 rcn 一律不回显
+    //（2026-10-16 审阅 P1：新式载荷是 JSON，旧的 key=value 脱敏对它无效 → 回归）
+    CHECK(r.request_body.find(",0,alice") == std::string::npos);
+    CHECK(r.request_body.find("pw123") == std::string::npos);
+    CHECK(r.request_body.find("\"user_account\":\",0,***\"") != std::string::npos);
+    CHECK(r.request_body.find("\"user_password\":\"***\"") != std::string::npos);
     srv.Stop();
 }
 
@@ -48,12 +55,121 @@ TEST_CASE("错误密码返回失败") {
     cnk::NetContext ctx;
     auto r = auth->Login(p, ctx);
     CHECK_FALSE(r.success);
-    // 服务器返回明确的失败标志 Dr.COMWebLoginID_2.htm，厂商原始码为 2
-    // （计划此处置 -1，但 -1 是「无法从响应判定」保留值，与 spec §4.1
-    //  “vendor_code = 厂商返回的原始码”及三级判定语义矛盾，依 spec 裁决为 2）
+    // 新式接口对凭据错误回 {"result":0,"msg":"账号或密码错误"}（2026-10-16 实测协议）；
+    // 文案命中「账号/密码」→ 归入 vendor_code=2（凭据类），触发调度器的停止重试保护
     CHECK(r.vendor_code == 2);
-    // 失败信息须附带服务器 msga 判定码（2026-10-16 实测该字段可区分失败成因）
-    CHECK(r.message.find("userid error2") != std::string::npos);
+    CHECK(r.message.find("账号或密码错误") != std::string::npos);
+    srv.Stop();
+}
+
+TEST_CASE("服务器报「终端IP已在线」时判成功，且不得误判为凭据错误（2026-10-16 线上实测）") {
+    // 线上真实响应（本机 10.0.0.1 实测，正确账号 + 正确密码，在线态复登）：
+    //   dr1005({"result":0,"msg":"终端IP已在线！","ret_code":2})
+    // 语义是「链路已通、无需重新登录」。若判失败，会同时坏两处：
+    //   ① --test-login 报误导性的「登录失败」；
+    //   ② 调度器走退避重试，连续 3 次后落入「非校园网」保护并停止重试。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "alice";
+    o.valid_pass = "pw";
+    o.already_online = true;
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    auto p = MakeProfile(srv.BaseUrl(), "alice", "pw", "campus");
+    auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
+    cnk::NetContext ctx;
+    auto r = auth->Login(p, ctx);
+    CHECK(r.success);
+    CHECK(r.vendor_code != 2);  // 绝不可是「凭据错误→停止重试」那一类
+    CHECK(r.message.find("已在线") != std::string::npos);
+    srv.Stop();
+}
+
+TEST_CASE("新式接口在场但登录不可用：老式回退的「凭据错误」不得采信（审阅 P1）") {
+    // 本部署老式通道恒回 userid error2（与凭据对错无关）。若新式接口明明在场
+    // （loadConfig 正常）却因登录步骤故障而回退，又把 error2 当成密码错误上报，
+    // 调度器就会 AuthFailed + stop_retrying=true——正是本项目踩过的那次误诊。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "alice";
+    o.valid_pass = "right";
+    o.new_api_login_broken = true;  // 新式登录端点 404，但 loadConfig/chkstatus 正常
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    auto p = MakeProfile(srv.BaseUrl(), "alice", "wrong", "campus");
+    auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
+    cnk::NetContext ctx;
+    auto r = auth->Login(p, ctx);
+    CHECK_FALSE(r.success);
+    CHECK(r.vendor_code != 2);                          // 不得当凭据错误（否则停止重试）
+    CHECK(r.message.find("新式") != std::string::npos);  // 必须带上真实原因
+    srv.Stop();
+}
+
+TEST_CASE("老部署（新式接口不存在）时，老式通道的凭据错误仍归类为凭据错误") {
+    // 回退通道的判定并非一律不可信：接口整体不存在（旧部署）时它是唯一依据
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "alice";
+    o.valid_pass = "right";
+    o.disable_new_api = true;
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    auto p = MakeProfile(srv.BaseUrl(), "alice", "wrong", "campus");
+    auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
+    cnk::NetContext ctx;
+    auto r = auth->Login(p, ctx);
+    CHECK_FALSE(r.success);
+    CHECK(r.vendor_code == 2);
+    srv.Stop();
+}
+
+TEST_CASE("失败文案分类：只有凭据类才判 vendor_code=2，普通故障文案不得停止重试") {
+    // 审阅 P1：「获取用户信息失败，请稍后重试」含「用户」二字，旧启发式会把它当成
+    // 密码错误 → 永久停止自动重试。
+    auto login_with_msg = [](const std::string& msg, int& code, bool& ok) {
+        cnk::SimServer srv;
+        cnk::SimOptions o;
+        o.new_api_fail_msg = msg;
+        std::string err;
+        if (!srv.Start(o, err)) return false;
+        auto p = MakeProfile(srv.BaseUrl(), "alice", "pw", "campus");
+        auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
+        cnk::NetContext ctx;
+        auto r = auth->Login(p, ctx);
+        code = r.vendor_code;
+        ok = r.success;
+        srv.Stop();
+        return true;
+    };
+
+    int code = 0;
+    bool ok = true;
+    REQUIRE(login_with_msg("获取用户信息失败，请稍后重试", code, ok));
+    CHECK_FALSE(ok);
+    CHECK(code == -1);  // 普通故障：交重试裁决，不得停止重试
+
+    REQUIRE(login_with_msg("账号或密码错误", code, ok));
+    CHECK_FALSE(ok);
+    CHECK(code == 2);  // 真凭据错误：停止重试
+}
+
+TEST_CASE("「账号已在线」不等于本终端在线：不得判成功") {
+    // 只有「终端 IP 已在线」才说明本机链路已通；账号在别处在线是另一种情况
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.new_api_fail_msg = "该账号已在线，请先下线";
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    auto p = MakeProfile(srv.BaseUrl(), "alice", "pw", "campus");
+    auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
+    cnk::NetContext ctx;
+    auto r = auth->Login(p, ctx);
+    CHECK_FALSE(r.success);
     srv.Stop();
 }
 
@@ -70,17 +186,20 @@ TEST_CASE("运营商后缀被拼到账号后") {
     auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
     cnk::NetContext ctx;
     auto r = auth->Login(p, ctx);
-    // 服务器要求账号必须带 @cmcc 才通过，能成功即证明后缀已拼上
+    // 服务器要求账号必须带 @cmcc 才通过，能成功即证明后缀已拼上；
+    // 断言用「线上真实载荷」（模拟器解密留存），而非打码后的展示文本
     CHECK(r.success);
-    CHECK(r.request_body.find("DDDDD=bob%40cmcc") != std::string::npos);
+    CHECK(srv.LastLoginBody().find(",0,bob@cmcc") != std::string::npos);
     srv.Stop();
 }
 
-TEST_CASE("正文包含全部 17 个规定字段") {
+TEST_CASE("老协议回退通道：正文包含全部 17 个规定字段") {
+    // 新式接口在旧版本部署上不存在时走此通道（disable_new_api 模拟该情形）
     cnk::SimServer srv;
     cnk::SimOptions o;
     o.valid_user = "u";
     o.valid_pass = "p";
+    o.disable_new_api = true;
     std::string err;
     REQUIRE(srv.Start(o, err));
 
@@ -254,6 +373,7 @@ TEST_CASE("失败响应回显双标志登录页时返回 -1 不误判成功") {
     o.valid_user = "u";
     o.valid_pass = "p";
     o.fail_mode = 4;
+    o.disable_new_api = true;  // 本用例验证老通道的失败形态
     std::string err;
     REQUIRE(srv.Start(o, err));
 

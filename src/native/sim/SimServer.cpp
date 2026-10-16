@@ -1,4 +1,6 @@
 #include "sim/SimServer.h"
+#include "core/Crypto.h"
+#include "json.hpp"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -60,6 +62,10 @@ const char* kVisitBlacklist =
     "\"www.appleiphonecell.com\",\"captive.apple.com\",\"www.apple.com\","
     "\"gspe21.ls.apple.com\",\"generate_204\",\"ncsi.txt\",\"success.txt\"]";
 
+// 新式登录的页面令牌 rcn：**合成值**，不回用真实抓取值
+//（rcn 是会话期内有效的页面令牌，按 docs/evidence 的脱敏要求不入库）。
+const char kSimRcn[] = "testrcn1";
+
 // GET /eportal/portal/page/loadConfig 的响应：dr1003({...}) 包裹的 JSON（真实格式）。
 // 字段名与取值取自证据文件；字符串型字段必须保持字符串（en_md5 / ep_http_port 原件都是
 // 字符串），否则会诱导下游写出"只在模拟器上正确"的解析代码。
@@ -83,7 +89,7 @@ std::string BuildLoadConfig(int port) {
            "\"un_bind_mac\":\"0\","
            "\"domain_name\":\"\","
            "\"cvlan_id\":\"4095\","
-           "\"rcn\":\"SD0S0zk6\","
+        << "\"rcn\":\"" << kSimRcn << "\","
         << "\"ep_http_port\":\"" << port << "\","
            "\"ep_https_port\":\"802\","
         << "\"visit_blacklist\":" << kVisitBlacklist
@@ -146,6 +152,18 @@ std::string Utf8ToGbk(const std::string& utf8) {
     std::string gbk((size_t)gn, '\0');
     WideCharToMultiByte(936, 0, wide.data(), wn, gbk.data(), gn, nullptr, nullptr);
     return gbk;
+}
+
+// ===== 新式 API（2026-10-16 实测协议）=====
+// 登录参数 = AES-128-ECB + PKCS7 + Base64（密钥取自门户页 a41.js util.aes_en）；
+// 登录前 loadConfig 下发页面令牌 rcn（与 BuildLoadConfig 中的值保持一致）。
+const char kSimAesKey[] = "5c1d5ad4dea0e8dd";
+
+// 用请求里的 callback 名包裹 JSON（真实 JSONP 行为）；未带 callback 时用 jsonpReturn。
+std::string JsonpWrap(const std::string& query, const std::string& json) {
+    std::string cb = UrlDecode(ParseFormValue(query, "callback"));
+    if (cb.empty()) cb = "jsonpReturn";
+    return cb + "(" + json + ");";
 }
 
 // loopback 上小响应通常一次就发完，循环发送以免响应被截断。
@@ -249,10 +267,73 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         // 模拟器以同一页面契约服务两者（字段清单见 tests/sim_test.cpp 忠实性用例）。
         // 真实门户首页是 GBK 字节；转码后再算 Content-Length（GBK 与 UTF-8 字节数不同）
         resp_body = Utf8ToGbk(BuildHomePage(port));
-    } else if (path == "/eportal/portal/page/loadConfig") {
+    } else if (!opts.disable_new_api && path == "/eportal/portal/page/loadConfig") {
         // 免劫持清单只在这里下发，不在首页
         resp_body = BuildLoadConfig(port);
         content_type = "text/html; charset=utf-8";
+    } else if (!opts.disable_new_api && path == "/drcom/chkstatus") {
+        // 新式：客户端校园网 IP 探测（实机与门户同源）。真实响应为 JSONP，
+        // 模拟器以回环地址作答（客户端仅取 v46ip 透传给登录载荷）。
+        content_type = "application/javascript; charset=utf-8";
+        resp_body = JsonpWrap(query,
+                              "{\"result\":0,\"v46ip\":\"127.0.0.1\",\"myv6ip\":\"\","
+                              "\"domain\":\"[::]\",\"ss5\":\"127.0.0.1\",\"ss6\":\"127.0.0.1\"}");
+    } else if (!opts.disable_new_api && !opts.new_api_login_broken &&
+               path == "/eportal/portal/login") {
+        // 新式登录（2026-10-16 实测）：params = AES-128-ECB+PKCS7+Base64 的 JSON。
+        // 校验三件事：rcn（来自 loadConfig）、账号（,0, + 账号 + 运营商后缀）、密码。
+        content_type = "application/javascript; charset=utf-8";
+        login_count++;
+        const std::string params_enc = UrlDecode(ParseFormValue(query, "params"));
+        std::string payload;
+        nlohmann::json j;
+        bool parsed = !params_enc.empty() &&
+                      AesEcbPkcs7DecryptB64(kSimAesKey, params_enc, payload);
+        if (parsed) {
+            try {
+                j = nlohmann::json::parse(payload);
+            } catch (...) {
+                parsed = false;
+            }
+        }
+        if (!parsed) {
+            resp_body = JsonpWrap(
+                query, "{\"result\":0,\"msg\":\"参数解析失败\",\"ret_code\":\"1\"}");
+        } else {
+            {
+                std::lock_guard<std::mutex> lk(body_mutex);
+                // 解密后的载荷（诊断用；测试环境才存在的夹具，模拟器不写盘）
+                last_login_body = payload;
+            }
+            const std::string rcn = j.value("rcn", std::string());
+            const std::string user = j.value("user_account", std::string());
+            const std::string pass = j.value("user_password", std::string());
+            const std::string expect_user =
+                std::string(",0,") + opts.valid_user + opts.isp_suffix;
+            if (rcn != kSimRcn) {
+                resp_body = JsonpWrap(query,
+                                      "{\"result\":0,\"msg\":\"当前页面已超时，请重新刷新页面\","
+                                      "\"ret_code\":\"1\"}");
+            } else if (opts.already_online) {
+                // 线上实测原样：终端已在线的判定先于凭据校验（与真实服务器一致）
+                logged_in.store(true);
+                resp_body = JsonpWrap(
+                    query, "{\"result\":0,\"msg\":\"终端IP已在线！\",\"ret_code\":2}");
+            } else if (!opts.new_api_fail_msg.empty()) {
+                // 指定失败文案（用于钉住「凭据类 vs 普通故障」的分类）
+                resp_body = JsonpWrap(query, "{\"result\":0,\"msg\":\"" +
+                                                 opts.new_api_fail_msg +
+                                                 "\",\"ret_code\":\"1\"}");
+            } else if (!opts.valid_user.empty() && user == expect_user &&
+                       !opts.valid_pass.empty() && pass == opts.valid_pass) {
+                logged_in.store(true);
+                resp_body =
+                    JsonpWrap(query, "{\"result\":1,\"msg\":\"Portal协议认证成功！\"}");
+            } else {
+                resp_body = JsonpWrap(
+                    query, "{\"result\":0,\"msg\":\"账号或密码错误\",\"ret_code\":\"1\"}");
+            }
+        }
     } else if (path == "/eportal/" || path == "/eportal") {
         // 真实 eportal 路径按 UTF-8 声明（与首页的 gbk 不同），硬编码任一种都会让另一条乱码
         content_type = "text/html; charset=utf-8";

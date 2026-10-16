@@ -1,7 +1,9 @@
 #include "doctest.h"
 #include "core/Integrity.h"
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <windows.h>
 #include <aclapi.h>
 #include <sddl.h>
@@ -11,10 +13,19 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// 目录名带唯一后缀：机器上可能残留上次运行留下的同名目录（例如被沙箱加固过 ACL、
+// 当前令牌删不掉的那种），复用固定名字会让 remove_all / create_directories 直接抛
+// 异常、整例假失败。用 error_code 重载 + 唯一名，让夹具不受环境残留影响。
 fs::path FreshDir(const char* name) {
-    auto d = fs::temp_directory_path() / name;
-    fs::remove_all(d);
-    fs::create_directories(d);
+    static int counter = 0;
+    const std::string uniq =
+        std::string(name) + "_" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+        "_" + std::to_string(++counter);
+    auto d = fs::temp_directory_path() / uniq;
+    std::error_code ec;
+    fs::remove_all(d, ec);
+    fs::create_directories(d, ec);
     return d;
 }
 

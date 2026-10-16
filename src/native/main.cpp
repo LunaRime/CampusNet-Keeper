@@ -179,7 +179,7 @@ int RunTestLogin(cnk::AppConfig& cfg) {
 
     PrintLine("");
     PrintLine("== 请求（已脱敏）==");
-    PrintLine("POST " + cnk::RedactSecrets(lr.request_url));
+    PrintLine(cnk::RedactSecrets(lr.request_url));
     PrintLine(cnk::RedactSecrets(lr.request_body));
     PrintLine("");
     PrintLine("== 结果 ==");

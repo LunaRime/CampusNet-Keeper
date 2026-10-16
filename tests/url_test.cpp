@@ -9,6 +9,13 @@ TEST_CASE("UrlEncode 编码保留字符") {
     CHECK(cnk::UrlEncode("") == "");
 }
 
+TEST_CASE("UrlEncode 必须转义 base64 的 + / =（新式 API 的 params 全靠它）") {
+    // params 是 base64 密文；若 '+' 未被转义，服务器会按 form-urlencoded 解成空格，
+    // 密文即损坏。此断言防止将来的「简化」把这条路径改坏（模拟器同样按 + → 空格解码）。
+    CHECK(cnk::UrlEncode("a+b/c=") == "a%2Bb%2Fc%3D");
+    CHECK(cnk::UrlEncode("+/+/") == "%2B%2F%2B%2F");
+}
+
 TEST_CASE("UrlEncode 正确处理中文（按 UTF-8 字节）") {
     CHECK(cnk::UrlEncode("学") == "%E5%AD%A6");
 }

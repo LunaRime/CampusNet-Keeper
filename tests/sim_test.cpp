@@ -1,6 +1,7 @@
 #include "doctest.h"
 #include "json.hpp"
 #include "sim/SimServer.h"
+#include "core/Crypto.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>  // MultiByteToWideChar / CP_UTF8；必须排在 winsock2.h 之后
@@ -484,5 +485,77 @@ TEST_CASE("fail_mode=5 复现真实劫持形态：裸 302（无指纹）跳转�
     CHECK(RawHttp(srv.Port(), "GET", "/sim_probe", "")
               .find("Microsoft NCSI") != std::string::npos);
 
+    srv.Stop();
+}
+
+TEST_CASE("新式 API 端点：loadConfig 下发 rcn、登录按 AES 参数校验") {
+    // 2026-10-16 实测协议：真实登录 = GET /eportal/portal/login?params=<AES(JSON)>，
+    // rcn 由 loadConfig 下发；本用例钉住模拟器对该协议的实现。
+    cnk::SimOptions opts;
+    opts.valid_user = "alice";
+    opts.valid_pass = "pw";
+    std::string err;
+    cnk::SimServer srv;
+    REQUIRE(srv.Start(opts, err));
+
+    const std::string rc =
+        RawHttp(srv.Port(), "GET", "/eportal/portal/page/loadConfig?callback=dr1001", "");
+    // rcn 为模拟器的合成值（真实抓取到的页面令牌不入库）
+    CHECK(rc.find("\"rcn\":\"testrcn1\"") != std::string::npos);
+
+    const std::string ck =
+        RawHttp(srv.Port(), "GET", "/drcom/chkstatus?callback=dr1002", "");
+    CHECK(ck.find("dr1002(") != std::string::npos);  // callback 名回显
+    CHECK(ck.find("\"v46ip\"") != std::string::npos);
+
+    auto urlenc = [](const std::string& s) {
+        static const char* hex = "0123456789ABCDEF";
+        std::string o;
+        for (unsigned char c : s) {
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
+                o += (char)c;
+            else {
+                o += '%';
+                o += hex[c >> 4];
+                o += hex[c & 0x0F];
+            }
+        }
+        return o;
+    };
+    auto login = [&](const std::string& user, const std::string& pw, const std::string& rcn) {
+        const std::string json =
+            std::string("{\"login_method\":1,\"user_account\":\"") + user +
+            "\",\"user_password\":\"" + pw + "\",\"rcn\":\"" + rcn + "\"}";
+        std::string b64;
+        if (!cnk::AesEcbPkcs7EncryptB64("5c1d5ad4dea0e8dd", json, b64))
+            return std::string();
+        return RawHttp(srv.Port(), "GET",
+                       "/eportal/portal/login?callback=dr1005&params=" + urlenc(b64), "");
+    };
+
+    const std::string ok = login(",0,alice", "pw", "testrcn1");
+    CHECK(ok.find("\"result\":1") != std::string::npos);
+    CHECK(ok.find("Portal协议认证成功") != std::string::npos);
+
+    const std::string badpw = login(",0,alice", "wrong", "testrcn1");
+    CHECK(badpw.find("\"result\":0") != std::string::npos);
+    CHECK(badpw.find("账号或密码错误") != std::string::npos);
+
+    const std::string badrcn = login(",0,alice", "pw", "expired-rcn");
+    CHECK(badrcn.find("当前页面已超时") != std::string::npos);
+
+    srv.Stop();
+}
+
+TEST_CASE("disable_new_api：新式端点不注册（回退路径测试用）") {
+    cnk::SimOptions opts;
+    opts.disable_new_api = true;
+    std::string err;
+    cnk::SimServer srv;
+    REQUIRE(srv.Start(opts, err));
+    const std::string resp =
+        RawHttp(srv.Port(), "GET", "/eportal/portal/login?params=x", "");
+    CHECK(resp.find("404") != std::string::npos);
     srv.Stop();
 }

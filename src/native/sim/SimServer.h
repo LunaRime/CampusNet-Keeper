@@ -16,6 +16,23 @@ struct SimOptions {
                                     //   未登录时 /sim_probe 302 到第二监听端口上的
                                     //   /a79.htm，客户端须抓取目标页才能识别）
     std::string redirect_location;  // fail_mode == 3 时返回的 Location 值
+
+    // true=整个新式 API 都不注册（/drcom/chkstatus、/eportal/portal/page/loadConfig、
+    // /eportal/portal/login 一律 404），用于测试客户端「新式接口不存在 → 回退老式协议」
+    // 的路径（此时回退通道是唯一依据，其判定应当被采信）。
+    bool disable_new_api = false;
+
+    // true=新式登录一律回「该终端 IP 已在线」（2026-10-16 线上实测响应：
+    // result=0/ret_code=2/msg="终端IP已在线！"），用于钉住客户端的判定语义。
+    bool already_online = false;
+
+    // true=新式登录端点返回 404，但 loadConfig/chkstatus 正常——用于测试
+    // 「新式接口在场、却因登录步骤故障而回退老式协议」这一路径（不得把回退通道的
+    // 判定当成凭据错误）。
+    bool new_api_login_broken = false;
+
+    // 非空时，新式登录一律回 {"result":0,"msg":<该文案>,...}——用于钉住失败文案的分类。
+    std::string new_api_fail_msg;
 };
 
 class SimServer {
