@@ -6964,6 +6964,20 @@ git add -A
 git commit -m "feat: 锐捷 eportal 认证实现"
 ```
 
+> **✅ 实施注记（2026-10-16，任务 19-21 一并落地）**：已按本任务实现 `EportalAuth`
+> （`src/native/auth/EportalAuth.cpp`），模拟器加入 `vendor="eportal"` 的门户页与 JSONP
+> 登录端点，新增 `tests/eportal_auth_test.cpp`（含模拟器端到端）。
+> **与本任务原文的偏差（均为实测/审查发现）**：
+> ① 原文 `ctx.local_ip.empty() ? "0.0.0.0"`——M1 的 `NetContext.local_ip` **恒为空**，
+> 会向真实服务器提交 `0.0.0.0` 而基本必失败；改为 `ResolveClientIp()`
+> （`core/LocalIp.h`：无包 UDP connect + getsockname 现算本机源地址，最后才退 0.0.0.0）。
+> ② `vendor_code` 固定 `-1`，不透传厂商原始码——本项目只有 Dr.COM 的码 2 有
+> 「凭据错误 → 停止重试」的约定语义（`Scheduler.cpp` 依赖它），跨厂商透传会误触发停止
+> 重试；原文「不据此触发停止重试」的意图以此方式落实，原始码仍出现在失败信息里。
+> ③ 响应解析改用 nlohmann（原文用正则），与 `DrcomAuth` 一致，且对 JSON/JSONP 都稳。
+> **未实测**：本机是 Dr.COM 环境。锐捷路径待有锐捷校园网的反馈者用
+> `--simulate=eportal --test-login` 自测后回传真实输出（README「已知限制」已记）。
+
 ---
 
 ## 任务 20：BCrypt 加密工具与深澜认证
@@ -7483,6 +7497,42 @@ git add -A
 git commit -m "feat: BCrypt 哈希工具与深澜 srun 认证（未实测）"
 ```
 
+> **✅ 实施注记（2026-10-16，任务 19-21 一并落地）**：已实现 `crypto/Hash`
+> （BCrypt MD5/SHA1/HMAC-MD5）、`crypto/SrunXEncode`、`auth/SrunAuth`；模拟器加入
+> `get_challenge` 与 `srun_portal`（后者用「同 token 重新加密期望 JSON 后逐字节比对」
+> 校验 `info`，并复算 chksum——因此端到端钉住了字段取值与拼接顺序）。
+> **⚠ 本任务原文有两处错误，已纠正（重要）**：
+> ① **码表是坏表**：原文 `…Uq/3DLbfKw…`（大写 D）里 `'L'` 出现两次、缺 `'d'` 与 `'l'`，
+> **不是 64 字符的有效置换**——照抄会静默产出错误密文。正确表把该位写成小写 `d`
+> （与 srunc 客户端的 `ALPHABET` 常量逐字节一致；置换计数：小写 26 + 大写 26 +
+> 数字 10 + 符号 2 = 64）。
+> ② **`SrunBase64("abc")` 的期望值 `"LVoJ"` 是错的**，正确为 `"ZaRk"`
+> （标准 base64("abc")＝"YWJj"，按同下标映射：Y(24)→Z、W(22)→a、J(9)→R、j(35)→k）。
+> **正确性依据**：两份独立参考实现（门户 JS 写法 vs srunc 的 `quirk_base64`）在 150 组
+> 输入（长度 0..24）上交叉核对**零差异**；向量与可复算脚本见
+> `tools/srun_xencode_oracle.js` 与 `tests/crypto_test.cpp`。
+> ③ `SrunBase64` 累加器改 `uint32_t`（原文 `int` 的有符号左移溢出是 UB；取低 6 位的结果
+> 与参考实现等价，已用向量钉住）。
+> ④ **`info` 必须 URL 编码**：原文把 `{SRBX1}<自定义 base64>`（含 `+` `/`）直接拼进 URL，
+> 服务器会按 form-urlencoded 把 `+` 解成空格、**密文损坏**——与 Dr.COM 的 `params` 同类坑。
+> ⑤ 非 ASCII 输入口径差异记入 README「已知限制」（本实现 UTF-8 字节，门户 JS 用
+> `charCodeAt`/UTF-16 码元；纯 ASCII 等价）。
+> **未实测**：深澜路径待有深澜校园网的反馈者用 `--simulate=srun --test-login` 自测。
+>
+> **🔴 第三处原文错误（2026-10-16 独立审阅 P0，会让真实深澜部署 100% 登录失败）**：
+> 原文 `:7413` 的 `chksum = HmacMd5Hex(chk, token)` **错了——chksum 是 `SHA1(chkstr)`**。
+> 三份独立来源一致（本轮均已抓取核对）：深大 srun 逆向（门户 `Portal.js` 原文：
+> 「chksum => sha1 哈希后的 chkstr」）、`srunc` 的 `params.rs`（`sha1_hex(join(&[...]))`）、
+> `bitgateway-client` 的 `crypto.rs::checksum()`（`Sha1::new()`）。旁证：`Sha1Hex` 实现后
+> 在产线代码里**零调用**——它本来就是为这一行准备的。
+> 之所以测试全绿：模拟器用**同一个** `HmacMd5Hex` 算期望值，双方共享同一错误公式，
+> 端到端恒真。已修（客户端与模拟器同步改 `Sha1Hex`），并新增**请求级 KAT**——
+> 在测试里按上述三份来源的写法独立复算 hmd5 / info / chksum，不再依赖产品公式。
+> 同一轮还确认了两点：**base64 带标准 padding**（srunc、bitgateway、深大 Python 三个
+> 能实际登录的实现都带；本实现原先无 padding，已改），以及 `info` 走 UTF-8 字节
+> （门户 JS 用 `charCodeAt`/UTF-16 只影响非 ASCII）。
+> ac_id 亦改为**优先取跳转 URL 的查询串**（真实形态如 `?ac_id=12`），其次门户页，最后退 `1`。
+
 ---
 
 ## 任务 21：通用表单认证
@@ -7934,6 +7984,28 @@ Expected: 全部 PASS。五种认证策略全部就位。
 git add -A
 git commit -m "feat: 通用表单认证，完成五种策略"
 ```
+
+> **✅ 实施注记（2026-10-16，任务 19-21 一并落地）**：已实现 `core/HtmlForm`
+> （`ParseFirstForm` / `FindFieldByNames`）与 `auth/GenericFormAuth`，并删除 `Stubs.cpp`
+> ——五个认证策略全部为真实实现。
+> **与本任务原文的偏差**：
+> ① 原文 `ParseFirstForm` 只解析 `<input>`，而它自己的测试要求读到
+> `<select name="domain">` 的值（`domain=%40cmcc`）——**自相矛盾**；实现补上 `<select>`
+> （取 `selected` 的 option，否则第一个；无 `value` 时取标签文本），并跳过
+> submit/button/reset/image 这类「只在被点击时才提交」的控件。
+> ② 原文「行为」第 4 条的 ⚠ 注记要求「解析基准优先 `ctx.portal_url`」，但示例代码只用了
+> `p.auth_url`；实现按注记优先 `portal_url`、为空时退回 `auth_url`，并新增用例钉住。
+> ③ GET 表单的 `request_url` 原文不含查询串（字段拼在 `req.url` 上），诊断输出会看不见
+> 填了什么；已改为输出最终 URL。
+> ④ 第二轮「包含匹配」跳过 hidden 字段：否则候选 `user` 会命中 `wlanuserip`，
+> 凭据被填进错误的字段（已加用例）。
+> **已知边界（未改）**：`ResolveUrl` 对不以 `/` 开头的 path-relative action 按 origin
+> 拼接（非 RFC 3986 目录语义）——根相对 action（真实 Portal 形态）正确，页面在子路径时
+> 会丢目录前缀；已在代码注释与 README 标注，留给后续扩展。
+> **另记（设计层面，未改）**：识别为某厂商后会**只**用该策略，失败不会回落到通用表单；
+> 若某门户页面同时带 `nasip`+`wlanuserip`（会被判成锐捷）而实际是普通表单，就会走错策略。
+> 建议后续加「策略链」：识别策略结构性失败时回落到 `GenericFormAuth`。
+> **未实测**：真实表单式 Portal 待反馈者用 `--simulate=generic --test-login` 自测。
 
 ---
 
