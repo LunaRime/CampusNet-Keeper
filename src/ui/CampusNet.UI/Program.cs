@@ -78,8 +78,11 @@ public static class Program
     // 形如 upass=xxx / "password":"xxx" 的凭据对：落盘前打码。
     // 界面进程本来就不接触已存密码（任务 24 的规矩，界面只见 has_password），
     // 这里是纵深防御——免得将来某次异常消息里带上凭据而被原样写进文件。
+    // 注意两处坑（2026-10-17 复核实测）：① 值要用可选的引号包裹，否则 JSON 形态
+    // `"password":"xxx"` 因为字符类排除引号而漏打码；② 用 `(?<![A-Za-z0-9])` 而不是
+    // `\b`——`_` 是词字符，`user_account` 会被 `\b` 卡住而永远匹配不上。
     private static readonly Regex CredentialPair = new(
-        "(?i)\\b(upass|password|passwd|pwd|ddddd|username|user|account|userid|rcn)\\s*[=:]\\s*[^&;\\s,\"}\\]]+",
+        "(?i)(?<![A-Za-z0-9])(upass|password|passwd|pwd|ddddd|username|user_account|user|account|userid|uid|rcn)\\s*[=:]\\s*\"?[^&;\\s,\"}\\]]+",
         RegexOptions.Compiled);
 
     // 托管入口抛异常时没有控制台可看（原生子进程是 CREATE_NO_WINDOW 启动的），

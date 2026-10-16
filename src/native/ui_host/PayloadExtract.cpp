@@ -562,7 +562,9 @@ int CleanStaleUiDirs(const fs::path& base_dir) {
         if (ec) break;
         std::error_code e1;
         if (!it->is_directory(e1)) continue;
-        const std::string name = it->path().filename().u8string();
+        // 用 WideToUtf8 而不是 u8string()：项目名若含孤立代理项（非法 UTF-16），
+        // u8string() 会**抛异常**（2026-10-17 复核实测 N3），而这里只需要拿名字做前缀判断
+        const std::string name = WideToUtf8(it->path().filename().wstring());
         if (name.rfind("ui.tmp-", 0) != 0 && name.rfind("ui.old-", 0) != 0) continue;
         std::error_code e2;
         fs::remove_all(it->path(), e2);

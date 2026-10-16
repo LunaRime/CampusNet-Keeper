@@ -82,6 +82,14 @@ function Stop-UiProcess($proc, [int]$timeoutSec = 20) {
     return $false
 }
 
+# 带"设置界面"窗口的进程。刻意按标题筛：只数 CampusNet-Keeper 进程的话，
+# 万一有守护进程带控制台窗口在跑，会被误算成"第二个界面"（复核 P2-4 的噪声提示）
+function Get-UiWindows {
+    return @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue |
+             Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and
+                            $_.MainWindowTitle -match '设置' })
+}
+
 # ---------------------------------------------------------------- 1) 前置自检
 Title '1) --ui-info：载荷与 hostfxr 就绪'
 $infoOut = & $Exe --ui-info 2>&1
@@ -186,15 +194,13 @@ $pb = Start-UiProcess
 $deadline = (Get-Date).AddSeconds($WindowTimeoutSec)
 $winner = $null
 while ((Get-Date) -lt $deadline) {
-    $with = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue |
-              Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+    $with = Get-UiWindows
     if ($with.Count -ge 1) { $winner = $with[0]; break }
     Start-Sleep -Milliseconds 300
 }
 Check ($null -ne $winner) '并发启动后出现了界面窗口'
 Start-Sleep -Seconds 3        # 给输的一方时间退出
-$wins = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue |
-          Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+$wins = Get-UiWindows
 Check ($wins.Count -eq 1) "只有一个界面窗口（实际 $($wins.Count)）"
 $loser = @($pa, $pb) | Where-Object { $_.HasExited } | Select-Object -First 1
 Check ($null -ne $loser) '其中一个进程已退出'

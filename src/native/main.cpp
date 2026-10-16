@@ -427,7 +427,6 @@ int RunUiInfo() {
         if (e.name == "CampusNet.UI.dll") has_dll = true;
         if (e.name == "CampusNet.UI.runtimeconfig.json") has_config = true;
     }
-    PrintLine("载荷校验: 通过（结构/偏移/CRC 全部通过）");
     PrintLine("载荷条目: " + std::to_string(entries.size()) + " 个，解压后约 " +
               std::to_string(total / (1024 * 1024)) + " MB" +
               (compressed ? "（含 " + std::to_string(compressed) +
@@ -439,6 +438,8 @@ int RunUiInfo() {
                   "（不是界面发布产物？）");
         return 1;
     }
+    // 放在最后打印：前面几步都过了才叫"校验通过"（复核提示的次序问题）
+    PrintLine("载荷校验: 通过（结构/偏移/CRC 全部通过）");
 
     if (st.hostfxr_found) {
         PrintLine("hostfxr: " + st.hostfxr_path);

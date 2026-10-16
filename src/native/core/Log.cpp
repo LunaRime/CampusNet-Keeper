@@ -21,7 +21,9 @@ std::ofstream g_stream;
 LogLevel g_min_level = LogLevel::Info;
 size_t g_max_bytes = 512 * 1024;
 int g_keep_files = 3;
-bool g_rotate_failed = false;   // 轮转失败待报告（见 RotateIfNeeded / LogWrite）
+bool g_rotate_failed = false;    // 轮转失败待报告（见 RotateIfNeeded / LogWrite）
+bool g_rotate_reported = false;  // 本次失败是否已经报过（不按行刷屏）
+int g_rotate_retry = 0;          // 失败后隔多少次写再重试（别每行都 close/rename/open）
 std::deque<std::string> g_tail;
 constexpr size_t kTailMax = 500;
 
@@ -49,6 +51,11 @@ void RotateIfNeeded() {
     if (!fs::exists(g_log_path, ec)) return;
     if ((size_t)fs::file_size(g_log_path, ec) < g_max_bytes) return;
 
+    // 上一轮失败过就先别每次都重试：另一个进程可能长期持着文件，
+    // 每写一行都 close/rename×3/open 是白费力气（2026-10-17 复核 P2-6/N2）
+    if (g_rotate_failed && ++g_rotate_retry < 64) return;
+    g_rotate_retry = 0;
+
     g_stream.close();
     for (int i = g_keep_files - 1; i >= 1; --i) {
         fs::path from = g_log_path;
@@ -66,13 +73,17 @@ void RotateIfNeeded() {
     std::error_code e3;
     fs::remove(first, e3);
     fs::rename(g_log_path, first, e3);
-    // 另一个进程（如 --ui 界面子进程）可能正持有该文件 → 改名失败。
-    // 不能在这里直接 LogWarn（本函数是在持锁状态下被调用的，会死锁），
-    // 只置标志，由 LogWrite 在同一把锁内补一行警告（见下）。
-    if (e3) g_rotate_failed = true;
 
     g_stream.open(g_log_path, std::ios::app);
-    if (!g_stream.is_open()) g_rotate_failed = true;
+    if (e3 || !g_stream.is_open()) {
+        // 另一个进程（如 --ui 界面子进程）可能正持有该文件 → 改名失败。
+        // 不能在这里直接 LogWarn（本函数是在持锁状态下被调用的，会死锁），
+        // 只置标志，由 LogWrite 在同一把锁内补一行警告（见下）。恢复后自动复位。
+        g_rotate_failed = true;
+    } else {
+        g_rotate_failed = false;
+        g_rotate_reported = false;
+    }
 }
 
 bool IsSecretKey(const std::string& key) {
@@ -187,11 +198,13 @@ void LogWrite(LogLevel level, const std::string& msg) {
     if (g_stream.is_open()) {
         RotateIfNeeded();
         g_stream << line << "\n";
-        if (g_rotate_failed) {
-            // 报一次就够（这里已持锁，不能再调 LogWrite/LogWarn——会死锁）
-            g_rotate_failed = false;
+        if (g_rotate_failed && !g_rotate_reported) {
+            // 一次失败只报一条（这里已持锁，不能再调 LogWrite/LogWarn——会死锁）；
+            // 每 64 行会重试一次轮转，成功后再失败才会再报（见 RotateIfNeeded）
+            g_rotate_reported = true;
             g_stream << Timestamp() << " [" << LevelName(LogLevel::Warn) << "] "
-                     << "日志轮转失败（文件可能被其它进程占用，日志会继续增长）\n";
+                     << "日志轮转失败（文件可能被其它进程占用；每 64 行重试一次，"
+                        "日志会继续增长）\n";
         }
         g_stream.flush();
     }
