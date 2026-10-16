@@ -32,6 +32,7 @@ add_library(cnk_core STATIC
   src/native/tray/TrayIcon.cpp
   src/native/core/ProbeTarget.cpp
   src/native/core/Probe.cpp
+  src/native/core/PortalPage.cpp
   src/native/core/Scheduler.cpp
   src/native/core/NetworkChange.cpp
   src/native/core/Cli.cpp
@@ -66,6 +67,7 @@ add_executable(cnk_tests
   tests/drcom_auth_test.cpp
   tests/custom_auth_test.cpp
   tests/probe_test.cpp
+  tests/portal_page_test.cpp
   tests/scheduler_test.cpp
   tests/cli_test.cpp
   tests/sys_test.cpp

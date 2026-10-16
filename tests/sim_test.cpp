@@ -447,3 +447,40 @@ TEST_CASE("sim_probe 在登录成功后模拟网络恢复") {
 
     srv.Stop();
 }
+
+TEST_CASE("fail_mode=5 复现真实劫持形态：裸 302（无指纹）跳转到门户页") {
+    // 2026-10-16 本机实测：真实劫持 302 不含 Server 指纹、正文为空，
+    // 指纹只在跳转目标页。该形态由 fail_mode=5 复现：
+    //   - 未登录时 /sim_probe 返回裸 302，Location 指向第二监听端口上的 /a79.htm；
+    //   - 登录端点不受影响（否则登录链路自毁）；登录成功后 /sim_probe 恢复。
+    cnk::SimOptions opts;
+    opts.valid_user = "u";
+    opts.valid_pass = "p";
+    opts.fail_mode = 5;
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(opts, err));
+    REQUIRE(srv.PortalPort() > 0);
+
+    // 未登录：裸 302 —— 无 Server 头、空正文
+    std::string resp = RawHttp(srv.Port(), "GET", "/sim_probe", "");
+    CHECK(resp.find("HTTP/1.1 302") != std::string::npos);
+    CHECK(resp.find("Server:") == std::string::npos);
+    const std::string loc =
+        "http://127.0.0.1:" + std::to_string(srv.PortalPort()) + "/a79.htm";
+    CHECK(resp.find(loc) != std::string::npos);
+
+    // 跳转目标页可抓取：带 DrcomServer 指纹与门户标记（与真实 a79.htm 契约一致）
+    std::string page = RawHttp(srv.PortalPort(), "GET", "/a79.htm", "");
+    CHECK(page.find("DrcomServer1.0") != std::string::npos);
+    CHECK(page.find("Dr.COMWebLoginID_") != std::string::npos);
+
+    // 登录端点不受裸 302 影响，登录成功后 /sim_probe 不再 302
+    std::string login = RawHttp(srv.Port(), "POST", srv.LoginPath(), "DDDDD=u&upass=p");
+    CHECK(login.find("Dr.COMWebLoginID_3.htm") != std::string::npos);
+    CHECK(srv.LoggedIn());
+    CHECK(RawHttp(srv.Port(), "GET", "/sim_probe", "")
+              .find("Microsoft NCSI") != std::string::npos);
+
+    srv.Stop();
+}

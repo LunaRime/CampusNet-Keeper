@@ -6471,6 +6471,19 @@ git commit -m "feat: 托盘图标与守护消息循环，接上调度与单实�
 > 是一个从未落地的前向引用。已补实现：**`--set-password [--user=账号]`**（环境变量
 > `CNK_PASSWORD` 或交互式掩码输入 → DPAPI 加密写入配置），并在实测指南中替换了原第 3 步。
 > 另：README 的构建命令已从计划的 Ninja 改为实际使用的 VS 生成器，内存数据按实测修正为 ~16MB。
+>
+> **⚑ 实测回修（2026-10-16）**：用户实测发现识别链路在真实环境失效——真实劫持是「**裸 302**」
+> （`Location: http://10.0.0.1/a79.htm`，**无 `Server` 指纹、空正文**），而实现把「探测的
+> 302 响应」当成了识别输入 → `识别厂商: unknown` → 落到未实现的 GenericFormAuth（真实目标
+> 实为 Dr.COM，同一 Portal 直连抓取页有完整 `Server: DrcomServer1.0` 与哆点指纹）。
+> spec §7 的原意是「输入是 **Portal 的响应头与页面 HTML**」，即**跳转目标页**。已补：
+> **`core/PortalPage`（`ResolvePortalPage`）**——劫持态先 GET 跳转目标页再识别/装配
+> NetContext；抓取失败退回探测响应（尽力而为，不阻断链路）。`--test-login`、`--detect`
+> （在线态还支持从 `auth_url` 抓取识别）与 `Scheduler` 三处同步接入；模拟器新增
+> `fail_mode=5`（裸 302 + 第二监听端口上的 `/a79.htm`）与 CLI `--simulate-fail=hijack302`
+> 复现该形态；证据目录补采登录页 `a79.htm`（见 `docs/evidence/README.md`）。
+> 遗留（不阻断 M1）：免劫持清单仍只在 `:801 loadConfig` 响应下发，客户端暂未抓取该接口，
+> 探测地址继续用内置默认（msftncsi，也在真实清单内）。
 
 **Files:**
 - Create: `README.md`（M1 版本）

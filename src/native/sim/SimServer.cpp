@@ -162,9 +162,11 @@ void SendAll(SOCKET s, const std::string& data) {
 
 struct SimServer::Impl {
     SOCKET listen_sock = INVALID_SOCKET;
+    SOCKET portal_sock = INVALID_SOCKET;  // fail_mode==5 时的第二监听（门户页所在）
     std::thread worker;
     std::atomic<bool> running{false};
     int port = 0;
+    int portal_port = 0;
     SimOptions opts;
     std::atomic<int> login_count{0};
     std::atomic<bool> logged_in{false};   // 登录成功即建立会话状态
@@ -242,7 +244,9 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         return;
     }
 
-    if (path == "/") {
+    if (path == "/" || path == "/a79.htm") {
+        // 真实环境的劫持跳转目标是 /a79.htm（"上网登录页"），与首页同为门户内容；
+        // 模拟器以同一页面契约服务两者（字段清单见 tests/sim_test.cpp 忠实性用例）。
         // 真实门户首页是 GBK 字节；转码后再算 Content-Length（GBK 与 UTF-8 字节数不同）
         resp_body = Utf8ToGbk(BuildHomePage(port));
     } else if (path == "/eportal/portal/page/loadConfig") {
@@ -279,7 +283,22 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         }
     } else if (path == "/sim_probe") {
         // 端到端模拟专用：登录前相当于被劫持（返回门户页），登录成功后
-        // 网络恢复（返回 nCSI 应答）——用于验证「探测 → 劫持 → 登录 → 恢复」整链
+        // 网络恢复（返回 nCSI 应答）——用于验证「探测 → 劫持 → 登录 → 恢复」整链。
+        //
+        // fail_mode==5：劫持以「裸 302」表达——真实形态（2026-10-16 实测）是
+        // 无 Server 指纹、空正文，指纹只在跳转目标页。Location 指向本模拟器的
+        // 第二监听端口（「同 IP、不同端口」——spec 判定规则明确要求判为异主机），
+        // 客户端必须抓取该目标页（/a79.htm）才能完成识别。
+        if (opts.fail_mode == 5 && !logged_in.load()) {
+            std::ostringstream oss;
+            oss << "HTTP/1.1 302 Found\r\n"
+                << "Location: http://127.0.0.1:" << portal_port << "/a79.htm\r\n"
+                << "Content-Length: 0\r\n"
+                << "Connection: close\r\n\r\n";
+            SendAll(client, oss.str());
+            closesocket(client);
+            return;
+        }
         if (logged_in.load()) {
             resp_body = "Microsoft NCSI";
         } else {
@@ -320,21 +339,31 @@ void SimServer::Impl::ServeLoop() {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(listen_sock, &rfds);
+        if (portal_sock != INVALID_SOCKET) FD_SET(portal_sock, &rfds);
         timeval tv{};
         tv.tv_sec = 0;
         tv.tv_usec = kAcceptPollMs * 1000;
         int rc = select(0, &rfds, nullptr, nullptr, &tv);
         if (!running.load()) break;
         if (rc <= 0) continue;  // 超时或出错：回到循环顶重新判断
-        SOCKET client = accept(listen_sock, nullptr, nullptr);
-        if (client == INVALID_SOCKET) continue;
-        int timeout = kClientRecvTimeoutMs;
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-        HandleClient(client);
+
+        const SOCKET listeners[2] = {listen_sock, portal_sock};
+        for (SOCKET ls : listeners) {
+            if (ls == INVALID_SOCKET || !FD_ISSET(ls, &rfds)) continue;
+            SOCKET client = accept(ls, nullptr, nullptr);
+            if (client == INVALID_SOCKET) continue;
+            int timeout = kClientRecvTimeoutMs;
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+            HandleClient(client);
+        }
     }
     if (listen_sock != INVALID_SOCKET) {
         closesocket(listen_sock);
         listen_sock = INVALID_SOCKET;
+    }
+    if (portal_sock != INVALID_SOCKET) {
+        closesocket(portal_sock);
+        portal_sock = INVALID_SOCKET;
     }
 }
 
@@ -386,6 +415,43 @@ bool SimServer::Start(const SimOptions& opts, std::string& error) {
         return false;
     }
 
+    // fail_mode==5：再监听一个 loopback 端口充当「门户服务」。真实劫持的
+    // Location 指向「同 IP、不同端口」的门户页（spec 判定规则明确该组合判为
+    // 异主机），裸 302 形态的端到端验证需要目标页真实可抓取。
+    if (impl_->opts.fail_mode == 5) {
+        auto fail_start = [this, &error](const std::string& msg) {
+            error = msg;
+            if (impl_->portal_sock != INVALID_SOCKET) {
+                closesocket(impl_->portal_sock);
+                impl_->portal_sock = INVALID_SOCKET;
+            }
+            closesocket(impl_->listen_sock);
+            impl_->listen_sock = INVALID_SOCKET;
+            return false;
+        };
+
+        impl_->portal_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (impl_->portal_sock == INVALID_SOCKET)
+            return fail_start("portal socket() failed");
+
+        setsockopt(impl_->portal_sock, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
+
+        sockaddr_in paddr{};
+        paddr.sin_family = AF_INET;
+        paddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        paddr.sin_port = 0;
+        if (bind(impl_->portal_sock, (sockaddr*)&paddr, sizeof(paddr)) == SOCKET_ERROR)
+            return fail_start("portal bind() failed: " + std::to_string(WSAGetLastError()));
+
+        int plen = sizeof(paddr);
+        if (getsockname(impl_->portal_sock, (sockaddr*)&paddr, &plen) == SOCKET_ERROR)
+            return fail_start("portal getsockname() failed");
+        impl_->portal_port = ntohs(paddr.sin_port);
+
+        if (listen(impl_->portal_sock, SOMAXCONN) == SOCKET_ERROR)
+            return fail_start("portal listen() failed");
+    }
+
     impl_->running.store(true);
     impl_->worker = std::thread([this] { impl_->ServeLoop(); });
     return true;
@@ -398,6 +464,8 @@ void SimServer::Stop() {
 }
 
 int SimServer::Port() const { return impl_->port; }
+
+int SimServer::PortalPort() const { return impl_->portal_port; }
 
 std::string SimServer::BaseUrl() const {
     return "http://127.0.0.1:" + std::to_string(impl_->port);

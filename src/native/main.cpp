@@ -12,8 +12,8 @@
 #include "core/Paths.h"
 #include "core/Probe.h"
 #include "core/ProbeTarget.h"
+#include "core/PortalPage.h"
 #include "core/Scheduler.h"
-#include "core/Url.h"
 #include "auth/AuthFactory.h"
 #include "auth/Carrier.h"
 #include "auth/Detector.h"
@@ -71,12 +71,39 @@ int RunDetect(cnk::AppConfig& cfg) {
         PrintLine("探测失败：" + pr.message);
         return 1;
     }
-    cnk::Vendor v = cnk::DetectVendor(pr.response);
-    PrintLine("识别厂商: " + std::string(cnk::VendorName(v)));
-    if (!pr.response.server.empty())
-        PrintLine("Server: " + pr.response.server);
 
-    std::string body = cnk::DecodeBody(pr.response);
+    // spec §7：识别的输入是 Portal 的响应头与页面 HTML。
+    //  - 劫持态：抓取重定向目标页（302 本身可能无指纹，实测 2026-10-16）；
+    //  - 其余状态（含在线）：尝试从配置的 auth_url 抓取门户页；
+    //  - 抓不到时退回探测响应（可能识别不出，但流程不中断）。
+    cnk::HttpResponse page = pr.response;
+    if (pr.state == cnk::NetState::PortalDetected) {
+        auto pp = cnk::ResolvePortalPage(pr, cfg.settings.probe_url);
+        page = std::move(pp.response);
+        if (pp.fetched)
+            PrintLine("识别来源: " + pp.portal_url + "（已抓取门户页面）");
+        else if (!pp.fetch_error.empty())
+            PrintLine("识别来源: 探测响应（门户页抓取失败：" + pp.fetch_error + "）");
+    } else {
+        const cnk::Profile* p = cnk::ActiveProfile(cfg);
+        if (p && !p->auth_url.empty()) {
+            cnk::HttpResponse fetched;
+            std::string ferr;
+            if (cnk::FetchPortalPage(p->auth_url, fetched, ferr)) {
+                page = std::move(fetched);
+                PrintLine("识别来源: " + p->auth_url + "（从认证网址抓取）");
+            } else {
+                PrintLine("识别来源: 探测响应（认证网址抓取失败：" + ferr + "）");
+            }
+        }
+    }
+
+    cnk::Vendor v = cnk::DetectVendor(page);
+    PrintLine("识别厂商: " + std::string(cnk::VendorName(v)));
+    if (!page.server.empty())
+        PrintLine("Server: " + page.server);
+
+    std::string body = cnk::DecodeBody(page);
     cnk::CarrierList cl;
     if (cnk::ParseCarrier(body, cl)) {
         PrintLine("运营商列表（服务器下发）:");
@@ -120,16 +147,25 @@ int RunTestLogin(cnk::AppConfig& cfg) {
         return 0;
     }
 
-    cnk::Vendor v = cnk::DetectVendor(pr.response);
+    // spec §7：识别的输入是 Portal 的响应头与页面 HTML。真实劫持 302 常不含
+    // 指纹（本机实测 2026-10-16），先抓取 Location 目标页再识别；抓取失败
+    // 退回探测响应（不阻断链路）。
+    auto pp = cnk::ResolvePortalPage(pr, cfg.settings.probe_url);
+    if (pp.fetched)
+        PrintLine("门户页面: " + pp.portal_url + "（已抓取，识别基于页面响应）");
+    else if (!pp.fetch_error.empty())
+        PrintLine("门户页面: 抓取失败（" + pp.fetch_error + "），识别基于探测响应");
+
+    cnk::Vendor v = cnk::DetectVendor(pp.response);
     PrintLine(std::string("识别厂商: ") + cnk::VendorName(v));
+    if (!pp.response.server.empty())
+        PrintLine("Server: " + pp.response.server);
 
     cnk::NetContext ctx;
     // 与调度器保持一致：portal_url 是 resolve 后的重定向目标（无则为空）
-    ctx.portal_url = pr.response.location.empty()
-        ? std::string{}
-        : cnk::ResolveUrl(pr.response.location, cfg.settings.probe_url);
-    ctx.portal_body = cnk::DecodeBody(pr.response);
-    ctx.server_header = pr.response.server;
+    ctx.portal_url = pp.portal_url;
+    ctx.portal_body = cnk::DecodeBody(pp.response);
+    ctx.server_header = pp.response.server;
 
     auto auth = cnk::CreateAuth(v, *p);
     PrintLine(std::string("认证策略: ") + auth->Name());
@@ -309,6 +345,7 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
     }
     if (opts.simulate_fail == "badcred") so.fail_mode = 1;
     else if (opts.simulate_fail == "timeout") so.fail_mode = 2;
+    else if (opts.simulate_fail == "hijack302") so.fail_mode = 5;
 
     std::string err;
     if (!sim.server.Start(so, err)) {

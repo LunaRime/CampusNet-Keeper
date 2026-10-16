@@ -153,6 +153,40 @@ TEST_CASE("无配置档案时不崩溃且状态明确") {
     CHECK(sch.LastMessage().size() > 0);
 }
 
+TEST_CASE("裸 302 劫持（无指纹）时抓取门户页识别并完成登录，登录后恢复在线") {
+    // 真实劫持形态（2026-10-16 实测）：302 无 Server 头、空正文；指纹只在
+    // 跳转目标页。识别输入若仍取 302 本身 → unknown → 登录链路失效（本次实测缺陷）。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    o.fail_mode = 5;  // 裸 302：Location 指向本模拟器第二监听端口上的门户页
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
+    cfg.settings.probe_url = srv.BaseUrl() + "/sim_probe";
+    cfg.settings.probe_expect = "Microsoft NCSI";
+    cnk::Scheduler sch(cfg);
+    sch.ForceReconnect();
+
+    for (int i = 0; i < 100 && srv.LoginCount() == 0; ++i) {
+        sch.Tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK(srv.LoginCount() >= 1);
+    CHECK(sch.State() == cnk::RunState::Online);
+
+    // 登录成功后 /sim_probe 恢复正常应答：下轮探测应保持在线且不重复登录
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    const int logins = srv.LoginCount();
+    sch.Tick();
+    CHECK(sch.State() == cnk::RunState::Online);
+    CHECK(srv.LoginCount() == logins);
+
+    srv.Stop();
+}
+
 TEST_CASE("网络变更通知会立即触发探测，不等轮询周期") {
     // 对应 Review Focus 第 4 条：睡眠唤醒 / 切换网络后必须立刻探测
     cnk::SimServer srv;

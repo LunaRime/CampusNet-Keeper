@@ -1,7 +1,7 @@
 #include "core/Scheduler.h"
 #include "core/Log.h"
 #include "core/Encoding.h"
-#include "core/Url.h"
+#include "core/PortalPage.h"
 #include "core/ProbeTarget.h"
 #include "auth/AuthFactory.h"
 #include "auth/Carrier.h"
@@ -158,15 +158,24 @@ void Scheduler::Impl::DoProbe() {
     // PortalDetected
     state = RunState::PortalDetected;
     message = pr.message;
+    // spec §7：识别（DoLogin 中执行）的输入是「Portal 的响应头与页面 HTML」。
+    // 真实劫持 302 常不含指纹（本机实测 2026-10-16 为裸 302），须先抓取
+    // Location 目标页；抓取失败退回探测响应（尽力而为，不阻断登录链路）。
+    PortalPageResult pp = ResolvePortalPage(pr, cfg.settings.probe_url);
+    if (pp.fetched) {
+        LogInfo("已抓取门户页面：" + pp.portal_url);
+    } else if (!pp.fetch_error.empty()) {
+        LogInfo("门户页面抓取失败（" + RedactSecrets(pp.fetch_error) +
+                "），改用探测响应识别");
+    }
     // portal_url 的语义是「探测阶段发现的重定向目标」（spec §4.1）：
     // 3xx 劫持时是 resolve 后的 Location；200 篡改时没有重定向目标，
     // 留空让下游（如通用表单认证）退回用户配置的 auth_url——
     // 绝不能填探测地址本身（那是外部地址，会让下游拼出错误的登录 URL）
-    cached_portal_url = pr.response.location.empty()
-        ? std::string{}
-        : ResolveUrl(pr.response.location, cfg.settings.probe_url);
-    cached_server_header = pr.response.server;
-    cached_portal_body = DecodeBody(pr.response);
+    cached_portal_url = pp.portal_url;
+    cached_server_header = pp.response.server;
+    cached_portal_body = DecodeBody(pp.response);
+    last_probe_response = pp.response;  // DoLogin 的识别输入 = Portal 页面响应
 
     // 从门户页面里取运营商与探测地址（仅首次或页面变化时）
     if (!target_resolved) {
