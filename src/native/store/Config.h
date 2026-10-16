@@ -31,9 +31,14 @@ struct Profile {
 
 struct Settings {
     int probe_interval_seconds = 5;
-    int probe_timeout_seconds = 3;
-    std::string probe_url = "http://www.msftncsi.com/ncsi.txt";
-    std::string probe_expect = "Microsoft NCSI";
+    int probe_timeout_seconds = 6;
+    // 探测地址（2026-10-16 真机实测修订）：原默认 www.msftncsi.com/ncsi.txt 在本校园网
+    // 直连实测 **0/4 可达**（每次都卡满超时），会把「在线」误判成「离线」——守护程序
+    // 永远认为不在线，--test-login 的复测也报「仍不在线」。改用免劫持清单内、实测
+    // 4/4 且平均约 50ms 的 Apple 探测页（iOS/macOS 的原生 captive 探测地址，
+    // 各校园网普遍放行；正文 134 字节，含 "Success"）。
+    std::string probe_url = "http://captive.apple.com/hotspot-detect.html";
+    std::string probe_expect = "Success";
     std::vector<int> retry_backoff_seconds = {5, 10, 20, 30, 60};
     bool autostart = true;
     bool notify_on_reconnect = true;

@@ -194,7 +194,8 @@ bool ConfigFromJson(const std::string& json_str, AppConfig& out, std::string& er
             const auto& s = j["settings"];
             auto& t = out.settings;
             t.probe_interval_seconds = s.value("probe_interval_seconds", 5);
-            t.probe_timeout_seconds = s.value("probe_timeout_seconds", 3);
+            // 缺键时回落到结构体默认值（不写字面量，避免默认值改了一处漏一处）
+            t.probe_timeout_seconds = s.value("probe_timeout_seconds", t.probe_timeout_seconds);
             t.probe_url = s.value("probe_url", t.probe_url);
             t.probe_expect = s.value("probe_expect", t.probe_expect);
             t.autostart = s.value("autostart", true);

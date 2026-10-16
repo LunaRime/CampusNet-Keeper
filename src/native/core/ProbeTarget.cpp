@@ -88,7 +88,10 @@ bool SelectProbeTarget(const std::vector<std::string>& blacklist, ProbeTarget& o
 }
 
 ProbeTarget DefaultProbeTarget() {
-    return ProbeTarget{"http://www.msftncsi.com/ncsi.txt", "Microsoft NCSI"};
+    // 与 store/Config.h 的 Settings 默认值保持一致（2026-10-16 实测：msftncsi 在本
+    // 校园网直连 0/4 可达，captive.apple.com 4/4 且约 50ms）。当前无生产调用方，
+    // 但留成不可达地址就是地雷，故同步。
+    return ProbeTarget{"http://captive.apple.com/hotspot-detect.html", "Success"};
 }
 
 }  // namespace cnk

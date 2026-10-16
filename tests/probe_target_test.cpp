@@ -86,6 +86,9 @@ TEST_CASE("无 visit_blacklist 时解析返回 false") {
 }
 
 TEST_CASE("DefaultProbeTarget 返回内置默认值") {
+    // 2026-10-16 实测修订：内置默认改为清单内 4/4 可达的 Apple 探测页
+    //（原 msftncsi 在本校园网 0/4 可达，会让「在线」被判成「离线」）
     auto t = cnk::DefaultProbeTarget();
-    CHECK(t.url.find("www.msftncsi.com") != std::string::npos);
+    CHECK(t.url == "http://captive.apple.com/hotspot-detect.html");
+    CHECK(t.expect == "Success");
 }

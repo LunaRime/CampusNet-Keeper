@@ -145,7 +145,7 @@ TEST_CASE("ForceReconnect 立即触发探测而不等待间隔") {
 
 TEST_CASE("无配置档案时不崩溃且状态明确") {
     cnk::AppConfig cfg;
-    // 默认 Settings 自带 msftncsi 探测地址；显式清空以消除对真实网络的依赖
+    // 默认 Settings 自带内置探测地址；显式清空以消除对真实网络的依赖
     cfg.settings.probe_url.clear();
     cnk::Scheduler sch(cfg);
     sch.Tick();

@@ -3,6 +3,17 @@
 #include "store/Config.h"
 #include <filesystem>
 
+TEST_CASE("默认探测地址必须是实测可达的地址（2026-10-16 实测修订）") {
+    // 原默认 www.msftncsi.com/ncsi.txt 在本校园网直连实测 **0/4 可达**（每次都卡满
+    // 超时），把「在线」误判成「离线」——守护程序会永远认为不在线，--test-login 的
+    // 复测也会报「仍不在线」（真机实测踩到过）。改用免劫持清单内、实测 4/4、
+    // 平均约 50ms 的 Apple 探测页；此处钉住取值，防止以后被改回不可达的地址。
+    cnk::Settings s;
+    CHECK(s.probe_url == "http://captive.apple.com/hotspot-detect.html");
+    CHECK(s.probe_expect == "Success");
+    CHECK(s.probe_timeout_seconds >= 6);  // 3 秒连旧默认地址都不够，留足余量
+}
+
 TEST_CASE("DPAPI 加解密往返") {
     std::string blob, plain;
     REQUIRE(cnk::DpapiProtect("my-secret-pw", blob));
