@@ -40,6 +40,8 @@ add_library(cnk_core STATIC
   src/native/core/HtmlForm.cpp
   src/native/crypto/Hash.cpp
   src/native/crypto/SrunXEncode.cpp
+  src/native/ipc/Protocol.cpp
+  src/native/ipc/PipeServer.cpp
   src/native/core/Scheduler.cpp
   src/native/core/NetworkChange.cpp
   src/native/core/Cli.cpp
@@ -84,6 +86,7 @@ add_executable(cnk_tests
   tests/cli_test.cpp
   tests/sys_test.cpp
   tests/integrity_test.cpp
+  tests/ipc_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
