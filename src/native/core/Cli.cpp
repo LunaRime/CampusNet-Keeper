@@ -37,6 +37,7 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
             o.mode = CliMode::Help; continue;
         }
         if (a == "--ui")             { o.mode = CliMode::Ui; continue; }
+        if (a == "--ui-info")        { o.mode = CliMode::UiInfo; continue; }
         if (a == "--daemon")         { o.mode = CliMode::Daemon; continue; }
 
         // 带值的参数：--simulate-user/pass/fail 必须排在 --simulate 之前，
@@ -61,6 +62,8 @@ std::string CliHelpText() {
         "\n"
         "  （无选项）            以守护模式运行，常驻托盘\n"
         "  --ui                  打开设置界面\n"
+        "  --ui-info             自检设置界面载荷与 .NET 运行时的可用性（不弹窗）；\n"
+        "                        退出码 0=就绪 3=精简版（无内嵌界面）4=缺 .NET 运行时\n"
         "  --probe-now           执行一次网络探测并输出结果，然后退出\n"
         "  --test-login          执行一次探测 + 登录尝试，输出完整请求（已脱敏）\n"
         "  --detect              只做厂商识别并输出结果\n"

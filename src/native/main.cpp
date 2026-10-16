@@ -22,6 +22,8 @@
 #include "sys/SingleInstance.h"
 #include "sys/Autostart.h"
 #include "tray/TrayIcon.h"
+#include "ui_host/Hostfxr.h"
+#include "ui_host/PayloadExtract.h"
 
 namespace {
 
@@ -376,6 +378,62 @@ int RunSetPassword(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
     return 0;
 }
 
+// 任务 26：设置界面载荷自检（--ui-info）。不弹窗、不释放载荷，给构建脚本与排障用。
+// 退出码：0=就绪；3=精简版（exe 里没有界面载荷）；4=有载荷但缺 .NET 运行时；1=载荷坏了。
+int RunUiInfo() {
+    const cnk::UiPayloadStatus st = cnk::InspectUiPayload();
+    PrintLine("== 设置界面载荷自检 ==");
+    if (!st.present) {
+        PrintLine("载荷: 不存在（精简单文件版：exe 里没有内嵌设置界面）");
+        PrintLine("构建完整版：pwsh -File build.ps1 -SingleExe");
+        PrintLine("说明: 守护与命令行功能不受影响。");
+        return 3;
+    }
+    PrintLine("载荷: 存在（" + std::to_string(st.payload_bytes) + " 字节）");
+    PrintLine("版本戳: " + st.payload_id);
+    PrintLine("解压目录: " +
+              (st.ui_dir.empty() ? std::string("（无法确定 %LOCALAPPDATA%）") : st.ui_dir));
+    if (st.up_to_date)
+        PrintLine("状态: 已释放且与当前载荷一致（打开界面时直接复用）");
+    else if (st.extracted)
+        PrintLine("状态: 目录里是旧版本的界面（下次打开界面会重新解压）");
+    else
+        PrintLine("状态: 尚未释放（首次打开界面时解压到上述目录）");
+
+    std::string load_err;
+    const cnk::EmbeddedPayload payload = cnk::LoadEmbeddedPayload(load_err);
+    std::vector<cnk::ZipEntryInfo> entries;
+    std::string zip_err;
+    if (!cnk::ListStoredZip(payload.data, payload.size, entries, zip_err)) {
+        PrintLine("载荷解析: 失败 —— " + zip_err);
+        return 1;
+    }
+    size_t compressed = 0;
+    unsigned long long total = 0;
+    for (const auto& e : entries) {
+        if (!e.stored) ++compressed;
+        total += e.size;
+    }
+    PrintLine("载荷条目: " + std::to_string(entries.size()) + " 个，解压后约 " +
+              std::to_string(total / (1024 * 1024)) + " MB" +
+              (compressed ? "（含 " + std::to_string(compressed) +
+                                " 个压缩条目 → 会被拒绝！）"
+                          : "，全部为存储型"));
+    if (compressed) return 1;
+
+    if (st.hostfxr_found) {
+        PrintLine("hostfxr: " + st.hostfxr_path);
+    } else {
+        PrintLine("hostfxr: 未找到 —— " + st.hostfxr_error);
+        PrintLine("提示: 安装 .NET 10 Desktop Runtime 后重试："
+                  "https://dotnet.microsoft.com/download/dotnet/10.0");
+        PrintLine("说明: 守护与命令行功能不受影响，只有界面需要 .NET 运行时。");
+        return 4;
+    }
+    PrintLine("结论: 就绪（打开设置界面会释放/复用载荷并加载 .NET 运行时）");
+    return 0;
+}
+
 // 模拟模式：启动本机模拟服务器，并把配置里的地址全部改指向它。
 // 这些覆盖只作用于内存中的配置，绝不写回配置文件。
 struct SimSession {
@@ -497,6 +555,14 @@ int wmain(int, wchar_t**) {
     }
     cnk::LogInfo("启动，模式=" + std::to_string((int)opts.mode));
 
+    // 任务 26：UI 形态与载荷自检都不需要配置、模拟会话与单实例，提前分流。
+    //（界面自己通过 IPC 从守护进程取配置；也绝不能去抢守护进程的单实例。）
+    if (opts.mode == cnk::CliMode::Ui || opts.mode == cnk::CliMode::UiInfo) {
+        const int ui_rc = (opts.mode == cnk::CliMode::Ui) ? cnk::RunUiMode() : RunUiInfo();
+        cnk::LogShutdown();
+        return ui_rc;
+    }
+
     cnk::AppConfig cfg;
     std::string err;
     if (!opts.config_path.empty())
@@ -528,12 +594,6 @@ int wmain(int, wchar_t**) {
         case cnk::CliMode::Detect:    rc = RunDetect(cfg); break;
         case cnk::CliMode::TestLogin: rc = RunTestLogin(cfg); break;
         case cnk::CliMode::SetPassword: rc = RunSetPassword(cfg, opts); break;
-        case cnk::CliMode::Ui:
-            // UI 形态在任务 23-26 实现；当前明确提示而不是静默进入守护循环
-            PrintLine("设置界面将在后续版本提供（当前为 M1 命令行形态）。");
-            PrintLine("可先用 --probe-now / --test-login / --detect 诊断，或直接运行守护。");
-            rc = 0;
-            break;
         case cnk::CliMode::Daemon:
         default:                      rc = RunDaemon(cfg, hinst); break;
     }

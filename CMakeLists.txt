@@ -49,6 +49,8 @@ add_library(cnk_core STATIC
   src/native/core/Cli.cpp
   src/native/core/Template.cpp
   src/native/sim/SimServer.cpp
+  src/native/ui_host/PayloadExtract.cpp
+  src/native/ui_host/Hostfxr.cpp
 )
 target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
@@ -59,6 +61,20 @@ target_link_libraries(cnk_core PUBLIC
 #（见 main.cpp 的 HideConsoleIfStandalone），兼顾无黑窗与输出可靠性。
 add_executable(CampusNet-Keeper src/native/main.cpp src/native/app.rc)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
+
+# 任务 26：UI 载荷资源（scripts/embed_ui.ps1 生成的 .rc）存在就编进 exe → 单 exe 双形态。
+# 用 file(GLOB CONFIGURE_DEPENDS) 而不是 EXISTS：载荷的「出现/消失」都必须触发重新配置，
+# 否则在已有构建树里会静默地不嵌（或残留上一版的旧载荷）——这正是本项目最怕的
+# "跑的不是本次构建"。
+set(CNK_UI_PAYLOAD_DIR "${CMAKE_SOURCE_DIR}/build/generated"
+    CACHE PATH "UI 载荷资源生成目录（scripts/embed_ui.ps1 -OutDir）")
+file(GLOB CNK_UI_PAYLOAD_RC CONFIGURE_DEPENDS "${CNK_UI_PAYLOAD_DIR}/ui_payload.rc")
+if(CNK_UI_PAYLOAD_RC)
+  target_sources(CampusNet-Keeper PRIVATE ${CNK_UI_PAYLOAD_RC})
+  message(STATUS "已嵌入 UI 载荷 → 完整版单 exe（含设置界面）")
+else()
+  message(STATUS "未找到 UI 载荷 → 构建精简版（不含设置界面；见 build.ps1 -SingleExe）")
+endif()
 
 # 测试工具（不随产品发布）：让任务 23 的 C# 客户端能对着**真实的** PipeServer
 # 跑跨语言契约自检（受限沙箱禁止打开命名管道，须在非沙箱下运行）。
@@ -95,10 +111,12 @@ add_executable(cnk_tests
   tests/integrity_test.cpp
   tests/ipc_test.cpp
   tests/config_for_ui_test.cpp
+  tests/payload_extract_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
 # 忠实性测试直接读实测证据原件，钉住模拟器输出（见 tests/sim_test.cpp）
 target_compile_definitions(cnk_tests PRIVATE
-  CNK_EVIDENCE_DIR="${CMAKE_SOURCE_DIR}/docs/evidence")
+  CNK_EVIDENCE_DIR="${CMAKE_SOURCE_DIR}/docs/evidence"
+  CNK_UI_PAYLOAD_ZIP="${CNK_UI_PAYLOAD_DIR}/ui_payload.zip")
 add_test(NAME cnk_tests COMMAND cnk_tests)

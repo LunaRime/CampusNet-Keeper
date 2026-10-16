@@ -1,6 +1,6 @@
 # CampusNet.UI（任务 23）
 
-守护进程的图形界面。**当前状态：已构建、已运行、已可视化核验。**
+守护进程的图形界面。**当前状态：已构建、已运行、已可视化核验；任务 26 起已内嵌进单 exe。**
 
 ![外壳截图](../docs/design/ui-shell-20261016.png)
 
@@ -77,4 +77,48 @@ dotnet run --project src/ui/ContractCheck -c Release # 终端 2：契约自检
 
 `obj/` 与 `bin/` 由仓库根目录的 `Directory.Build.props` 统一重定向到 `build-ui/`：
 受限沙箱不允许在 `src/` 下新建文件（obj 会被拒），这样也顺带让源码树保持干净。
+
+## 内嵌到单 exe（任务 26）
+
+交付形态是**一个 exe**：守护与界面同一个文件，界面按需释放并加载。
+
+```
+dotnet publish（框架依赖）→ scripts/embed_ui.ps1（存储型 ZIP + .rc）→ rc.exe 编进 exe
+   ↓ 用户点托盘「设置…」
+CampusNet-Keeper.exe --ui → ui_host/PayloadExtract（解压到 %LOCALAPPDATA%）→ ui_host/Hostfxr
+   （LoadLibrary hostfxr → hostfxr_initialize_for_runtime_config → 取托管入口）
+   → Program.NativeEntry（[UnmanagedCallersOnly]）→ STA 线程跑 Avalonia → 关窗后退出进程
+```
+
+**为什么载荷 ZIP 必须是"存储型"（不压缩）**：C++ 侧不允许引入第三方解压库
+（Global Constraints），而 Windows 自带的 `compressapi.dll` 只有 XPRESS/LZMS/LZ4、
+**没有 deflate**。所以 `scripts/embed_ui.ps1` 用 .NET 的
+`ZipFile.CreateFromDirectory(..., CompressionLevel.NoCompression)`，
+C++ 侧只解析中央目录 + 按偏移拷数据 + 校验 CRC（`src/native/ui_host/PayloadExtract.cpp`）。
+PowerShell 的 `Compress-Archive` 走 deflate，**不能用**（会被明确拒绝，不是解出错数据）。
+
+**为什么不用 nethost**：官方示例链接 `nethost.lib` 以使用 `get_hostfxr_path`，但那会让 exe
+依赖 `nethost.dll` —— 它只随 **.NET SDK** 分发，只装运行时的用户机器上会在启动时直接加载失败。
+这里自己找 hostfxr：载荷目录 → 注册表 `HKLM\SOFTWARE\dotnet\Setup\InstalledVersions\x64`
+→ `%DOTNET_ROOT%` → `%ProgramFiles%\dotnet`，在 `<根>\host\fxr\<版本>\` 里取最高版本，
+并用 `LOAD_WITH_ALTERED_SEARCH_PATH` 加载（自包含载荷的 `hostpolicy.dll`/`coreclr.dll`
+就在它旁边）。ABI 按公开头文件（hostfxr.h / coreclr_delegates.h，MIT）**自行声明**，
+不复制第三方源码文件。
+
+**载荷目录是 `%LOCALAPPDATA%\CampusNet-Keeper\ui`**（不是漫游的 `%APPDATA%`）：
+20 多 MB 的 DLL 不该进漫游配置目录。释放策略：解到 `ui.tmp-*` → 写版本戳 `.version`
+（`<版本>+<zip 的 SHA256 前 16 位>`）→ 改名成 `ui`，旧目录改名 `ui.old-*` 后删除；
+版本戳命中就直接复用（不读 ZIP）。任何一步失败都保留原来那份可用目录。
+
+**自检与验证**：
+
+```powershell
+build\Release\CampusNet-Keeper.exe --ui-info   # 0=就绪 3=精简版（无内嵌界面）4=缺 .NET 运行时
+pwsh -File tools/verify_ui_host.ps1            # 释放载荷 → 弹窗 → 关窗退出 → 二次运行命中版本戳
+pwsh -File tools/verify_tray_open_ui.ps1       # 托盘请求 → 拉起 --ui → 关窗后守护继续（spec S5）
+```
+
+`build.ps1 -SingleExe` 会在最后一步跑 `--ui-info` 并断言载荷"全部为存储型"，
+所以"构建出的形态与预期不符"不会留到用户手里。
+
 

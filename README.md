@@ -2,7 +2,8 @@
 
 校园网自动重连守护程序。会话失效时自动重新登录，让你在游戏里感觉不到掉线。
 
-> 当前为 **M1（核心）** 阶段：命令行守护程序已可用，设置界面在 M2 提供。
+> 当前为 **M2** 阶段：命令行守护 + 托盘常驻 + Avalonia 设置界面均已可用；交付形态是
+> **单个 exe**（守护与界面是同一个文件，界面按需释放到本机缓存）。
 
 ## 特性
 
@@ -12,6 +13,9 @@
 - **厂商识别**：自动识别 Portal 类型（Dr.COM / 锐捷 / 深澜 / 华为，其余回退通用表单/自定义模板）
 - **密码加密**：使用 Windows DPAPI，配置文件被拷走也无法在其它机器解密
 - **网络感知**：监听系统地址变更（`NotifyAddrChange`），切网/睡眠唤醒后立即探测
+- **单 exe 双形态**：界面程序集内嵌在 exe 里（存储型 ZIP 载荷，**不引第三方解压库**），
+  首次打开设置时释放到 `%LOCALAPPDATA%\CampusNet-Keeper\ui` 并按需加载 .NET 运行时；
+  载荷带版本戳，升级后自动重新释放。守护进程自身不依赖 .NET
 
 ## 快速开始
 
@@ -28,6 +32,8 @@
 | 选项 | 说明 |
 |---|---|
 | （无选项） | 以守护模式运行，托盘驻留 |
+| `--ui` | 打开设置界面（托盘「设置…」就是启动自身副本并带上这个参数） |
+| `--ui-info` | 自检界面载荷与 .NET 运行时可用性（不弹窗；退出码 0=就绪 3=精简版 4=缺运行时） |
 | `--probe-now` | 执行一次网络探测并输出结果 |
 | `--test-login` | 一次探测 + 登录尝试，输出完整请求（已脱敏） |
 | `--detect` | 厂商识别与运营商列表 |
@@ -71,6 +77,10 @@
    未放行该地址，改为你校 `visit_blacklist` 里的任意地址（换地址后 `--probe-now` 应回 Online）。
 4. **不要求管理员权限**：因此无法复位网卡/续租 DHCP——链路本身卡死时（连门户页都打不开）
    仍需人工处理（重插网线 / 禁用启用网卡）。
+5. **设置界面需要 .NET 10 Desktop Runtime**（守护与命令行**不需要**）：完整版单 exe 内嵌的是
+   "框架依赖"的界面产物。未装运行时时点「设置」会弹窗说明并给出下载地址，守护照常工作。
+   想彻底零依赖可把运行时一并打进载荷：`pwsh -File build.ps1 -SingleExe -SelfContainedPayload`
+   （exe 会大很多，且首次需联网 restore 运行时包；本机未实测这条路径）。
 
 ## 构建
 
@@ -78,7 +88,8 @@
 
 一条命令搞定（配置 → 构建 → 测试 → **安装到 `build\Release`** → **校验产物**）：
 
-    pwsh -File build.ps1              # 完整构建
+    pwsh -File build.ps1              # 完整构建（精简版单 exe：不含设置界面）
+    pwsh -File build.ps1 -SingleExe   # 完整版单 exe：发布界面 → 内嵌载荷（约 24 MB）
     pwsh -File build.ps1 -Package     # 额外产出发布压缩包
     pwsh -File build.ps1 -SkipUi      # 只构建 C++（没装 .NET SDK 也能跑）
 
@@ -102,7 +113,12 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
 
     ./build-m1/Release/cnk_tests.exe              # C++ 全量测试
     pwsh -File tools/check_ui_tokens.ps1          # UI 令牌层静态检查（不需要编译器）
+    pwsh -File tools/verify_ui_host.ps1           # 单 exe 界面：释放载荷 → 弹窗 → 关窗退出 → 命中版本戳
+    pwsh -File tools/verify_tray_open_ui.ps1      # 托盘「设置…」拉起 --ui（模拟守护，不碰真实网络）
     python docs/evidence/audit_redaction.py       # 证据文件脱敏审计
+
+两个 `verify_*.ps1` 脚本都是**真机验证**（要 GUI 与 `%LOCALAPPDATA%` 写入，不能在受限沙箱里跑），
+`--simulate=drcom` 那条不会碰真实校园网。界面宿主（载荷 + hostfxr）的细节见 `src/ui/README.md`。
 
 `build-m1\Release\cnk_ipc_probe.exe` 是**测试用探针服务端**（不随发布分发）：用
 `--seconds=45` 起它，再跑 `ContractCheck`，即可验证跨语言 IPC 契约与界面命令。

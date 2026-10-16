@@ -102,3 +102,23 @@ TEST_CASE("解析 --set-password 与 --user") {
     auto o3 = cnk::ParseCli({"--set-password", "--user", "stu001"});
     CHECK(o3.user == "stu001");
 }
+
+TEST_CASE("解析 --ui 与 --ui-info（--ui-info 不被 --ui 抢先匹配）") {
+    CHECK(cnk::ParseCli({"--ui"}).mode == cnk::CliMode::Ui);
+
+    auto info = cnk::ParseCli({"--ui-info"});
+    CHECK(info.mode == cnk::CliMode::UiInfo);
+    CHECK(info.unknown.empty());
+
+    // 形态自检不该顺手把守护模式点着（未知参数也不能改变它）
+    auto withOther = cnk::ParseCli({"--ui-info", "--unknown"});
+    CHECK(withOther.mode == cnk::CliMode::UiInfo);
+    CHECK(withOther.unknown.size() == 1);
+}
+
+TEST_CASE("帮助文本列出 --ui-info 与三档退出码") {
+    const std::string h = cnk::CliHelpText();
+    CHECK(h.find("--ui ") != std::string::npos);
+    CHECK(h.find("--ui-info") != std::string::npos);
+    CHECK(h.find("精简版") != std::string::npos);
+}

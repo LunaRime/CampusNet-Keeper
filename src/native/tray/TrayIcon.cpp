@@ -5,6 +5,7 @@
 #include "core/NetworkChange.h"
 #include "ipc/DaemonCommands.h"
 #include "ipc/PipeServer.h"
+#include "ui_host/Hostfxr.h"
 #include <shellapi.h>
 #include <memory>
 #include <thread>
@@ -212,10 +213,19 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg) {
     LogInfo("进入托盘守护循环");
 
     auto open_ui = [&tray]() {
-        // M2 会替换为启动 --ui 子进程
-        LogInfo("收到打开设置界面请求（M2 前为气泡提示）");
-        tray.ShowBalloon("设置界面", "设置界面将在下一版本提供。\n"
-                                     "当前可手动编辑 %APPDATA%\\CampusNet-Keeper\\config.json");
+        // 任务 26：真的启动设置界面（自身副本 + --ui）。
+        // 已经在运行时只提示、不再开第二个窗口（托盘单击/双击都会走到这里）。
+        if (UiProcessRunning()) {
+            LogInfo("设置界面已在运行，忽略本次打开请求");
+            tray.ShowBalloon("设置界面", "设置界面已在运行。");
+            return;
+        }
+        if (LaunchUiProcess()) {
+            LogInfo("已启动设置界面进程（--ui）");
+        } else {
+            LogError("启动设置界面进程失败");
+            tray.ShowBalloon("设置界面", "无法启动设置界面，详见日志目录中的 keeper.log。");
+        }
     };
 
     tray.SetCallbacks(

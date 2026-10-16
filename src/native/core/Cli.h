@@ -4,7 +4,7 @@
 
 namespace cnk {
 
-enum class CliMode { Daemon, ProbeNow, TestLogin, Detect, SetPassword, Version, Help, Ui };
+enum class CliMode { Daemon, ProbeNow, TestLogin, Detect, SetPassword, Version, Help, Ui, UiInfo };
 
 struct CliOptions {
     CliMode mode = CliMode::Daemon;

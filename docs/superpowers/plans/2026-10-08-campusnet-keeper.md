@@ -9755,6 +9755,44 @@ git commit -m "feat: 日志面板与守护进程 IPC 命令实现"
 > **遗留提醒**：契约自检的 `echo`/`blob` 是探针专用命令，对真守护进程跑会误报失败；
 > `get_status.local_ip` 为空。
 
+> **✅ 实施注记（2026-10-17，任务 26 完成并真机验证）**
+>
+> **落地**：`ui_host/PayloadExtract`（存储型 ZIP 中央目录解析 + 逐条目 CRC 校验 +
+> 压缩/加密/ZIP64/路径穿越**明确拒绝** + `ui.tmp-*`→改名 的原子换目录 + `.version` 版本戳）、
+> `ui_host/Hostfxr`（hostfxr 自解析、`RunUiMode` / `LaunchUiProcess` / `UiProcessRunning` /
+> `InspectUiPayload`）、`scripts/embed_ui.ps1`（发布产物 → 存储型 ZIP → `UI_PAYLOAD` /
+> `UI_PAYLOAD_ID` RCDATA + `.rc`）、`main.cpp` 的 `--ui` 与 `--ui-info`、托盘「设置…」
+> 改为真的拉起 `--ui` 子进程、`Program.cs` 增加 `[UnmanagedCallersOnly] NativeEntry`。
+>
+> **与计划原文的偏差（都按"更省依赖 / 更严"改的）**：
+> ① **不用 nethost**：链接 `nethost.lib` 会让 exe 依赖 `nethost.dll`——它只随 **.NET SDK**
+>    分发，只装运行时的用户机器上进程启动即失败。改为自解析：载荷目录 → 注册表
+>    `HKLM\SOFTWARE\dotnet\Setup\InstalledVersions\x64` → `%DOTNET_ROOT%` → `%ProgramFiles%\dotnet`，
+>    在 `<根>\host\fxr\<版本>` 里取**最高版本**，用 `LOAD_WITH_ALTERED_SEARCH_PATH` 加载；
+>    ABI 按官方头文件（hostfxr.h / coreclr_delegates.h，MIT）**自行声明**，不复制第三方源码。
+> ② **Step 1 的 bsdtar 方案作废**（按本任务开头的设计结论走存储型 ZIP）；解压前先校验结构，
+>    遇到压缩条目**返回明确错误**而不是解出坏数据。
+> ③ **载荷目录用 `%LOCALAPPDATA%`**（计划代码里的 `AppDataDir()` 是漫游目录，20 多 MB 的 DLL
+>    不该进漫游配置目录）。
+> ④ `LaunchUiProcess` 用 `CREATE_NO_WINDOW`：本程序是控制台子系统，否则点一次「设置」会闪黑窗。
+> ⑤ 新增界面单实例互斥体：连点托盘不再堆出一串窗口（第二个进程立即退出并在日志里说明）。
+> ⑥ 另加 `--ui-info` 形态自检（退出码 0=就绪 / 3=精简版 / 4=缺 .NET 运行时），
+>    `build.ps1` 在最后一步拿它当**形态断言**——"构建出的形态与预期不符"不会留到用户手里。
+>
+> **验证（全过）**：C++ 全量 **264 用例 / 1121 断言全绿**（新增 `tests/payload_extract_test.cpp`
+> 17 条，覆盖正常解压、压缩/加密/ZIP64/穿越条目拒绝、CRC 不符**不破坏原来可用的目录**、
+> 版本戳复用与升版重解、目标被同名文件占住、残留清理，并用**真实 embed_ui.ps1 产物**跑了一遍）；
+> 单 exe **24.4 MB**（35 个条目全部存储型）；`tools/verify_ui_host.ps1` 全过（首次释放 → 窗口出现 →
+> 关窗进程退出 → 二次运行命中版本戳、不重复解压 → 已在运行时不重复开窗）；
+> `tools/verify_tray_open_ui.ps1` 全过（`--simulate=drcom` 守护 → 第二实例通知 →
+> 日志「已启动设置界面进程（--ui）」→ 窗口标题「校园网助手 — 设置」→ **关窗后守护继续且 IPC
+> 仍应答 ping**，即 spec S5）；UI 令牌检查 4/4、UI 构建 0 警告、契约与核心自检 17/17。
+>
+> **遗留**：① `build.ps1 -SingleExe -SelfContainedPayload`（把 .NET 运行时一起打进载荷、
+> 彻底零依赖）未实测——首次需联网 restore 运行时包；② 界面仍需目标机装 .NET 10 Desktop Runtime
+> （未装时点「设置」弹窗提示 + 下载地址，守护不受影响）；③ 本任务 Step 4 的手工验证已固化成
+> `tools/verify_ui_host.ps1`，可重复执行。
+
 **Files:**
 - Create: `src/native/ui_host/Hostfxr.h` / `.cpp`
 - Create: `src/native/ui_host/PayloadExtract.h` / `.cpp`
