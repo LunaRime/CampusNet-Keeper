@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <system_error>
 
@@ -67,6 +68,47 @@ uint32_t Crc32Update(uint32_t state, const uint8_t* p, size_t n) {
     return state;
 }
 uint32_t Crc32Final(uint32_t state) { return state ^ 0xFFFFFFFFu; }
+
+// 把可能带非法字节的名字转成可安全打印的形式（\xNN），避免错误信息本身把日志搞花
+std::string DescribeName(const std::string& raw, size_t max_len = 64) {
+    std::string out;
+    const size_t n = std::min(max_len, raw.size());
+    for (size_t i = 0; i < n; ++i) {
+        const unsigned char c = (unsigned char)raw[i];
+        if (c >= 0x20 && c < 0x7F) {
+            out += (char)c;
+        } else {
+            char buf[8] = {};
+            std::snprintf(buf, sizeof(buf), "\\x%02X", c);
+            out += buf;
+        }
+    }
+    if (raw.size() > max_len) out += "…";
+    return out;
+}
+
+bool IsValidUtf8(const std::string& s) {
+    if (s.empty()) return false;
+    return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), (int)s.size(),
+                               nullptr, 0) > 0;
+}
+
+bool IsReservedDeviceName(const std::string& seg) {
+    std::string base;
+    for (char c : seg) {
+        if (c == '.') break;                 // "NUL.txt" 在 Windows 上也是设备名
+        base += (char)((c >= 'a' && c <= 'z') ? c - 'a' + 'A' : c);
+    }
+    static const char* kNames[] = {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    for (const char* n : kNames) {
+        if (base == n) return true;
+    }
+    return false;
+}
 
 struct CdEntry {
     std::string name;
@@ -174,8 +216,8 @@ bool ParseCentralDirectory(const uint8_t* z, size_t n, std::vector<CdEntry>& out
     return true;
 }
 
-// 条目名安全检查：拒绝绝对路径/盘符/`..` 穿越/Windows 非法字符。
-// `\` 归一为 `/`；输出去掉冗余空段（连续斜杠、`./`）。
+// 条目名安全检查：拒绝绝对路径/盘符/`..` 穿越/Windows 非法字符/非法编码/设备名。
+// `\` 归一为 `/`；输出去掉冗余空段（连续斜杠、`./`）；`is_dir` 表示原名以斜杠结尾。
 bool SafeEntryName(const std::string& raw, std::string& out, bool& is_dir,
                    std::string& error) {
     out.clear();
@@ -186,7 +228,15 @@ bool SafeEntryName(const std::string& raw, std::string& out, bool& is_dir,
     }
     is_dir = (raw.back() == '/' || raw.back() == '\\');
     if (raw.find('\0') != std::string::npos) {
-        error = "UI 载荷条目名含 NUL 字符（拒绝）";
+        error = "UI 载荷条目名含 NUL 字符（拒绝）：" + DescribeName(raw);
+        return false;
+    }
+    // 🔴 必须显式校验 UTF-8：MSVC 的 fs::u8path 遇到非法字节会**抛 filesystem_error**，
+    // 而这条路径上没人接得住（--ui 是 CREATE_NO_WINDOW 子进程，会静默 std::terminate，
+    // 用户点了「设置」什么也看不到）。2026-10-17 审阅 P1，探针实测。
+    if (!IsValidUtf8(raw)) {
+        error = "UI 载荷条目名不是合法 UTF-8（载荷损坏或非本工具打包）：" +
+                DescribeName(raw);
         return false;
     }
     std::string name = raw;
@@ -194,30 +244,41 @@ bool SafeEntryName(const std::string& raw, std::string& out, bool& is_dir,
         if (c == '\\') c = '/';
     }
     if (name[0] == '/') {
-        error = "UI 载荷条目使用绝对路径（拒绝）：" + raw;
+        error = "UI 载荷条目使用绝对路径（拒绝）：" + DescribeName(raw);
         return false;
     }
     if (name.size() >= 2 && name[1] == ':') {
-        error = "UI 载荷条目使用盘符路径（拒绝）：" + raw;
+        error = "UI 载荷条目使用盘符路径（拒绝）：" + DescribeName(raw);
         return false;
     }
     for (char c : name) {
         if (c == '<' || c == '>' || c == ':' || c == '"' || c == '|' || c == '?' || c == '*') {
-            error = "UI 载荷条目名含 Windows 非法字符（拒绝）：" + raw;
+            error = "UI 载荷条目名含 Windows 非法字符（拒绝）：" + DescribeName(raw);
             return false;
         }
     }
-    // 逐段检查：`..` 一律拒绝（解压目录必须完全落在目标目录内）
+    // 逐段检查：`..` 一律拒绝（解压目录必须完全落在目标目录内）；
+    // 尾点/尾空格与设备名也要拒绝——Windows 会悄悄改写它们，最后"CRC 通过但磁盘上
+    // 没有那个文件"，等于自己骗自己（审阅 P2-1）。
     size_t i = 0;
     while (i <= name.size()) {
         const size_t slash = name.find('/', i);
         const std::string seg =
             name.substr(i, slash == std::string::npos ? std::string::npos : slash - i);
         if (seg == "..") {
-            error = "UI 载荷条目含路径穿越（拒绝）：" + raw;
+            error = "UI 载荷条目含路径穿越（拒绝）：" + DescribeName(raw);
             return false;
         }
         if (!seg.empty() && seg != ".") {
+            if (seg.back() == '.' || seg.back() == ' ') {
+                error = "UI 载荷条目名的段以点或空格结尾（Windows 会改写，拒绝）：" +
+                        DescribeName(raw);
+                return false;
+            }
+            if (IsReservedDeviceName(seg)) {
+                error = "UI 载荷条目名是 Windows 保留设备名（拒绝）：" + DescribeName(raw);
+                return false;
+            }
             if (!out.empty()) out += '/';
             out += seg;
         }
@@ -225,7 +286,52 @@ bool SafeEntryName(const std::string& raw, std::string& out, bool& is_dir,
         i = slash + 1;
     }
     if (out.empty()) {
-        error = "UI 载荷条目名为空或只有分隔符（拒绝）：" + raw;
+        error = "UI 载荷条目名为空或只有分隔符（拒绝）：" + DescribeName(raw);
+        return false;
+    }
+    return true;
+}
+
+// 条目形态是否受支持（压缩/加密/符号链接/自相矛盾的大小）
+bool CheckEntrySupported(const CdEntry& e, const std::string& name, std::string& error) {
+    if (e.flags & 0x0001u) {
+        error = "UI 载荷含加密条目（拒绝）：" + name;
+        return false;
+    }
+    if (e.method != 0) {
+        error = "UI 载荷含压缩条目（method=" + std::to_string(e.method) +
+                "，拒绝）：" + name +
+                "；本构建只支持存储型 ZIP，请用 scripts/embed_ui.ps1 重新打包";
+        return false;
+    }
+    if (((e.ext_attr >> 16) & 0xF000u) == 0xA000u) {
+        error = "UI 载荷含符号链接条目（拒绝）：" + name;
+        return false;
+    }
+    if (e.comp_size != e.uncomp_size) {
+        error = "UI 载荷条目大小自相矛盾（拒绝）：" + name;
+        return false;
+    }
+    return true;
+}
+
+// 由本地头算出数据偏移（额外字段长度可能与中央目录不同，必须以本地头为准）
+bool LocateEntryData(const uint8_t* z, size_t size, const CdEntry& e,
+                     const std::string& name, size_t& data_off, std::string& error) {
+    const size_t lo = e.local_off;
+    if (lo > size || size - lo < 30) {
+        error = "UI 载荷条目本地头越界（载荷损坏）：" + name;
+        return false;
+    }
+    if (Rd32(z + lo) != kLocalSig) {
+        error = "UI 载荷条目本地头签名非法（载荷损坏）：" + name;
+        return false;
+    }
+    const uint16_t local_name_len = Rd16(z + lo + 26);
+    const uint16_t local_extra_len = Rd16(z + lo + 28);
+    data_off = lo + 30 + (size_t)local_name_len + (size_t)local_extra_len;
+    if (data_off > size || (size_t)e.comp_size > size - data_off) {
+        error = "UI 载荷条目数据越界（载荷损坏）：" + name;
         return false;
     }
     return true;
@@ -294,6 +400,46 @@ bool ListStoredZip(const void* zip, size_t size, std::vector<ZipEntryInfo>& out,
     return true;
 }
 
+bool VerifyStoredZip(const void* zip, size_t size, std::string& error) {
+    error.clear();
+    const uint8_t* z = (const uint8_t*)zip;
+    std::vector<CdEntry> entries;
+    uint32_t cd_off = 0, cd_size = 0;
+    if (!ParseCentralDirectory(z, size, entries, cd_off, cd_size, error)) return false;
+    if (entries.empty()) {
+        error = "UI 载荷里没有任何条目（不是有效的界面载荷）";
+        return false;
+    }
+    unsigned long long total = 0;
+    for (const auto& e : entries) {
+        std::string name;
+        bool is_dir = false;
+        if (!SafeEntryName(e.name, name, is_dir, error)) return false;
+        if (!CheckEntrySupported(e, name, error)) return false;
+        total += e.uncomp_size;
+        if (total > kMaxTotalBytes) {
+            error = "UI 载荷解压后过大（超过 512MB），拒绝处理";
+            return false;
+        }
+        size_t data_off = 0;
+        if (!LocateEntryData(z, size, e, name, data_off, error)) return false;
+
+        uint32_t crc = Crc32Init();
+        size_t done = 0;
+        const size_t chunk_max = 256 * 1024;
+        while (done < (size_t)e.comp_size) {
+            const size_t chunk = std::min(chunk_max, (size_t)e.comp_size - done);
+            crc = Crc32Update(crc, z + data_off + done, chunk);
+            done += chunk;
+        }
+        if (Crc32Final(crc) != e.crc) {
+            error = "UI 载荷条目 CRC 校验失败（载荷损坏）：" + name;
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ExtractStoredZip(const void* zip, size_t size, const fs::path& dest_dir,
                       std::string& error) {
     error.clear();
@@ -301,6 +447,10 @@ bool ExtractStoredZip(const void* zip, size_t size, const fs::path& dest_dir,
     std::vector<CdEntry> entries;
     uint32_t cd_off = 0, cd_size = 0;
     if (!ParseCentralDirectory(z, size, entries, cd_off, cd_size, error)) return false;
+    if (entries.empty()) {
+        error = "UI 载荷里没有任何条目（不是有效的界面载荷）";
+        return false;
+    }
 
     std::error_code ec;
     if (!fs::is_directory(dest_dir, ec)) {
@@ -313,25 +463,7 @@ bool ExtractStoredZip(const void* zip, size_t size, const fs::path& dest_dir,
         std::string name;
         bool is_dir = false;
         if (!SafeEntryName(e.name, name, is_dir, error)) return false;
-
-        if (e.flags & 0x0001u) {
-            error = "UI 载荷含加密条目（拒绝）：" + name;
-            return false;
-        }
-        if (e.method != 0) {
-            error = "UI 载荷含压缩条目（method=" + std::to_string(e.method) +
-                    "，拒绝）：" + name +
-                    "；本构建只支持存储型 ZIP，请用 scripts/embed_ui.ps1 重新打包";
-            return false;
-        }
-        if (((e.ext_attr >> 16) & 0xF000u) == 0xA000u) {
-            error = "UI 载荷含符号链接条目（拒绝）：" + name;
-            return false;
-        }
-        if (e.comp_size != e.uncomp_size) {
-            error = "UI 载荷条目大小自相矛盾（拒绝）：" + name;
-            return false;
-        }
+        if (!CheckEntrySupported(e, name, error)) return false;
         total += e.uncomp_size;
         if (total > kMaxTotalBytes) {
             error = "UI 载荷解压后过大（超过 512MB），拒绝解压";
@@ -348,23 +480,8 @@ bool ExtractStoredZip(const void* zip, size_t size, const fs::path& dest_dir,
             continue;
         }
 
-        // 本地头的额外字段长度与中央目录里的可能不同，必须以本地头为准算数据偏移
-        const size_t lo = e.local_off;
-        if (lo > size || size - lo < 30) {
-            error = "UI 载荷条目本地头越界（载荷损坏）：" + name;
-            return false;
-        }
-        if (Rd32(z + lo) != kLocalSig) {
-            error = "UI 载荷条目本地头签名非法（载荷损坏）：" + name;
-            return false;
-        }
-        const uint16_t local_name_len = Rd16(z + lo + 26);
-        const uint16_t local_extra_len = Rd16(z + lo + 28);
-        const size_t data_off = lo + 30 + (size_t)local_name_len + (size_t)local_extra_len;
-        if (data_off > size || (size_t)e.comp_size > size - data_off) {
-            error = "UI 载荷条目数据越界（载荷损坏）：" + name;
-            return false;
-        }
+        size_t data_off = 0;
+        if (!LocateEntryData(z, size, e, name, data_off, error)) return false;
 
         fs::create_directories(target.parent_path(), ec);
         if (ec) {
@@ -391,10 +508,23 @@ bool ExtractStoredZip(const void* zip, size_t size, const fs::path& dest_dir,
             written += chunk;
         }
         ofs.close();
+
+        // 落盘后确认"磁盘上真的有这个文件且大小一致"：只校验读到的字节会得出假成功
+        //（Windows 会把 NUL 当设备、把尾点/尾空格悄悄去掉）。审阅 P2-1。
+        std::error_code e2;
+        if (!fs::is_regular_file(target, e2)) {
+            error = "UI 载荷条目没有落盘：" + name;
+            return false;
+        }
+        const unsigned long long on_disk = (unsigned long long)fs::file_size(target, e2);
+        if (e2 || on_disk != (unsigned long long)e.comp_size) {
+            error = "UI 载荷条目落盘大小不符：" + name;
+            return false;
+        }
         if (Crc32Final(crc) != e.crc) {
             // 半截文件不能留给用户当成品用：删掉它再报错
-            std::error_code e2;
-            fs::remove(target, e2);
+            std::error_code e3;
+            fs::remove(target, e3);
             error = "UI 载荷条目 CRC 校验失败（载荷损坏）：" + name;
             return false;
         }
@@ -427,15 +557,15 @@ int CleanStaleUiDirs(const fs::path& base_dir) {
     int removed = 0;
     std::error_code ec;
     if (!fs::is_directory(base_dir, ec)) return 0;
-    fs::directory_iterator it(base_dir, ec);
-    if (ec) return 0;
-    for (const auto& entry : it) {
+    // 刻意不用 range-for：它的自增是**会抛异常**的版本（构造用了 ec 版，++ 不是）
+    for (fs::directory_iterator it(base_dir, ec), end; it != end; it.increment(ec)) {
+        if (ec) break;
         std::error_code e1;
-        if (!entry.is_directory(e1)) continue;
-        const std::string name = entry.path().filename().u8string();
+        if (!it->is_directory(e1)) continue;
+        const std::string name = it->path().filename().u8string();
         if (name.rfind("ui.tmp-", 0) != 0 && name.rfind("ui.old-", 0) != 0) continue;
         std::error_code e2;
-        fs::remove_all(entry.path(), e2);
+        fs::remove_all(it->path(), e2);
         if (!e2) ++removed;
     }
     return removed;

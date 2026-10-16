@@ -2,6 +2,7 @@
 #include <shellapi.h>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <string>
 #include <vector>
 #include "core/Version.h"
@@ -402,30 +403,48 @@ int RunUiInfo() {
 
     std::string load_err;
     const cnk::EmbeddedPayload payload = cnk::LoadEmbeddedPayload(load_err);
-    std::vector<cnk::ZipEntryInfo> entries;
+
+    // 干跑校验：结构 + 本地头 + 数据偏移 + CRC 逐条验完（不落盘）。
+    // 只看"能列出条目"是不够的——那是 build.ps1 唯一的形态断言（2026-10-17 审阅 P2-2）。
     std::string zip_err;
+    if (!cnk::VerifyStoredZip(payload.data, payload.size, zip_err)) {
+        PrintLine("载荷校验: 失败 —— " + zip_err);
+        return 1;
+    }
+
+    std::vector<cnk::ZipEntryInfo> entries;
     if (!cnk::ListStoredZip(payload.data, payload.size, entries, zip_err)) {
         PrintLine("载荷解析: 失败 —— " + zip_err);
         return 1;
     }
     size_t compressed = 0;
     unsigned long long total = 0;
+    bool has_dll = false;
+    bool has_config = false;
     for (const auto& e : entries) {
         if (!e.stored) ++compressed;
         total += e.size;
+        if (e.name == "CampusNet.UI.dll") has_dll = true;
+        if (e.name == "CampusNet.UI.runtimeconfig.json") has_config = true;
     }
+    PrintLine("载荷校验: 通过（结构/偏移/CRC 全部通过）");
     PrintLine("载荷条目: " + std::to_string(entries.size()) + " 个，解压后约 " +
               std::to_string(total / (1024 * 1024)) + " MB" +
               (compressed ? "（含 " + std::to_string(compressed) +
                                 " 个压缩条目 → 会被拒绝！）"
                           : "，全部为存储型"));
     if (compressed) return 1;
+    if (!has_dll || !has_config) {
+        PrintLine("载荷内容: 缺少 CampusNet.UI.dll 或 CampusNet.UI.runtimeconfig.json"
+                  "（不是界面发布产物？）");
+        return 1;
+    }
 
     if (st.hostfxr_found) {
         PrintLine("hostfxr: " + st.hostfxr_path);
     } else {
         PrintLine("hostfxr: 未找到 —— " + st.hostfxr_error);
-        PrintLine("提示: 安装 .NET 10 Desktop Runtime 后重试："
+        PrintLine("提示: 安装 .NET 10 运行时（Runtime 或 Desktop Runtime 均可）后重试："
                   "https://dotnet.microsoft.com/download/dotnet/10.0");
         PrintLine("说明: 守护与命令行功能不受影响，只有界面需要 .NET 运行时。");
         return 4;
@@ -558,7 +577,18 @@ int wmain(int, wchar_t**) {
     // 任务 26：UI 形态与载荷自检都不需要配置、模拟会话与单实例，提前分流。
     //（界面自己通过 IPC 从守护进程取配置；也绝不能去抢守护进程的单实例。）
     if (opts.mode == cnk::CliMode::Ui || opts.mode == cnk::CliMode::UiInfo) {
-        const int ui_rc = (opts.mode == cnk::CliMode::Ui) ? cnk::RunUiMode() : RunUiInfo();
+        int ui_rc = 1;
+        // 兜底：RunUiMode 内部已有 catch，这里再兜一层，保证任何异常都不会变成
+        // "命令行静默消失"（2026-10-17 审阅 P1 的同类要求）
+        try {
+            ui_rc = (opts.mode == cnk::CliMode::Ui) ? cnk::RunUiMode() : RunUiInfo();
+        } catch (const std::exception& e) {
+            PrintLine(std::string("内部错误：") + e.what());
+            cnk::LogError(std::string("UI 分流未捕获异常：") + e.what());
+        } catch (...) {
+            PrintLine("内部错误：未知异常（详见日志）");
+            cnk::LogError("UI 分流未捕获异常（未知类型）");
+        }
         cnk::LogShutdown();
         return ui_rc;
     }

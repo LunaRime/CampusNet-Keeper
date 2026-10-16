@@ -58,7 +58,10 @@ $outDir = Join-Path $root 'build\Release'   # **用户实际运行**的目录：
 $payloadDir = Join-Path $root 'build\generated'
 $script:failed = 0
 $script:stepNo = 0
-$script:stepTotal = 7 + $(if ($SingleExe) { 1 } else { 0 }) + $(if ($Package) { 1 } else { 0 })
+$script:stepTotal = 7 + $(if ($Package) { 1 } else { 0 })
+if ($SelfContainedPayload -and -not $SingleExe) {
+    Write-Host '[警告] -SelfContainedPayload 只在 -SingleExe 下有意义；本次会被忽略（精简版不嵌载荷）' -ForegroundColor Yellow
+}
 
 function Step($name) {
     $script:stepNo++
@@ -129,7 +132,12 @@ if ($SingleExe) {
 # ---------------------------------------------------------------- 2) 配置
 Step '配置 CMake'
 # 每次都配置：载荷资源的"出现/消失"必须立刻生效（否则会构建出与预期不符的形态）
-Invoke-Checked $cmake @('-S', $root, '-B', $devBuild, '-G', 'Visual Studio 17 2022', '-A', 'x64') 'CMake 配置'
+# CNK_REQUIRE_REAL_PAYLOAD：完整版必须带上真实载荷，缺了就让测试**失败**而不是静默跳过
+$requirePayload = if ($SingleExe) { 'ON' } else { 'OFF' }
+Invoke-Checked $cmake @(
+    '-S', $root, '-B', $devBuild, '-G', 'Visual Studio 17 2022', '-A', 'x64',
+    "-DCNK_REQUIRE_REAL_PAYLOAD=$requirePayload"
+) 'CMake 配置'
 
 # ---------------------------------------------------------------- 3) 构建
 Step '构建 C++（cnk_core / 主程序 / 测试 / 探针）'
@@ -209,10 +217,11 @@ $uiInfo | ForEach-Object { '  ' + $_ }
 $uiRc = $LASTEXITCODE
 if ($SingleExe) {
     if ($uiRc -ne 0) {
-        Die "--ui-info 退出码 $uiRc（完整版应为 0：载荷可解析且找到 .NET 运行时）。若只是本机没装 .NET，请先装 .NET 10 Desktop Runtime"
+        Die "--ui-info 退出码 $uiRc（完整版应为 0：载荷结构/CRC 可解析且找到 .NET 运行时）。若只是本机没装 .NET，请先装 .NET 10 运行时"
     }
     if (-not ($uiInfo -match '全部为存储型')) { Die '载荷含压缩条目：运行时会被明确拒绝（用 scripts/embed_ui.ps1 重新打包）' }
-    Ok '完整版自检通过：内嵌载荷与 hostfxr 均就绪'
+    if (-not ($uiInfo -match '载荷校验: 通过')) { Die '载荷干跑校验未通过（见上面 --ui-info 输出）' }
+    Ok '完整版自检通过：内嵌载荷（存储型 + 干跑校验）与 hostfxr 均就绪'
 } else {
     if ($uiRc -ne 3) { Die "精简版 --ui-info 应返回 3（无内嵌载荷），实际 $uiRc" }
     Ok '精简版自检通过：确认未嵌入界面载荷'

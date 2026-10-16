@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -44,6 +45,7 @@ struct ZipBuilder {
         std::string name;
         std::string content;   // method=0 时的真实内容
         std::string raw;       // method!=0 时的原始字节（内容随便，反正必须被拒）
+        std::string local_extra;   // 只写进本地头的额外字段（中央目录仍写 0）
         uint16_t method = 0;
         uint16_t flags = 0;
         uint32_t ext_attr = 0;
@@ -51,6 +53,7 @@ struct ZipBuilder {
     };
 
     std::vector<Item> items;
+    std::string comment;       // EOCD 之后的归档注释
 
     void Add(const std::string& name, const std::string& content) {
         Item it;
@@ -66,6 +69,16 @@ struct ZipBuilder {
         items.push_back(it);
     }
     void AddDir(const std::string& name) { Add(name, ""); }
+
+    // 本地头的 extra 长度与中央目录不同（合法的 ZIP 形态）：数据偏移必须以本地头为准
+    void AddWithLocalExtra(const std::string& name, const std::string& content,
+                           const std::string& extra) {
+        Item it;
+        it.name = name;
+        it.content = content;
+        it.local_extra = extra;
+        items.push_back(it);
+    }
 
     // 只改中央目录里的 CRC（数据不动）→ 校验和必然对不上
     void AddWithBadCrc(const std::string& name, const std::string& content) {
@@ -110,8 +123,9 @@ struct ZipBuilder {
             Put32(out, r.size);        // compressed size
             Put32(out, r.size);        // uncompressed size
             Put16(out, (uint16_t)it.name.size());
-            Put16(out, 0);             // extra len
+            Put16(out, (uint16_t)it.local_extra.size());
             out.insert(out.end(), it.name.begin(), it.name.end());
+            out.insert(out.end(), it.local_extra.begin(), it.local_extra.end());
             out.insert(out.end(), data.begin(), data.end());
             recs.push_back(r);
         }
@@ -146,7 +160,8 @@ struct ZipBuilder {
         Put16(out, (uint16_t)recs.size());
         Put32(out, cd_size);
         Put32(out, cd_off);
-        Put16(out, 0);                 // comment len
+        Put16(out, (uint16_t)comment.size());   // comment len
+        out.insert(out.end(), comment.begin(), comment.end());
         return out;
     }
 };
@@ -345,7 +360,13 @@ TEST_CASE("载荷：路径穿越与绝对路径条目被拒绝且不落盘") {
 TEST_CASE("载荷：加密条目被拒绝") {
     auto base = FreshDir("cnk_payload_enc");
     ZipBuilder b;
-    b.items.push_back({"secret.txt", "x", "", 0, /*flags=*/0x0001, 0, false});
+    // 逐字段赋值而不是位置初始化：Item 加字段时位置初始化会把 0 绑到 std::string 上
+    //（实测直接 SIGSEGV），这里刻意写得笨一点
+    ZipBuilder::Item it;
+    it.name = "secret.txt";
+    it.content = "x";
+    it.flags = 0x0001;   // bit0 = 加密
+    b.items.push_back(it);
     auto zip = b.Build();
 
     std::string ui_dir, err;
@@ -444,6 +465,179 @@ TEST_CASE("载荷：CleanStaleUiDirs 只清 ui.tmp-*/ui.old-*") {
     CleanDir(base);
 }
 
+TEST_CASE("载荷：非法 UTF-8 条目名返回明确错误而不是抛异常（审阅 P1 回归）") {
+    // MSVC 的 fs::u8path 遇到非法字节会抛 filesystem_error，而 --ui 是 CREATE_NO_WINDOW
+    // 子进程、这条路径上没人接得住 → 用户"点了设置没反应、日志也没有一行"。
+    auto base = FreshDir("cnk_payload_utf8");
+    ZipBuilder b;
+    b.Add("good.txt", "ok");
+    b.Add(std::string("bad\xFF\xFE.txt", 9), "boom");
+    b.Add(std::string("sub/\xC3.txt", 9), "truncated-multibyte");   // 截断的多字节序列
+    auto zip = b.Build();
+
+    std::string ui_dir, err;
+    bool ok = true;
+    REQUIRE_NOTHROW(ok = cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "v1",
+                                                       base, ui_dir, err));
+    CHECK_FALSE(ok);
+    INFO("err=" << err);
+    CHECK(Contains(err, "UTF-8"));
+    CHECK_FALSE(fs::exists(base / "ui"));
+    CHECK(Leftovers(base).empty());
+    CleanDir(base);
+}
+
+TEST_CASE("载荷：NUL 名/尾点/保留设备名被拒绝（Windows 会改写它们）") {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {std::string("a\0b.txt", 7), "NUL"},      // 条目名里的 NUL
+        {"trail.", "点或空格"},                    // 尾点：Windows 会悄悄去掉
+        {"sub/trail ", "点或空格"},                // 尾空格：同上
+        {"NUL", "设备名"},                         // 设备名：写到空设备上
+        {"con.txt", "设备名"},                     // 设备名 + 扩展名同样是设备
+        {"a/COM1.bin", "设备名"},
+    };
+    for (const auto& c : cases) {
+        auto base = FreshDir("cnk_payload_badname");
+        ZipBuilder b;
+        b.Add(c.first, "x");
+        auto zip = b.Build();
+        std::string ui_dir, err;
+        CHECK_FALSE(cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "v1",
+                                                 base, ui_dir, err));
+        INFO("name=" << c.first << " expect=" << c.second << " err=" << err);
+        CHECK(Contains(err, c.second));
+        CHECK_FALSE(fs::exists(base / "ui"));
+        CHECK(Leftovers(base).empty());
+        CleanDir(base);
+    }
+}
+
+TEST_CASE("载荷：0 条目的 ZIP 被拒绝（干跑与解压都拒）") {
+    ZipBuilder b;   // 一个条目都不加：只有 EOCD
+    auto zip = b.Build();
+
+    std::string err;
+    CHECK_FALSE(cnk::VerifyStoredZip(zip.data(), zip.size(), err));
+    INFO("err=" << err);
+    CHECK(Contains(err, "没有任何条目"));
+
+    auto base = FreshDir("cnk_payload_zero");
+    std::string ui_dir, err2;
+    CHECK_FALSE(cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "v1", base, ui_dir, err2));
+    CHECK(Contains(err2, "没有任何条目"));
+    CHECK_FALSE(fs::exists(base / "ui"));
+    CHECK(Leftovers(base).empty());
+    CleanDir(base);
+}
+
+TEST_CASE("载荷：VerifyStoredZip 干跑校验（结构与 CRC，且不落盘）") {
+    auto base = FreshDir("cnk_payload_dryrun");
+    ZipBuilder good;
+    good.Add("CampusNet.UI.dll", "dll");
+    good.Add("CampusNet.UI.runtimeconfig.json", "{}");
+    auto zip = good.Build();
+    std::string err;
+    CHECK(cnk::VerifyStoredZip(zip.data(), zip.size(), err));
+    INFO("err=" << err);
+    CHECK(err.empty());
+    CHECK_FALSE(fs::exists(base / "ui"));      // 干跑不落盘
+
+    ZipBuilder bad;
+    bad.AddWithBadCrc("broken.txt", "x");
+    auto zip2 = bad.Build();
+    CHECK_FALSE(cnk::VerifyStoredZip(zip2.data(), zip2.size(), err));
+    CHECK(Contains(err, "CRC"));
+
+    ZipBuilder deflate;
+    deflate.AddRaw("c.bin", 8, "xxxx");
+    auto zip3 = deflate.Build();
+    CHECK_FALSE(cnk::VerifyStoredZip(zip3.data(), zip3.size(), err));
+    CHECK(Contains(err, "压缩"));
+    CleanDir(base);
+}
+
+TEST_CASE("载荷：本地头额外字段与中央目录不同时，按本地头取数据") {
+    auto base = FreshDir("cnk_payload_localextra");
+    ZipBuilder b;
+    b.AddWithLocalExtra("a.txt", "hello-local-extra", "EXTRA1234");
+    auto zip = b.Build();
+    std::string ui_dir, err;
+    REQUIRE(cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "v1", base, ui_dir, err));
+    INFO("err=" << err);
+    CHECK(ReadAll(base / "ui" / "a.txt") == "hello-local-extra");
+    CHECK(Leftovers(base).empty());
+    CleanDir(base);
+}
+
+TEST_CASE("载荷：EOCD 之后的归档注释不影响解析") {
+    auto base = FreshDir("cnk_payload_comment");
+    ZipBuilder b;
+    b.Add("a.txt", "with-comment");
+    b.comment = "hello, this is an archive comment";
+    auto zip = b.Build();
+    std::string ui_dir, err;
+    REQUIRE(cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "v1", base, ui_dir, err));
+    INFO("err=" << err);
+    CHECK(ReadAll(base / "ui" / "a.txt") == "with-comment");
+    CleanDir(base);
+}
+
+TEST_CASE("载荷：注释里藏假 EOCD 时 fail-closed（报错，不解出坏数据）") {
+    // 从后往前找 EOCD 的算法会先撞上注释里的假签名（字段全 0）→ 必须明确报错
+    auto base = FreshDir("cnk_payload_fakeeocd");
+    ZipBuilder b;
+    b.Add("a.txt", "real");
+    b.comment = std::string("\x50\x4b\x05\x06", 4) + std::string(18, '\0');
+    auto zip = b.Build();
+    std::string ui_dir, err;
+    CHECK_FALSE(cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "v1", base, ui_dir, err));
+    INFO("err=" << err);
+    CHECK_FALSE(err.empty());
+    CHECK_FALSE(fs::exists(base / "ui"));
+    CHECK(Leftovers(base).empty());
+    CleanDir(base);
+}
+
+TEST_CASE("载荷：目录条目（尾斜杠）建出目录；只有 './' 的条目被拒绝") {
+    auto base = FreshDir("cnk_payload_direntry");
+    ZipBuilder b;
+    b.AddDir("sub/dir/");
+    b.Add("sub/dir/inside.txt", "in");
+    auto zip = b.Build();
+    std::string ui_dir, err;
+    REQUIRE(cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "v1", base, ui_dir, err));
+    INFO("err=" << err);
+    CHECK(fs::is_directory(base / "ui" / "sub" / "dir"));
+    CHECK(ReadAll(base / "ui" / "sub" / "dir" / "inside.txt") == "in");
+    CleanDir(base);
+
+    auto base2 = FreshDir("cnk_payload_dot");
+    ZipBuilder d;
+    d.Add("./", "");
+    auto zip2 = d.Build();
+    std::string ui_dir2, err2;
+    CHECK_FALSE(cnk::EnsureUiPayloadFromBytes(zip2.data(), zip2.size(), "v1",
+                                             base2, ui_dir2, err2));
+    INFO("err=" << err2);
+    CHECK(Contains(err2, "分隔符"));
+    CHECK_FALSE(fs::exists(base2 / "ui"));
+    CleanDir(base2);
+}
+
+TEST_CASE("载荷：版本戳为空时拒绝（不拿空戳去复用目录）") {
+    auto base = FreshDir("cnk_payload_noid");
+    ZipBuilder b;
+    b.Add("a.txt", "a");
+    auto zip = b.Build();
+    std::string ui_dir, err;
+    CHECK_FALSE(cnk::EnsureUiPayloadFromBytes(zip.data(), zip.size(), "", base, ui_dir, err));
+    INFO("err=" << err);
+    CHECK(Contains(err, "版本戳"));
+    CHECK_FALSE(fs::exists(base / "ui"));
+    CHECK(Leftovers(base).empty());
+    CleanDir(base);
+}
+
 TEST_CASE("载荷：ListStoredZip 报告条目名、大小与存储标记") {
     ZipBuilder b;
     b.Add("a.txt", "12345");
@@ -465,8 +659,15 @@ TEST_CASE("载荷：ListStoredZip 报告条目名、大小与存储标记") {
 TEST_CASE("载荷：真实 embed_ui.ps1 产物（存在时）全部是存储型且可解压") {
     const fs::path zip_path = CNK_UI_PAYLOAD_ZIP;
     if (!fs::exists(zip_path)) {
-        MESSAGE("跳过：尚未生成 UI 载荷（先跑 build.ps1 -SingleExe）");
+#ifdef CNK_REQUIRE_REAL_PAYLOAD
+        // 完整版构建（build.ps1 -SingleExe 会打开这个开关）必须带着真实载荷：
+        // 缺了就是构建形态错了，绝不能"静默跳过、显示全绿"（审阅 P2-3）
+        FAIL("本构建声明要有真实 UI 载荷，但 " << zip_path.u8string() << " 不存在");
         return;
+#else
+        MESSAGE("跳过：尚未生成 UI 载荷（先跑 build.ps1 -SingleExe）；CI 无载荷属预期");
+        return;
+#endif
     }
     std::ifstream ifs(zip_path, std::ios::binary);
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(ifs)),
@@ -482,6 +683,9 @@ TEST_CASE("载荷：真实 embed_ui.ps1 产物（存在时）全部是存储型�
         INFO("entry=" << e.name << " size=" << e.size);
         CHECK(e.stored);              // .NET 的 NoCompression 必须真的产出存储型条目
     }
+    // 干跑校验（结构与 CRC）也要过：这正是 --ui-info 与 build.ps1 的形态断言
+    CHECK(cnk::VerifyStoredZip(bytes.data(), bytes.size(), err));
+    INFO("verify err=" << err);
 
     auto base = FreshDir("cnk_payload_real");
     std::string ui_dir, err2;

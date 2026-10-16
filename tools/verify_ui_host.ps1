@@ -159,15 +159,49 @@ Check ($markerTimeAfter -eq $markerTimeBefore) '版本戳文件未被改写'
 $exited2 = Stop-UiProcess $p2 20
 Check $exited2 '关窗后进程已退出'
 
-# ---------------------------------------------------------------- 5) 单实例：已在运行时不再开第二个
-Title '5) 界面已在运行时，再开一个应立即退出（不堆窗口）'
+# ---------------------------------------------------------------- 5) 单实例
+Title '5) 界面已在运行时，再开一个应"正常退出"而不是崩溃'
 $p3 = Start-UiProcess
 $null = Wait-Window $p3 $WindowTimeoutSec
+$logBefore3 = Read-LogText
 $p4 = Start-UiProcess
 $second = $p4.WaitForExit(15000)
-Check $second '第二个 --ui 进程立即退出'
-if (-not $second) { $p4.Kill() }
+Check $second '第二个 --ui 进程在 15 秒内退出'
+if ($second) {
+    # 只断言"退出了"是不够的：缺 .NET、载荷坏等早期失败也会退出（审阅 P2-4）
+    Check ($p4.ExitCode -eq 0) "第二个 --ui 退出码为 0（实际 $($p4.ExitCode)）"
+    $tail3 = if ((Read-LogText).Length -ge $logBefore3.Length) {
+        (Read-LogText).Substring($logBefore3.Length)
+    } else { Read-LogText }
+    Check ($tail3 -match '已有设置界面在运行') '日志确认是"已有界面在运行"而不是早期失败'
+} else {
+    $p4.Kill()
+}
 $null = Stop-UiProcess $p3 20
+
+# ---------------------------------------------------------------- 6) 真并发
+Title '6) 真并发：同时启动两个 --ui，最终只应有一个窗口'
+$pa = Start-UiProcess
+$pb = Start-UiProcess
+$deadline = (Get-Date).AddSeconds($WindowTimeoutSec)
+$winner = $null
+while ((Get-Date) -lt $deadline) {
+    $with = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue |
+              Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+    if ($with.Count -ge 1) { $winner = $with[0]; break }
+    Start-Sleep -Milliseconds 300
+}
+Check ($null -ne $winner) '并发启动后出现了界面窗口'
+Start-Sleep -Seconds 3        # 给输的一方时间退出
+$wins = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue |
+          Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+Check ($wins.Count -eq 1) "只有一个界面窗口（实际 $($wins.Count)）"
+$loser = @($pa, $pb) | Where-Object { $_.HasExited } | Select-Object -First 1
+Check ($null -ne $loser) '其中一个进程已退出'
+if ($loser) { Check ($loser.ExitCode -eq 0) "退出方退出码为 0（实际 $($loser.ExitCode)）" }
+foreach ($p in @($pa, $pb)) {
+    if (-not $p.HasExited) { $null = Stop-UiProcess $p 20 }
+}
 
 Write-Host ''
 if ($script:failed -eq 0) {

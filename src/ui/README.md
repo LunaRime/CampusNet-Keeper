@@ -110,15 +110,26 @@ PowerShell 的 `Compress-Archive` 走 deflate，**不能用**（会被明确拒�
 （`<版本>+<zip 的 SHA256 前 16 位>`）→ 改名成 `ui`，旧目录改名 `ui.old-*` 后删除；
 版本戳命中就直接复用（不读 ZIP）。任何一步失败都保留原来那份可用目录。
 
+⚠ **版本戳只回答"要不要重新解压"，不是完整性校验**：戳和解压产物同在用户可写目录里，
+能改产物的人也能改戳。信任边界仍然是"同用户本来就能改 exe"；若将来以管理员身份运行，
+需要另做摘要校验或收紧该目录 ACL。
+
+⚠ **条目名必须严格校验 UTF-8**：MSVC 的 `fs::u8path` 遇到非法字节会抛
+`std::filesystem::filesystem_error`，而 `--ui` 是 `CREATE_NO_WINDOW` 子进程——异常逃出去就是
+"点了设置没反应、日志里也没有一行"（2026-10-17 独立审阅实测的 P1）。所以
+`SafeEntryName` 先做严格编码校验，`RunUiMode` 全程还有 try/catch 兜底。
+
 **自检与验证**：
 
 ```powershell
 build\Release\CampusNet-Keeper.exe --ui-info   # 0=就绪 3=精简版（无内嵌界面）4=缺 .NET 运行时
-pwsh -File tools/verify_ui_host.ps1            # 释放载荷 → 弹窗 → 关窗退出 → 二次运行命中版本戳
+pwsh -File tools/verify_ui_host.ps1            # 释放载荷 → 弹窗 → 关窗退出 → 命中版本戳 → 真并发单实例
 pwsh -File tools/verify_tray_open_ui.ps1       # 托盘请求 → 拉起 --ui → 关窗后守护继续（spec S5）
 ```
 
-`build.ps1 -SingleExe` 会在最后一步跑 `--ui-info` 并断言载荷"全部为存储型"，
-所以"构建出的形态与预期不符"不会留到用户手里。
+`--ui-info` 会**干跑校验**载荷（结构 + 本地头 + 偏移 + 逐条 CRC，不落盘）并确认里面确有
+`CampusNet.UI.dll` 与 `CampusNet.UI.runtimeconfig.json`；`build.ps1 -SingleExe` 在最后一步跑它
+并断言"载荷校验: 通过"，同时把 `CNK_REQUIRE_REAL_PAYLOAD=ON` 传进测试
+（缺真实载荷时测试**失败**而不是静默跳过）。所以"构建出的形态与预期不符"不会留到用户手里。
 
 

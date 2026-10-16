@@ -9789,9 +9789,50 @@ git commit -m "feat: 日志面板与守护进程 IPC 命令实现"
 > 仍应答 ping**，即 spec S5）；UI 令牌检查 4/4、UI 构建 0 警告、契约与核心自检 17/17。
 >
 > **遗留**：① `build.ps1 -SingleExe -SelfContainedPayload`（把 .NET 运行时一起打进载荷、
-> 彻底零依赖）未实测——首次需联网 restore 运行时包；② 界面仍需目标机装 .NET 10 Desktop Runtime
-> （未装时点「设置」弹窗提示 + 下载地址，守护不受影响）；③ 本任务 Step 4 的手工验证已固化成
-> `tools/verify_ui_host.ps1`，可重复执行。
+> 彻底零依赖）未实测——首次需联网 restore 运行时包；② 界面仍需目标机装 .NET 10 运行时
+> （Runtime 或 Desktop Runtime 均可；未装时点「设置」弹窗提示 + 下载地址，守护不受影响）；
+> ③ 本任务 Step 4 的手工验证已固化成 `tools/verify_ui_host.ps1`，可重复执行。
+
+> **🔍 独立审阅与修复（2026-10-17，深度实证类，第三方子代理）**
+>
+> 审阅结论 **FAIL（1×P1 + 10×P2）**：P1 已修并回归；P2 按下述处置（多数已修，少数记为已知限制）。
+>
+> **P1（已修）**：条目名不是合法 UTF-8 时 `fs::u8path` 抛 `filesystem_error`，而这条链
+> （`ExtractStoredZip → EnsureUiPayloadFromBytes → EnsureUiPayload → RunUiMode`）**没有 catch**
+> → `--ui` 子进程 `std::terminate` 静默消失（用户点「设置」什么也看不到、日志里连一行都没有）。
+> 审阅方用 ASAN 探针实测确认（3 万条随机变异里 0.85% 命中该路径），且本文件此前已承诺
+> "遇到坏条目一律返回明确错误"。修法：`SafeEntryName` 用
+> `MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, …)` 严格校验编码；`RunUiMode` 拆出
+> `RunUiModeImpl()` 并整体 try/catch（弹原生提示 + 写日志）；`main.cpp` 的 UI 分流再兜一层；
+> `CleanStaleUiDirs` / `FindHighestHostfxr` 的目录迭代改用 `increment(ec)`（range-for 的自增会抛）。
+>
+> **P2 已修**：① 0 条目 ZIP、以及"写完落盘后文件不存在/大小不符"（NUL 设备名、尾点/尾空格被
+> Windows 悄悄改写）都改为明确错误；② `--ui-info` 增加**干跑校验**（`VerifyStoredZip`：结构 +
+> 本地头 + 偏移 + 逐条 CRC，且不落盘），并断言载荷里确有 `CampusNet.UI.dll` /
+> `CampusNet.UI.runtimeconfig.json`；`build.ps1` 的形态断言改为要求"载荷校验: 通过"；
+> ③ 测试新增 9 条用例（非法 UTF-8 回归、NUL/尾点/保留设备名、0 条目、干跑校验、本地头 extra
+> 与中央目录不同、EOCD 注释、注释里藏假 EOCD 的 fail-closed、目录条目与 `./`、空版本戳），
+> 并新增 `CNK_REQUIRE_REAL_PAYLOAD`：`-SingleExe` 构建设为 ON → 缺真实载荷时**测试失败**，
+> 不再"静默跳过、显示全绿"（CI 保持 OFF，属预期无载荷）；④ 单实例的验证与体验：
+> `verify_ui_host.ps1` 增加"第二个 `--ui` 退出码必须为 0 + 日志必须是『已有设置界面在运行』"，
+> 并新增**真并发**用例（同时起两个 `--ui`，只应留下一个窗口）；⑤ `ui-host-error.log` 落盘前对
+> 凭据样式键值打码；`Log.cpp` 轮转失败不再静默（置标志、由同一把锁内补一行警告——不能直接
+> `LogWarn`，那是持锁状态下会死锁）；⑥ `ParseVersion` 认 `-preview`/`-rc` 后缀目录（同等数值
+> 正式版优先），根目录查找补 `DOTNET_ROOT_X64`；⑦ `build.ps1` 修步骤编号、`-SelfContainedPayload`
+> 单独使用时给出警告；`embed_ui.ps1` 对非 ASCII 路径明确拒绝（rc.exe 只能可靠引用 ASCII 路径）；
+> ⑧ `Program.cs` 的 `NativeEntry` 整体 try/catch（`new Thread/Start/Join` 抛异常也不能跨托管边界）。
+>
+> **P2 已知限制（不阻塞，已记档）**：① 界面已打开但被遮挡/最小化时，再点托盘只弹气泡，
+> **不会把已有窗口带到前台**（后续可 `FindWindowW` + `SetForegroundWindow`）；② 版本戳只用于
+> "要不要重新解压"，**不是完整性校验**（产物与戳同在用户可写目录；信任边界仍是"同用户可改 exe"），
+> 若将来以管理员身份运行，可考虑校验摘要或收紧目录 ACL；③ `-SelfContainedPayload` 仍未实测
+> （需联网 restore 运行时包）；④ 载荷里含 `.pdb` 与非 Windows 平台的托管程序集（22MB 里的零头），
+> 发布时可 `-p:DebugType=none` 瘦身——审阅方扫过两个 PDB，无本机路径/账号泄露。
+>
+> **回归结果**：C++ 全量 **273 用例 / 1183 断言全绿**（`CNK_REQUIRE_REAL_PAYLOAD=ON`，其中载荷
+> 用例 24 条 / 208 断言）；`build.ps1 -SingleExe` 7/7 步通过、单 exe **24.46 MB**、`--ui-info`
+> 退出 0；两个真机验证脚本全过（`verify_ui_host.ps1` 现为 6 段，含真并发单实例）；UI 构建
+> 0 警告、令牌 4/4、契约自检 17/17。
 
 **Files:**
 - Create: `src/native/ui_host/Hostfxr.h` / `.cpp`
@@ -10278,6 +10319,12 @@ git commit -m "feat: 按需加载 CLR 并解压内嵌 UI，实现单 exe 双形�
 ---
 
 ## 任务 27：构建脚本、CI 与发布
+
+> **⚠ 任务 26 之后必须先处理的发版形态问题（2026-10-17 审阅 P2-8）**：本任务已完成的部分里，
+> `.github/workflows/ci.yml` 的 release job 只跑 `cmake --build`，而仓库里没有
+> `build/generated` 载荷 → **打 tag 发出去的是精简版（无内嵌设置界面）**，与"单 exe 双形态"的
+> 交付预期不符。发版前要让 release job 也走 `build.ps1 -SingleExe`（发布界面 → 生成载荷 →
+> 构建 → 跑 `--ui-info` 形态断言），否则 Release 里下载到的 exe 点「设置」只会弹"精简版"提示。
 
 **Files:**
 - Create: `scripts/build.ps1`

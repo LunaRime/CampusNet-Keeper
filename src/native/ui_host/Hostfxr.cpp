@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <mutex>
 #include <vector>
@@ -95,11 +96,15 @@ std::wstring ReadRegistryString(HKEY root, const wchar_t* subkey, const wchar_t*
     return buf;
 }
 
-bool ParseVersion(const std::wstring& s, std::vector<int>& out) {
+bool ParseVersion(const std::wstring& s, std::vector<int>& out, int& rank) {
     out.clear();
+    rank = 2;   // 无后缀（正式版）优先
     size_t i = 0;
     while (i < s.size()) {
-        if (s[i] < L'0' || s[i] > L'9') return false;
+        if (s[i] < L'0' || s[i] > L'9') {
+            rank = 1;   // 非数字开头（或数字段之后跟 '-'/'+' 后缀）→ 预发布
+            break;
+        }
         int v = 0;
         while (i < s.size() && s[i] >= L'0' && s[i] <= L'9') {
             v = v * 10 + (int)(s[i] - L'0');
@@ -108,34 +113,51 @@ bool ParseVersion(const std::wstring& s, std::vector<int>& out) {
         }
         out.push_back(v);
         if (i == s.size()) break;
-        if (s[i] != L'.') return false;
-        ++i;
+        if (s[i] == L'.') {
+            ++i;
+            continue;
+        }
+        rank = 1;   // 形如 10.0.0-preview.7 / 9.0.0-rc.1
+        break;
     }
     return !out.empty();
 }
 
 // 在 <root>\host\fxr\<版本>\ 里挑最高版本的 hostfxr.dll。
 // 高版本 hostfxr 能加载低版本框架，所以取最高是安全的（框架不匹配会由它自己报错）。
+// 版本目录名可能是 "10.0.0-preview.7.…"/"9.0.0-rc.1"：**必须认**，否则只装了预览版
+// 运行时的机器会被误报成"没装 .NET"（2026-10-17 审阅 P2-7）；同等数值下正式版优先。
 std::wstring FindHighestHostfxr(const std::wstring& dotnet_root) {
     const fs::path fxr_dir = fs::path(dotnet_root) / L"host" / L"fxr";
     std::error_code ec;
     if (!fs::is_directory(fxr_dir, ec)) return {};
-    std::vector<std::pair<std::vector<int>, std::wstring>> candidates;
-    for (const auto& entry : fs::directory_iterator(fxr_dir, ec)) {
-        std::error_code e1;
-        if (!entry.is_directory(e1)) continue;
-        const fs::path dll = entry.path() / L"hostfxr.dll";
-        if (!fs::is_regular_file(dll, e1)) continue;
+
+    struct Candidate {
         std::vector<int> version;
-        if (!ParseVersion(entry.path().filename().wstring(), version)) continue;
-        candidates.push_back({version, dll.wstring()});
+        int rank = 2;
+        std::wstring path;
+    };
+    std::vector<Candidate> candidates;
+    // 刻意不用 range-for：它的自增是**会抛异常**的版本（构造用了 ec 版，++ 不是）
+    for (fs::directory_iterator it(fxr_dir, ec), end; it != end; it.increment(ec)) {
+        if (ec) break;
+        std::error_code e1;
+        if (!it->is_directory(e1)) continue;
+        const fs::path dll = it->path() / L"hostfxr.dll";
+        if (!fs::is_regular_file(dll, e1)) continue;
+        Candidate c;
+        if (!ParseVersion(it->path().filename().wstring(), c.version, c.rank)) continue;
+        c.path = dll.wstring();
+        candidates.push_back(std::move(c));
     }
     if (candidates.empty()) return {};
     const auto best = std::max_element(
         candidates.begin(), candidates.end(),
-        [](const std::pair<std::vector<int>, std::wstring>& a,
-           const std::pair<std::vector<int>, std::wstring>& b) { return a.first < b.first; });
-    return best->second;
+        [](const Candidate& a, const Candidate& b) {
+            if (a.version != b.version) return a.version < b.version;
+            return a.rank < b.rank;
+        });
+    return best->path;
 }
 
 // <root>\host\fxr\<版本>\hostfxr.dll → <root>
@@ -203,20 +225,16 @@ bool ResolveHostfxrPath(const std::string& ui_dir, std::string& out_path,
         }
     }
 
-    // ②③④ 机器上的 .NET 安装
+    // ②③④ 机器上的 .NET 安装（顺序与 nethost 的口径一致：先架构特定的，再通用）
     std::vector<std::wstring> roots;
+    const wchar_t* env_root_x64 = _wgetenv(L"DOTNET_ROOT_X64");
+    if (env_root_x64 && *env_root_x64) roots.push_back(env_root_x64);
     const wchar_t* env_root = _wgetenv(L"DOTNET_ROOT");
     if (env_root && *env_root) roots.push_back(env_root);
     const std::wstring registered = ReadRegistryString(
         HKEY_LOCAL_MACHINE, L"SOFTWARE\\dotnet\\Setup\\InstalledVersions\\x64",
         L"InstallLocation");
-    if (!registered.empty()) {
-        if (!roots.empty() && _wcsicmp(roots.front().c_str(), registered.c_str()) == 0) {
-            // 去重（同一个根不用查两遍）
-        } else {
-            roots.push_back(registered);
-        }
-    }
+    if (!registered.empty()) roots.push_back(registered);
     wchar_t program_files[1024] = {};
     if (GetEnvironmentVariableW(L"ProgramFiles", program_files, 1024) > 0)
         roots.push_back(std::wstring(program_files) + L"\\dotnet");
@@ -235,13 +253,12 @@ bool ResolveHostfxrPath(const std::string& ui_dir, std::string& out_path,
     return false;
 }
 
-int RunUiMode() {
-    // 已经有一个界面在跑就不再开第二个：托盘被连点时不该堆出一串窗口
-    if (!AcquireUiWindowMutex()) {
-        LogInfo("已有设置界面在运行，本次不再打开新窗口");
-        return 0;
-    }
+namespace {
 
+// 真正的实现。可能抛异常（文件名/路径构造、内存分配…）：--ui 是 CREATE_NO_WINDOW 子进程，
+// 异常逃出去等于"点了「设置」什么都没发生、日志里也没有一行"，所以外面必须兜住
+//（2026-10-17 审阅 P1 的教训：非法 UTF-8 条目名会让 fs::u8path 抛异常）。
+int RunUiModeImpl() {
     std::string ui_dir;
     std::string err;
     if (!EnsureUiPayload(ui_dir, err)) {
@@ -256,7 +273,7 @@ int RunUiMode() {
         LogError("UI 宿主解析失败：" + err);
         ShowError(L"未找到 .NET 运行时，无法打开设置界面。\n\n" +
                   Utf8ToWide(err) +
-                  L"\n\n请安装 .NET 10 Desktop Runtime 后重试：\n"
+                  L"\n\n请安装 .NET 10 运行时（Runtime 或 Desktop Runtime 均可）后重试：\n"
                   L"https://dotnet.microsoft.com/download/dotnet/10.0\n\n"
                   L"（后台守护功能不受影响，已在正常运行。）");
         return 1;
@@ -271,7 +288,7 @@ int RunUiMode() {
         LogError("加载 hostfxr 失败：" + hostfxr_path + "，错误码 " + std::to_string(e));
         ShowError(L"加载 .NET 宿主 hostfxr.dll 失败。\n\n路径：" + hostfxr_w +
                   L"\n错误码：" + std::to_wstring(e) +
-                  L"\n\n请重新安装 .NET 10 Desktop Runtime 后重试。");
+                  L"\n\n请重新安装 .NET 10 运行时（Runtime 或 Desktop Runtime 均可）后重试。");
         return 1;
     }
     LogInfo("已加载 hostfxr：" + hostfxr_path);
@@ -286,7 +303,7 @@ int RunUiMode() {
     if (!init_cfg || !get_delegate || !close_cfg) {
         LogError("hostfxr 缺少导出函数（版本过旧？）：" + hostfxr_path);
         ShowError(L".NET 运行时版本不兼容（hostfxr 缺少所需接口）。\n\n"
-                  L"请安装或更新 .NET 10 Desktop Runtime 后重试：\n"
+                  L"请安装或更新 .NET 10 运行时（Runtime 或 Desktop Runtime 均可）后重试：\n"
                   L"https://dotnet.microsoft.com/download/dotnet/10.0");
         return 1;
     }
@@ -333,7 +350,7 @@ int RunUiMode() {
         if ((unsigned)rc == 0x80008096u)
             hint += L"\n原因：本机缺少所需的 .NET 运行时框架。\n";
         if (!host_detail.empty()) hint += L"\n.NET 宿主输出：\n" + Utf8ToWide(host_detail) + L"\n";
-        hint += L"\n请安装 .NET 10 Desktop Runtime 后重试：\n"
+        hint += L"\n请安装 .NET 10 运行时（Runtime 或 Desktop Runtime 均可）后重试：\n"
                 L"https://dotnet.microsoft.com/download/dotnet/10.0\n\n"
                 L"（后台守护功能不受影响。）";
         ShowError(hint);
@@ -349,7 +366,7 @@ int RunUiMode() {
         LogError("hostfxr_get_runtime_delegate 失败，rc=" + RcHex(rc_delegate) +
                  (host_detail.empty() ? "" : "；宿主报错：" + host_detail));
         ShowError(L"获取 .NET 运行时接口失败。\n\n错误码：" + Utf8ToWide(RcHex(rc_delegate)) +
-                  L"\n\n请安装或修复 .NET 10 Desktop Runtime 后重试。");
+                  L"\n\n请安装或修复 .NET 10 运行时（Runtime 或 Desktop Runtime 均可）后重试。");
         return 1;
     }
 
@@ -377,6 +394,27 @@ int RunUiMode() {
     LogInfo("托管界面入口已返回，退出码 " + std::to_string(ui_rc));
     close_cfg(ctx);
     return ui_rc;
+}
+
+}  // namespace
+
+int RunUiMode() {
+    // 已经有一个界面在跑就不再开第二个：托盘被连点时不该堆出一串窗口
+    if (!AcquireUiWindowMutex()) {
+        LogInfo("已有设置界面在运行，本次不再打开新窗口");
+        return 0;
+    }
+    try {
+        return RunUiModeImpl();
+    } catch (const std::exception& e) {
+        LogError(std::string("打开设置界面时发生未捕获异常：") + e.what());
+        ShowError(L"打开设置界面时发生意外错误（已写入日志）：\n\n" + Utf8ToWide(e.what()));
+        return 1;
+    } catch (...) {
+        LogError("打开设置界面时发生未知异常");
+        ShowError(L"打开设置界面时发生未知错误（已写入日志）。");
+        return 1;
+    }
 }
 
 bool LaunchUiProcess() {

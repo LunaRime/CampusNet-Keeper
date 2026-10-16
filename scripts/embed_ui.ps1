@@ -86,6 +86,15 @@ $idFile = Join-Path $OutDir 'ui_payload_id.txt'
 Ok "版本戳：$payloadId"
 
 # ---------------------------------------------------------------- 5) 生成 .rc
+# rc.exe 的脚本这里按 ASCII 写（避免编码歧义），而内容是**绝对路径**：路径里有非 ASCII
+# 字符时会被写成 '?'，rc.exe 只会报一句难懂的错。与其让人看天书，不如现在明确拒绝。
+foreach ($p in @($zip, $idFile)) {
+    if ($p -match '[^\x20-\x7E]') {
+        Die ("路径含非 ASCII 字符，rc.exe 无法可靠引用：$p`n" +
+             "       请把仓库放到纯 ASCII 路径下（例如 D:\Code\CampusNet-Keeper）后重试")
+    }
+}
+
 # 路径里的反斜杠在 .rc 的引号串里要写成 \\；文件本身用 ASCII，避免 rc.exe 的编码歧义。
 $zipAbs = (Resolve-Path $zip).Path.Replace('\', '\\')
 $idAbs = (Resolve-Path $idFile).Path.Replace('\', '\\')

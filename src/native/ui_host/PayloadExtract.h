@@ -8,7 +8,10 @@
 // 用 .NET 的 CompressionLevel.NoCompression 产出存储型 ZIP，C++ 侧只需解析中央目录 +
 // 按偏移拷数据——零依赖、可单测。
 //
-// 遇到压缩/加密/ZIP64/路径穿越条目一律返回**明确错误**，绝不写出坏数据。
+// 遇到压缩/加密/ZIP64/路径穿越/非法编码条目一律返回**明确错误**，绝不写出坏数据。
+// 这条承诺是有代价的：任何"抛异常"的写法都会让 --ui 子进程静默 std::terminate
+//（2026-10-17 审阅 P1 实测：非法 UTF-8 条目名会让 MSVC 的 fs::u8path 抛异常），
+// 所以本文件里所有路径构造都必须先经过 SafeEntryName 的严格校验。
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -46,6 +49,10 @@ struct ZipEntryInfo {
 bool ListStoredZip(const void* zip, size_t size, std::vector<ZipEntryInfo>& out,
                    std::string& error);
 
+// **干跑校验**（不落盘、不创建任何文件）：逐条校验中央目录/本地头/数据偏移/CRC。
+// 给 --ui-info 与构建脚本的形态断言用——"能列出条目"不等于"能解压出来"。
+bool VerifyStoredZip(const void* zip, size_t size, std::string& error);
+
 // 解压"仅存储型条目"的 ZIP 到 dest_dir（必须已存在）。失败时不保证目录干净——
 // 调用方负责用临时目录 + 改名保证原子性（见 EnsureUiPayloadFromBytes）。
 bool ExtractStoredZip(const void* zip, size_t size,
@@ -54,7 +61,9 @@ bool ExtractStoredZip(const void* zip, size_t size,
 // ui_dir\.version 的内容（读不到返回空串，自动去掉行尾空白）
 std::string ReadUiPayloadMarker(const std::filesystem::path& ui_dir);
 
-// 版本戳一致 + 关键文件在 → 可以复用已释放的目录
+// 版本戳一致 + 关键文件在 → 可以复用已释放的目录。
+// ⚠ 版本戳只用来判断"要不要重新解压"，**不是完整性校验**：它和解压产物同在
+// 用户可写目录里，能改产物的人也能改它。真正的信任边界仍然是"同用户可改 exe"。
 bool UiPayloadUsable(const std::filesystem::path& ui_dir, const std::string& payload_id);
 
 // 释放（或复用）UI 载荷到 base_dir\ui：

@@ -115,8 +115,14 @@ add_executable(cnk_tests
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)
 target_include_directories(cnk_tests PRIVATE tests)
+# 完整版构建（build.ps1 -SingleExe）会打开它：测试里"真实载荷"那一条缺载荷时算**失败**，
+# 而不是静默跳过——否则 CI/本地都可能"表面全绿、覆盖其实没跑"（2026-10-17 审阅 P2-3）。
+option(CNK_REQUIRE_REAL_PAYLOAD "缺少 build/generated 的真实 UI 载荷时让测试失败" OFF)
 # 忠实性测试直接读实测证据原件，钉住模拟器输出（见 tests/sim_test.cpp）
 target_compile_definitions(cnk_tests PRIVATE
   CNK_EVIDENCE_DIR="${CMAKE_SOURCE_DIR}/docs/evidence"
   CNK_UI_PAYLOAD_ZIP="${CNK_UI_PAYLOAD_DIR}/ui_payload.zip")
+if(CNK_REQUIRE_REAL_PAYLOAD)
+  target_compile_definitions(cnk_tests PRIVATE CNK_REQUIRE_REAL_PAYLOAD=1)
+endif()
 add_test(NAME cnk_tests COMMAND cnk_tests)

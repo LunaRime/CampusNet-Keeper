@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using Avalonia;
 
 namespace CampusNet.UI;
@@ -33,36 +34,53 @@ public static class Program
     [UnmanagedCallersOnly]
     public static int NativeEntry(IntPtr args, int sizeBytes)
     {
-        var exitCode = 0;
-        // Avalonia 的 Win32 平台要求 STA，而原生调用线程的 COM 单元状态不确定，
-        // 所以另起一个 STA 线程跑界面，并在这里阻塞到窗口关闭。
-        var uiThread = new Thread(() =>
+        try
         {
-            try
+            var exitCode = 0;
+            // Avalonia 的 Win32 平台要求 STA，而原生调用线程的 COM 单元状态不确定，
+            // 所以另起一个 STA 线程跑界面，并在这里阻塞到窗口关闭。
+            var uiThread = new Thread(() =>
             {
-                BuildAvaloniaApp().StartWithClassicDesktopLifetime(Array.Empty<string>());
-            }
-            catch (Exception ex)
-            {
-                exitCode = 2;
-                TryLogFatal(ex);
-            }
-        });
-        uiThread.SetApartmentState(ApartmentState.STA);
-        uiThread.IsBackground = false;
-        uiThread.Start();
-        uiThread.Join();
+                try
+                {
+                    BuildAvaloniaApp().StartWithClassicDesktopLifetime(Array.Empty<string>());
+                }
+                catch (Exception ex)
+                {
+                    exitCode = 2;
+                    TryLogFatal(ex);
+                }
+            });
+            uiThread.SetApartmentState(ApartmentState.STA);
+            uiThread.IsBackground = false;
+            uiThread.Start();
+            uiThread.Join();
 
-        // 窗口关掉后进程必须真的退出：Avalonia 可能留下消息循环线程把进程挂住
-        //（--self-test 就实测过），而这条路径上原生侧已无别的事要做。
-        Environment.Exit(exitCode);
-        return exitCode;
+            // 窗口关掉后进程必须真的退出：Avalonia 可能留下消息循环线程把进程挂住
+            //（--self-test 就实测过），而这条路径上原生侧已无别的事要做。
+            Environment.Exit(exitCode);
+            return exitCode;
+        }
+        catch (Exception ex)
+        {
+            // 连 new Thread/Start/Join 自己抛异常也不能跨过托管边界：
+            // [UnmanagedCallersOnly] 里逃出去的异常会让 CLR fail-fast（用户什么也看不到）。
+            TryLogFatal(ex);
+            return 3;
+        }
     }
 
     public static AppBuilder BuildAvaloniaApp() =>
         AppBuilder.Configure<App>()
             .UsePlatformDetect()
             .LogToTrace();
+
+    // 形如 upass=xxx / "password":"xxx" 的凭据对：落盘前打码。
+    // 界面进程本来就不接触已存密码（任务 24 的规矩，界面只见 has_password），
+    // 这里是纵深防御——免得将来某次异常消息里带上凭据而被原样写进文件。
+    private static readonly Regex CredentialPair = new(
+        "(?i)\\b(upass|password|passwd|pwd|ddddd|username|user|account|userid|rcn)\\s*[=:]\\s*[^&;\\s,\"}\\]]+",
+        RegexOptions.Compiled);
 
     // 托管入口抛异常时没有控制台可看（原生子进程是 CREATE_NO_WINDOW 启动的），
     // 所以落到界面载荷目录旁边的日志文件里，便于排障。
@@ -74,9 +92,11 @@ public static class Program
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "CampusNet-Keeper");
             Directory.CreateDirectory(dir);
+            var text = CredentialPair.Replace(ex.ToString(), "$1=***");
+            if (text.Length > 4000) text = text[..4000] + "…（已截断）";
             File.AppendAllText(
                 Path.Combine(dir, "ui-host-error.log"),
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} 界面启动失败：{ex}{Environment.NewLine}");
+                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} 界面启动失败（已脱敏）：{text}{Environment.NewLine}");
         }
         catch
         {

@@ -21,6 +21,7 @@ std::ofstream g_stream;
 LogLevel g_min_level = LogLevel::Info;
 size_t g_max_bytes = 512 * 1024;
 int g_keep_files = 3;
+bool g_rotate_failed = false;   // 轮转失败待报告（见 RotateIfNeeded / LogWrite）
 std::deque<std::string> g_tail;
 constexpr size_t kTailMax = 500;
 
@@ -65,8 +66,13 @@ void RotateIfNeeded() {
     std::error_code e3;
     fs::remove(first, e3);
     fs::rename(g_log_path, first, e3);
+    // 另一个进程（如 --ui 界面子进程）可能正持有该文件 → 改名失败。
+    // 不能在这里直接 LogWarn（本函数是在持锁状态下被调用的，会死锁），
+    // 只置标志，由 LogWrite 在同一把锁内补一行警告（见下）。
+    if (e3) g_rotate_failed = true;
 
     g_stream.open(g_log_path, std::ios::app);
+    if (!g_stream.is_open()) g_rotate_failed = true;
 }
 
 bool IsSecretKey(const std::string& key) {
@@ -181,6 +187,12 @@ void LogWrite(LogLevel level, const std::string& msg) {
     if (g_stream.is_open()) {
         RotateIfNeeded();
         g_stream << line << "\n";
+        if (g_rotate_failed) {
+            // 报一次就够（这里已持锁，不能再调 LogWrite/LogWarn——会死锁）
+            g_rotate_failed = false;
+            g_stream << Timestamp() << " [" << LevelName(LogLevel::Warn) << "] "
+                     << "日志轮转失败（文件可能被其它进程占用，日志会继续增长）\n";
+        }
         g_stream.flush();
     }
 
