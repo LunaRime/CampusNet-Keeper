@@ -1,8 +1,13 @@
 name: CI
 
-# 每次推送到 master / PR 都跑：构建 → 测试 → 红act 审计 → UI 令牌检查。
-# 注意：本项目的 C++ 测试里有一条"能给文件写完整性标签"的用例，普通构建代理账户
-# 没有该权限，因此 CI 只要求**除 integrity_test 之外**全绿（与 build.ps1 的口径一致）。
+# 每次推送到 master / PR：构建（精简版）→ 测试 → 脱敏审计 → UI 令牌与核心自检 → 上传产物。
+# 打 v* tag：走 scripts/package.ps1 构建**两个发布包**（精简版 + 单 exe 完整版）并创建 Release。
+#
+# 两条硬约束（见 build.ps1 的说明与 2026-10-17 的教训）：
+#   ① 发布产物必须是"单 exe 双形态"（内嵌设置界面载荷），否则用户下载到的 exe 点「设置」
+#      只会弹"精简版"提示——所以 release job 必须走 build.ps1 -SingleExe，不能只 cmake --build。
+#   ② 运行器固定 windows-2022：windows-latest 已随新版 VS 迁移、没有 VS 2022 实例，
+#      CMake 的 "Visual Studio 17 2022" 生成器会直接报错（2026-10-17 实测）。
 on:
   push:
     branches: [ master, main ]
@@ -13,10 +18,8 @@ on:
 
 jobs:
   windows:
-    # 固定用 windows-2022：windows-latest 已随新版 Visual Studio（2026）迁移，
-    # 上面没有再装 VS 2022，CMake 的 "Visual Studio 17 2022" 生成器会报
-    # "could not find any instance of Visual Studio"（2026-10-17 实测失败原因）。
-    # 2022 镜像自带 MSVC + C++ 工作负载，正是本项目需要的工具链。
+    # 日常门禁：不构建载荷（CI 里没有 build/generated），因此这里是**精简版**形态。
+    # 完整版的形态断言在 release job（--ui-info 退出码 0）。
     runs-on: windows-2022
 
     steps:
@@ -41,6 +44,16 @@ jobs:
             exit 1
           }
           Write-Host "仅 integrity_test 失败（CI 账户无写完整性标签权限，属环境性）"
+
+      - name: 精简版形态自检（无内嵌载荷 → 必须退出 3）
+        shell: pwsh
+        run: |
+          $out = & .\build-m1\Release\CampusNet-Keeper.exe --ui-info 2>&1
+          $out | ForEach-Object { $_.Line }
+          if ($LASTEXITCODE -ne 3) {
+            Write-Error "--ui-info 应返回 3（本构建没有 build/generated 载荷），实际 $LASTEXITCODE"
+            exit 1
+          }
 
       - name: 证据脱敏审计
         shell: pwsh
@@ -84,14 +97,17 @@ jobs:
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: CampusNet-Keeper-win-x64
+          # 名字里写明 lite：这里没有内嵌界面载荷，完整版在 Release 里
+          name: CampusNet-Keeper-lite-win-x64
           path: |
             build-m1/Release/CampusNet-Keeper.exe
             build-m1/Release/cnk_tests.exe
             build-m1/Release/cnk_ipc_probe.exe
 
   release:
-    # 打 tag（v*）时把产物附到 GitHub Release
+    # 打 tag（v*）时构建两个发布包并创建 Release：
+    #   · 精简版：~1 MB，需目标机装 .NET 10 运行时才有设置界面
+    #   · 完整版：单 exe 双形态（内嵌界面载荷，约 24 MB）
     if: startsWith(github.ref, 'refs/tags/v')
     needs: windows
     runs-on: windows-2022
@@ -100,21 +116,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 配置并构建
-        run: |
-          cmake -S . -B build-m1 -G "Visual Studio 17 2022" -A x64
-          cmake --build build-m1 --config Release
+      - name: 安装 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
 
-      - name: 打包
+      - name: 校验 tag 与 Version.h 一致
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path stage | Out-Null
-          Copy-Item build-m1\Release\CampusNet-Keeper.exe stage
-          Copy-Item README.md, LICENSE stage
-          Compress-Archive -Path stage\* -DestinationPath CampusNet-Keeper-win-x64.zip -Force
+          $raw = Get-Content -Raw src/native/core/Version.h
+          $m = [regex]::Match($raw, 'VersionString\(\)\s*\{\s*return\s*"([^"]+)"')
+          if (-not $m.Success) { Write-Error "无法解析 Version.h 的版本号"; exit 1 }
+          $want = "v" + $m.Groups[1].Value
+          if ($want -ne "${{ github.ref_name }}") {
+            Write-Error "tag（${{ github.ref_name }}）与 Version.h（$want）不一致：请先改版本号再打 tag"
+            exit 1
+          }
+          Write-Host "版本一致：$want"
+
+      - name: 构建两个发布包（走 scripts/package.ps1）
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File scripts/package.ps1 -Version "${{ github.ref_name }}"
+          if ($LASTEXITCODE -ne 0) { Write-Error "打包失败"; exit 1 }
+
+      - name: 列出产物
+        shell: pwsh
+        run: Get-ChildItem dist/*.zip | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} | Format-Table -AutoSize
 
       - name: 发布
         uses: softprops/action-gh-release@v2
         with:
-          files: CampusNet-Keeper-win-x64.zip
+          files: dist/*.zip
           generate_release_notes: true

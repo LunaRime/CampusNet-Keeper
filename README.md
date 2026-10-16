@@ -27,6 +27,20 @@
 
 完整步骤与反馈要求见 `docs/M1-实测指南.md`。
 
+## 设置界面
+
+托盘图标上**单击或双击**即可打开（等价于 `CampusNet-Keeper.exe --ui`）；界面通过命名管道
+IPC 与守护进程通信，**密码明文从不离开守护进程**（界面只见「已保存密码」）。
+
+![设置界面](docs/design/ui-settings-20261016.png)
+
+![连接真实守护进程](docs/design/ui-real-daemon-20261017.png)
+
+- 顶部状态条：状态灯、本机 IP、上次登录时间、立即重连
+- 左侧档案栏：多账号/多学校配置切换；中部表单：认证网址、账号、密码、运营商、认证方式
+- 底部日志面板：跟随守护进程日志（2 秒轮询 `get_log_tail`）；「测试登录」会**真的尝试登录一次**
+- 深浅主题跟随系统，配色与组件规格来自 `DESIGN.md`（shadcn/ui），静态检查见 `tools/check_ui_tokens.ps1`
+
 ## 命令行选项
 
 | 选项 | 说明 |
@@ -54,6 +68,35 @@
 | 深澜 srun（`get_challenge` → `srun_portal`，HMAC-MD5 + xEncode） | `SrunAuth` | **未实测**（同上） |
 | 未知厂商 / 改版门户（解析页面第一个表单） | `GenericFormAuth` | 未实测（兜底策略） |
 | 任意学校（自定义模板） | `CustomTemplateAuth` | 已在模拟环境验证 |
+
+## 自定义模板（任意学校）
+
+学校不在上面四条策略里时，用自定义模板描述它的登录请求即可。配置写在
+`%APPDATA%\CampusNet-Keeper\config.json` 的档案（`profiles[]`）里：
+
+```json
+{
+  "name": "我的学校",
+  "auth_url": "http://10.0.0.1/",
+  "username": "学号",
+  "vendor": "custom",
+  "isp": { "preset": "custom", "custom": "" },
+  "custom_template": {
+    "method": "POST",
+    "url": "http://10.0.0.1/login",
+    "body": "user={username}&pass={password}&ip={ip}",
+    "headers": { "Content-Type": "application/x-www-form-urlencoded" },
+    "success_regex": "登录成功|注销"
+  }
+}
+```
+
+可用占位符（`core/Template.h`）：`{username}` `{password}` `{isp}`（运营商后缀，如 `@cmcc`）
+`{ip}`（本机 IP）`{timestamp}`（Unix 秒）。**占位符替换不做 URL/表单编码**——需要编码时请在
+模板里自行拼装（与门户 JS 的编码口径保持一致）。识别不到占位符时该段原样保留，便于发现拼写错误。
+
+`success_regex` 是"登录成功"的判据（对响应正文做正则匹配）；填错会导致反复重试或误判成功，
+建议先用 `--test-login` 看一次真实响应（输出已脱敏）再定。
 
 ## 已知限制
 
@@ -92,9 +135,10 @@
 一条命令搞定（配置 → 构建 → 测试 → **安装到 `build\Release`** → **校验产物**）：
 
     pwsh -File build.ps1              # 完整构建（精简版单 exe：不含设置界面）
-    pwsh -File build.ps1 -SingleExe   # 完整版单 exe：发布界面 → 内嵌载荷（约 24 MB）
+    pwsh -File build.ps1 -SingleExe   # 完整版单 exe：发布界面 → 内嵌载荷（exe 约 24 MB）
     pwsh -File build.ps1 -Package     # 额外产出发布压缩包
     pwsh -File build.ps1 -SkipUi      # 只构建 C++（没装 .NET SDK 也能跑）
+    pwsh -File scripts/package.ps1    # 正式发布：精简版 + 完整版两个包（见下）
 
 脚本最后一步会校验 `build\Release` 的主程序含本次构建的日志标记、并与刚构建的产物比对
 SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发树、用户运行着旧二进制"导致
@@ -116,6 +160,22 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
     dotnet build src/ui/CampusNet.UI -c Release
     dotnet build src/ui/ContractCheck -c Release
 
+## 发布包
+
+    pwsh -File scripts/package.ps1                 # 两个包都打（版本取自 Version.h）
+    pwsh -File scripts/package.ps1 -Version v0.1.0 # 显式指定版本（CI 里传 tag）
+
+产出到 `dist/`（同时会被 GitHub Release 上传）：
+
+| 包 | 大小 | 说明 |
+|---|---|---|
+| `CampusNet-Keeper-<版本>-lite-win-x64.zip` | 约 0.5 MB | 单 exe（约 1 MB），**不含**设置界面载荷；点「设置」会提示用完整版。守护/CLI 功能完整 |
+| `CampusNet-Keeper-<版本>-full-win-x64.zip` | 约 10 MB | **单 exe 双形态**（解压后 exe 约 24 MB）：内嵌设置界面载荷，首次打开界面时释放到本机缓存并加载 .NET 运行时 |
+
+两个包都会**解包自检**：对解出来的 exe 跑 `--version` 与 `--ui-info`，断言形态与名字相符
+（精简版必须退 3、完整版必须退 0 且载荷"全部为存储型 + 干跑校验通过"）；版本号还会与
+`Version.h` 比对，避免把 0.1.0 的代码发成 v0.2.0。
+
 ## 测试与验证
 
     ./build-m1/Release/cnk_tests.exe              # C++ 全量测试
@@ -132,11 +192,24 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
 
 ## CI 与发布
 
-`.github/workflows/ci.yml`：推送/PR 时构建 + 跑测试 + 脱敏审计 + UI 令牌检查；打 `v*`
-tag 时自动打包并创建 GitHub Release。
+`.github/workflows/ci.yml`：
 
-**推送前必须自查**：跑一次 `python docs/evidence/audit_redaction.py`，并人工确认仓库中不含
-任何真实账号、学号、MAC、密码或其他私有凭据（包括 `docs/evidence/` 下的抓包证据）。
+- **推送 / PR**：配置 → 构建（精简版）→ 跑测试 → 精简版形态自检（`--ui-info` 必须退 3）→
+  证据脱敏审计 → UI 令牌检查与核心自检 → 上传产物（名字里写明 `lite`）。
+- **打 `v*` tag**：先校验 tag 与 `Version.h` 一致，再用 `scripts/package.ps1` 构建
+  **精简版 + 完整版两个包**（完整版走 `build.ps1 -SingleExe`，即"单 exe 双形态"），
+  两个包都解包自检后上传到 GitHub Release。
+
+发版流程：
+
+    # 1) 改 src/native/core/Version.h 的版本号，提交
+    # 2) 推送，再打 tag
+    git push origin master:main
+    git tag -a v0.1.0 -m "首个版本：Dr.COM 认证、托盘守护、自动重连、单 exe 设置界面"
+    git push origin v0.1.0
+
+**推送前必须自查**：跑一次 `python docs/evidence/audit_redaction.py`（CI 也会跑），并人工确认
+仓库中不含任何真实账号、学号、MAC、密码或其他私有凭据（包括 `docs/evidence/` 下的抓包证据）。
 
 ## 许可证
 

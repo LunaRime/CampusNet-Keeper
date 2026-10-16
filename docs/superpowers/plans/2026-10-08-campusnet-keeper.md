@@ -10339,6 +10339,30 @@ git commit -m "feat: 按需加载 CLR 并解压内嵌 UI，实现单 exe 双形�
 > 交付预期不符。发版前要让 release job 也走 `build.ps1 -SingleExe`（发布界面 → 生成载荷 →
 > 构建 → 跑 `--ui-info` 形态断言），否则 Release 里下载到的 exe 点「设置」只会弹"精简版"提示。
 
+> **✅ 实施注记（2026-10-17，发版）**
+>
+> **脚本名与计划不同**：构建脚本落在仓库根 **`build.ps1`**（不是 `scripts/build.ps1`）——
+> 它是"一键"入口，文档与 CI 都以根目录形式引用；`scripts/` 下放的是 `embed_ui.ps1`
+> （任务 26 的载荷打包）与 `package.ps1`（发布打包）。CI 文件名是 **`ci.yml`**（计划写的是
+> `build.yml`）。
+>
+> **发布形态已修**（对应上面那条 ⚠）：release job 现在走 `scripts/package.ps1` → 内部依次跑
+> `build.ps1`（精简版）与 `build.ps1 -SingleExe`（完整版单 exe 双形态），产出两个 zip 并**解包自检**
+> ——对**解出来的那个 exe** 跑 `--version` 与 `--ui-info`：精简版必须退 3、完整版必须退 0 且输出含
+> "全部为存储型"与"载荷校验: 通过"；最后由 `softprops/action-gh-release` 上传 `dist/*.zip`。
+> 打 tag 前还会校验 **tag 与 `Version.h` 一致**（避免把 0.1.0 的代码发成 v0.2.0），
+> `package.ps1` 也会清掉 `dist/` 里上一轮的旧包（否则会被一起上传）。
+> 日常 `windows` job 保持精简版构建（快），新增"精简版形态自检"（`--ui-info` 必须退 3），
+> 产物名改为 `CampusNet-Keeper-lite-win-x64`（不再让人误以为那是完整版）。
+>
+> **README 补齐 M2 内容**：设置界面截图两张 + 界面说明、自定义模板的完整 JSON 示例与占位符/
+> 编码注意事项、发布包对照表、发版流程。
+>
+> **本地验证**：`scripts/package.ps1` 退出 0 —— 精简版包 **0.47 MB**、完整版包 **9.57 MB**
+> （内含 24.46 MB 单 exe），两个包解包自检均通过（`--ui-info` 分别退 3 / 0）。
+>
+> **发版**：`git push origin master:main` → `git tag -a v0.1.0 -m …` → 推送 tag 触发 Release。
+
 **Files:**
 - Create: `scripts/build.ps1`
 - Create: `scripts/package.ps1`
