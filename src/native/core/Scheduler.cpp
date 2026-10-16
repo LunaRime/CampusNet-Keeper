@@ -208,17 +208,25 @@ void Scheduler::Impl::DoLogin() {
 
     Vendor detected = DetectVendor(last_probe_response);
 
+    // 「按识别结果生效的厂商」要写进档案副本：配置默认 vendor="auto"，而 IspSuffix
+    // 是按**档案里的** vendor 分支的（auto 被当作 Dr.COM → @dx/@cmcc/@lt）。不改写的话，
+    // 锐捷/深澜用户会带着 Dr.COM 的后缀去认证，被服务器判「账号或密码错误」。
+    // 策略选择与后缀拼接从此共用同一个生效厂商。
+    Profile effective = *p;
+    if (effective.vendor == "auto" || effective.vendor.empty())
+        effective.vendor = VendorName(detected);
+
     NetContext ctx;
     ctx.local_ip = local_ip;
     ctx.portal_url = cached_portal_url;
     ctx.portal_body = cached_portal_body;
     ctx.server_header = cached_server_header;
 
-    auto auth = CreateAuth(detected, *p);
+    auto auth = CreateAuth(detected, effective);
     LogInfo(std::string("尝试登录，策略=") + auth->Name() +
             "，识别厂商=" + VendorName(detected));
 
-    LoginResult lr = auth->Login(*p, ctx);
+    LoginResult lr = auth->Login(effective, ctx);
 
     LogInfo(std::string("登录结果：") + (lr.success ? "成功" : "失败") +
             "，信息=" + RedactSecrets(lr.message));

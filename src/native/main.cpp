@@ -194,18 +194,26 @@ int RunTestLogin(cnk::AppConfig& cfg) {
     if (!pp.response.server.empty())
         PrintLine("Server: " + pp.response.server);
 
+    // 与调度器保持一致：配置默认 vendor="auto"，而 IspSuffix 按**档案里的** vendor 分支
+    //（auto 被当作 Dr.COM → @dx/@cmcc/@lt）。把「按识别结果生效的厂商」写进档案副本，
+    // 否则锐捷/深澜用户会带着 Dr.COM 后缀去认证而报「账号或密码错误」。
+    cnk::Profile effective = *p;
+    if (effective.vendor == "auto" || effective.vendor.empty())
+        effective.vendor = cnk::VendorName(v);
+
     cnk::NetContext ctx;
     // 与调度器保持一致：portal_url 是 resolve 后的重定向目标（无则为空）
     ctx.portal_url = pp.portal_url;
     ctx.portal_body = cnk::DecodeBody(pp.response);
     ctx.server_header = pp.response.server;
 
-    auto auth = cnk::CreateAuth(v, *p);
+    auto auth = cnk::CreateAuth(v, effective);
     PrintLine(std::string("认证策略: ") + auth->Name());
-    PrintLine("运营商后缀: " +
-              (cnk::IspSuffix(*p).empty() ? std::string("无") : cnk::IspSuffix(*p)));
+    PrintLine("运营商后缀: " + (cnk::IspSuffix(effective).empty()
+                                   ? std::string("无")
+                                   : cnk::IspSuffix(effective)));
 
-    auto lr = auth->Login(*p, ctx);
+    auto lr = auth->Login(effective, ctx);
 
     PrintLine("");
     PrintLine("== 请求（已脱敏）==");
@@ -379,6 +387,12 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
                      SimSession& sim) {
     if (opts.simulate_vendor.empty()) return false;
 
+    // 模拟模式先把各档案的厂商固定为「所模拟的厂商」（只改内存副本，不写盘）：
+    //   ① 让 --simulate=<厂商> 的预期策略确定，不受门户页指纹识别结果影响；
+    //   ② 必须在推导 isp_suffix **之前**——IspSuffix 按厂商分支
+    //      （drcom: @dx / srun: @telecom / eportal: telecom），顺序反了会按错的后缀校验。
+    for (auto& p : cfg.profiles) p.vendor = opts.simulate_vendor;
+
     // 模拟器的账号校验必须与客户端实际提交的账号一致：客户端按**生效档案**
     // 拼运营商后缀（如 @cmcc），若不设置 isp_suffix，真实配置（preset=cmcc）
     // 下会把正确凭据误判为错误（审阅 P1-1）。
@@ -430,7 +444,7 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
         p.auth_url = sim.server.BaseUrl() + "/";
         p.username = so.valid_user;
         p.password = so.valid_pass;
-        p.vendor = (so.vendor == "eportal") ? "eportal" : "drcom";
+        p.vendor = so.vendor;
         p.isp.preset = "campus";
         cfg.profiles.push_back(p);
         cfg.active_profile = "sim";

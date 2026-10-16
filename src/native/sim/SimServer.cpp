@@ -1,5 +1,7 @@
 #include "sim/SimServer.h"
 #include "core/Crypto.h"
+#include "crypto/Hash.h"
+#include "crypto/SrunXEncode.h"
 #include "json.hpp"
 
 #include <winsock2.h>
@@ -53,6 +55,48 @@ std::string BuildHomePage(int port) {
         << "carrier='" << kCarrierJson << "';"
            "</script></body></html>";
     return oss.str();
+}
+
+// 响应头里的 Server 值：drcom 保留实测指纹，其余厂商用中性值。
+// 若一律发 DrcomServer1.0，Detector 的「Server 含 drcomserver」最强规则会把
+// eportal/srun/generic 的页面也判成 drcom，模拟模式下的「识别厂商」输出自相矛盾。
+const char* ServerHeaderFor(const SimOptions& opts) {
+    return (opts.vendor == "drcom" || opts.vendor.empty()) ? "DrcomServer1.0"
+                                                           : "nginx/1.24.0";
+}
+
+// 非 drcom 厂商的门户页（任务 19-21 的模拟对象）：页面指纹要与各厂商识别规则一致，
+// 否则客户端在 auto 模式下会选错策略。
+//   eportal（锐捷）：含 jsVersion / c=Portal → 识别为锐捷
+//   srun（深澜）：含 ac_id + srun_portal / get_challenge → 识别为深澜
+//   generic（通用表单）：含 login 表单、但**不含**任何厂商指纹 → 识别为 unknown，
+//                        从而走 GenericFormAuth 兜底（这正是该策略的用例）
+std::string BuildVendorPortalPage(const SimOptions& opts) {
+    if (opts.vendor == "eportal") {
+        return "<html><head><meta charset=\"utf-8\"><title>锐捷认证</title></head><body>"
+               "<script>var jsVersion='4.1.3';var loginUrl='/eportal/?c=Portal&a=login';"
+               "</script><div>请使用统一身份认证登录</div></body></html>";
+    }
+    if (opts.vendor == "srun") {
+        return "<html><head><meta charset=\"utf-8\"><title>深澜认证</title></head><body>"
+               "<script>var ac_id=1;var api='/cgi-bin/srun_portal';"
+               "var chal='/cgi-bin/get_challenge';</script>"
+               "<div>SRun 认证系统</div></body></html>";
+    }
+    if (opts.vendor == "generic") {
+        // 指纹中性：不得出现 nasip+wlanuserip（会被 Detector 判成锐捷）、也不得含
+        // jsVersion / srun_portal / Dr.COM 标记——它的用途正是「识别为 unknown → 兜底」
+        return "<html><head><meta charset=\"utf-8\"><title>校园网认证</title></head><body>"
+               "<form name=\"login\" method=\"post\" action=\"/doLogin\">"
+               "<input type=\"hidden\" name=\"client_type\" value=\"pc\">"
+               "<input type=\"text\" name=\"username\" value=\"\">"
+               "<input type=\"password\" name=\"password\" value=\"\">"
+               "<select name=\"domain\"><option value=\"\">校园网</option>"
+               "<option value=\"@cmcc\">移动</option></select>"
+               "<input type=\"submit\" value=\"登录\">"
+               "</form></body></html>";
+    }
+    return "<html><body>未知厂商的门户页</body></html>";
 }
 
 // 免劫持清单逐字取自 docs/evidence/loadconfig_185_801.json 的 visit_blacklist（15 项）。
@@ -190,6 +234,7 @@ struct SimServer::Impl {
     std::atomic<bool> logged_in{false};   // 登录成功即建立会话状态
     std::mutex body_mutex;
     std::string last_login_body;
+    std::string last_challenge;  // 深澜：最近一次 get_challenge 下发的令牌
 
     void HandleClient(SOCKET client);
     void ServeLoop();
@@ -266,7 +311,13 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         // 真实环境的劫持跳转目标是 /a79.htm（"上网登录页"），与首页同为门户内容；
         // 模拟器以同一页面契约服务两者（字段清单见 tests/sim_test.cpp 忠实性用例）。
         // 真实门户首页是 GBK 字节；转码后再算 Content-Length（GBK 与 UTF-8 字节数不同）
-        resp_body = Utf8ToGbk(BuildHomePage(port));
+        // 非 drcom 厂商按各自的 UTF-8 门户页服务（任务 19-21 的模拟对象）。
+        if (opts.vendor == "drcom" || opts.vendor.empty()) {
+            resp_body = Utf8ToGbk(BuildHomePage(port));
+        } else {
+            resp_body = BuildVendorPortalPage(opts);
+            content_type = "text/html; charset=utf-8";
+        }
     } else if (!opts.disable_new_api && path == "/eportal/portal/page/loadConfig") {
         // 免劫持清单只在这里下发，不在首页
         resp_body = BuildLoadConfig(port);
@@ -334,6 +385,30 @@ void SimServer::Impl::HandleClient(SOCKET client) {
                     query, "{\"result\":0,\"msg\":\"账号或密码错误\",\"ret_code\":\"1\"}");
             }
         }
+    } else if (opts.vendor == "eportal" && (path == "/eportal/" || path == "/eportal")) {
+        // 锐捷 eportal 登录（任务 19）：GET + query，回 JSONP dr1003({"result":..,"msg":..})
+        content_type = "application/javascript; charset=utf-8";
+        login_count++;
+        const std::string all = query + "&" + body;
+        {
+            std::lock_guard<std::mutex> lk(body_mutex);
+            last_login_body = all;
+        }
+        const std::string user = UrlDecode(ParseFormValue(all, "user_account"));
+        const std::string pass = UrlDecode(ParseFormValue(all, "user_password"));
+        // user_account 形如「账号,0,服务」：整串比对（服务段发错也要抓住，
+        // 只比逗号前的话第三段错了端到端也会「成功」）
+        const std::string expect_account = opts.valid_user + ",0," + opts.isp_suffix;
+        const bool user_ok = !opts.valid_user.empty() && user == expect_account;
+        const bool pass_ok =
+            opts.valid_pass.empty() || pass == opts.valid_pass;
+        if (opts.fail_mode == 1 || !user_ok || !pass_ok) {
+            resp_body = JsonpWrap(
+                query, "{\"result\":0,\"msg\":\"账号或密码错误\"}");
+        } else {
+            logged_in.store(true);
+            resp_body = JsonpWrap(query, "{\"result\":1,\"msg\":\"\"}");
+        }
     } else if (path == "/eportal/" || path == "/eportal") {
         // 真实 eportal 路径按 UTF-8 声明（与首页的 gbk 不同），硬编码任一种都会让另一条乱码
         content_type = "text/html; charset=utf-8";
@@ -364,6 +439,97 @@ void SimServer::Impl::HandleClient(SOCKET client) {
             resp_body = "<html><body><!--Dr.COMWebLoginID_3.htm-->"
                         "window.location='3.htm';</body></html>";
         }
+    } else if (opts.vendor == "srun" && path == "/cgi-bin/get_challenge") {
+        // 深澜第一步：下发 challenge（真实实现是随机串，这里每次递增即可）
+        content_type = "application/javascript; charset=utf-8";
+        const std::string token =
+            "simchallenge" + std::to_string(login_count.fetch_add(1) + 1);
+        {
+            std::lock_guard<std::mutex> lk(body_mutex);
+            last_challenge = token;
+        }
+        resp_body =
+            JsonpWrap(query, "{\"challenge\":\"" + token + "\",\"ip\":\"127.0.0.1\"}");
+    } else if (opts.vendor == "srun" && path == "/cgi-bin/srun_portal") {
+        // 深澜第二步：校验 HMAC-MD5 口令、info 密文与 chksum。
+        // info 用「同 token 重新加密期望 JSON 后逐字节比对」验证——不必实现解码器，
+        // 却能端到端确认客户端把正确的字段喂进了 xEncode（含 URL 编码是否损坏密文）。
+        content_type = "application/javascript; charset=utf-8";
+        login_count++;
+        std::string token;
+        {
+            std::lock_guard<std::mutex> lk(body_mutex);
+            token = last_challenge;
+        }
+        const std::string all = query + "&" + body;
+        {
+            std::lock_guard<std::mutex> lk(body_mutex);
+            last_login_body = all;
+        }
+        const std::string user = UrlDecode(ParseFormValue(all, "username"));
+        const std::string pass_field = UrlDecode(ParseFormValue(all, "password"));
+        const std::string ip = UrlDecode(ParseFormValue(all, "ip"));
+        const std::string ac_id = UrlDecode(ParseFormValue(all, "ac_id"));
+        const std::string chksum = UrlDecode(ParseFormValue(all, "chksum"));
+        const std::string info = UrlDecode(ParseFormValue(all, "info"));
+        const std::string n_str = ParseFormValue(all, "n");
+        const std::string type_str = ParseFormValue(all, "type");
+
+        const std::string expect_user = opts.valid_user + opts.isp_suffix;
+        const std::string hmd5 = HmacMd5Hex(opts.valid_pass, token);
+        nlohmann::json expected;
+        expected["username"] = expect_user;
+        expected["password"] = opts.valid_pass;
+        expected["ip"] = ip;
+        expected["acid"] = ac_id;
+        expected["enc_ver"] = "srun_bx1";
+        const std::string expect_info = "{SRBX1}" + SrunXEncode(expected.dump(), token);
+        const std::string expect_chk = token + user + token + hmd5 + token + ac_id +
+                                       token + ip + token + n_str + token + type_str +
+                                       token + info;
+
+        // chksum 是 **SHA1**（三份独立来源一致：深大逆向、srunc、bitgateway-client）。
+        // 曾与服务端同用 HMAC-MD5 —— 双方共享同一错误公式，端到端恒真、真实部署必失败
+        //（2026-10-16 审阅 P0，计划 :7413 是错误源头）。
+        // 另：n/type/double_stack 与 ip 必须作为**常量**校验，不能从请求回读——
+        // 否则客户端改成 201/2 或提交 0.0.0.0 也照样通过。
+        const std::string double_stack = ParseFormValue(all, "double_stack");
+        const bool ok = !opts.valid_user.empty() && !token.empty() &&
+                        user == expect_user && pass_field == "{MD5}" + hmd5 &&
+                        info == expect_info && chksum == Sha1Hex(expect_chk) &&
+                        n_str == "200" && type_str == "1" && double_stack == "0" &&
+                        !ip.empty() && ip != "0.0.0.0";
+        if (opts.fail_mode == 1 || !ok) {
+            resp_body = JsonpWrap(
+                query, "{\"error\":\"password_error\",\"error_msg\":\"账号或密码错误\"}");
+        } else {
+            logged_in.store(true);
+            resp_body = JsonpWrap(query, "{\"error\":\"ok\",\"suc_msg\":\"登录成功\"}");
+        }
+    } else if (opts.vendor == "generic" && path == "/doLogin") {
+        // 通用表单：普通 HTML 表单提交，回中文成功/失败标记（客户端靠它判成功）
+        content_type = "text/html; charset=utf-8";
+        login_count++;
+        const std::string all = body.empty() ? query : body;
+        {
+            std::lock_guard<std::mutex> lk(body_mutex);
+            last_login_body = all;
+        }
+        const std::string user = UrlDecode(ParseFormValue(all, "username"));
+        const std::string pass = UrlDecode(ParseFormValue(all, "password"));
+        const std::string domain = UrlDecode(ParseFormValue(all, "domain"));
+        // 隐藏字段必须原样带回来（客户端不得丢掉页面上的 client_type）
+        const std::string client_type = UrlDecode(ParseFormValue(all, "client_type"));
+        const bool ok = !opts.valid_user.empty() && user == opts.valid_user &&
+                        (opts.valid_pass.empty() || pass == opts.valid_pass) &&
+                        (opts.isp_suffix.empty() || domain == opts.isp_suffix) &&
+                        !client_type.empty();
+        if (opts.fail_mode == 1 || !ok) {
+            resp_body = "<html><body>认证失败：账号或密码错误</body></html>";
+        } else {
+            logged_in.store(true);
+            resp_body = "<html><body>登录成功</body></html>";
+        }
     } else if (path == "/sim_probe") {
         // 端到端模拟专用：登录前相当于被劫持（返回门户页），登录成功后
         // 网络恢复（返回 nCSI 应答）——用于验证「探测 → 劫持 → 登录 → 恢复」整链。
@@ -388,8 +554,12 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         }
         if (logged_in.load()) {
             resp_body = "Microsoft NCSI";
-        } else {
+        } else if (opts.vendor == "drcom" || opts.vendor.empty()) {
             resp_body = Utf8ToGbk(BuildHomePage(port));
+        } else {
+            // 非 drcom 厂商：登录前返回各自的门户页（含表单/指纹），供识别与兜底策略使用
+            resp_body = BuildVendorPortalPage(opts);
+            content_type = "text/html; charset=utf-8";
         }
     } else if (path == "/generate_204") {
         // 探测地址类型（generate_204）：标准应答为 204 空体
@@ -409,7 +579,7 @@ void SimServer::Impl::HandleClient(SOCKET client) {
 
     std::ostringstream oss;
     oss << "HTTP/1.1 " << status << " OK\r\n"
-        << "Server: DrcomServer1.0\r\n"
+        << "Server: " << ServerHeaderFor(opts) << "\r\n"
         << "Content-Type: " << content_type << "\r\n"
         << "Content-Length: " << resp_body.size() << "\r\n"
         << "Cache-Control: no-cache\r\n"
@@ -570,5 +740,10 @@ std::string SimServer::LastLoginBody() const {
 }
 
 bool SimServer::LoggedIn() const { return impl_->logged_in.load(); }
+
+std::string SimServer::LastChallenge() const {
+    std::lock_guard<std::mutex> lk(impl_->body_mutex);
+    return impl_->last_challenge;
+}
 
 }  // namespace cnk

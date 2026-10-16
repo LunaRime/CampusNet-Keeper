@@ -25,8 +25,10 @@ add_library(cnk_core STATIC
   src/native/auth/Carrier.cpp
   src/native/auth/AuthFactory.cpp
   src/native/auth/DrcomAuth.cpp
+  src/native/auth/EportalAuth.cpp
+  src/native/auth/SrunAuth.cpp
+  src/native/auth/GenericFormAuth.cpp
   src/native/auth/CustomTemplateAuth.cpp
-  src/native/auth/Stubs.cpp
   src/native/sys/SingleInstance.cpp
   src/native/sys/Autostart.cpp
   src/native/tray/TrayIcon.cpp
@@ -34,6 +36,10 @@ add_library(cnk_core STATIC
   src/native/core/Probe.cpp
   src/native/core/PortalPage.cpp
   src/native/core/Crypto.cpp
+  src/native/core/LocalIp.cpp
+  src/native/core/HtmlForm.cpp
+  src/native/crypto/Hash.cpp
+  src/native/crypto/SrunXEncode.cpp
   src/native/core/Scheduler.cpp
   src/native/core/NetworkChange.cpp
   src/native/core/Cli.cpp
@@ -66,6 +72,10 @@ add_executable(cnk_tests
   tests/probe_target_test.cpp
   tests/auth_factory_test.cpp
   tests/drcom_auth_test.cpp
+  tests/eportal_auth_test.cpp
+  tests/srun_auth_test.cpp
+  tests/generic_form_test.cpp
+  tests/local_ip_test.cpp
   tests/custom_auth_test.cpp
   tests/probe_test.cpp
   tests/portal_page_test.cpp

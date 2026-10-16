@@ -77,7 +77,10 @@ bool IsSecretKey(const std::string& key) {
         // 新式 API（2026-10-16）的账号字段与页面令牌：学号与 rcn 同样不回显
         "user_account", "rcn",
         // 通用表单的账号字段：任务 21 的 GenericFormAuth 会用它提交学号
-        "username"
+        "username",
+        // 其它厂商/模板常见的账号字段名——GET 表单会把字段拼进 URL，经日志脱敏输出；
+        // 漏掉这些名字会让学号原样进 keeper.log（2026-10-16 审阅 P1）
+        "user", "account", "user_name", "login_name", "userid", "uid"
     };
     // ASCII 大小写折叠后比较，键名大小写不影响脱敏。
     std::string lower;

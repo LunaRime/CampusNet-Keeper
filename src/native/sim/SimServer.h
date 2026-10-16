@@ -56,6 +56,10 @@ public:
     int LoginCount() const;
     std::string LastLoginBody() const;
 
+    // 深澜（vendor="srun"）最近一次 get_challenge 下发的令牌；未启用时为空。
+    // 供测试**独立**复算 hmac-md5/info/chksum（不依赖产品代码的公式）。
+    std::string LastChallenge() const;
+
     // 是否已有一次成功的登录（模拟会话建立状态）。
     // /sim_probe 路径据此在「劫持（门户页）」与「正常（nCSI 应答）」间切换，
     // 供端到端验证「探测 → 劫持 → 登录 → 恢复」整链。
