@@ -1,0 +1,67 @@
+using System.Text.Json.Nodes;
+
+namespace CampusNet.UI.Services;
+
+/// <summary>运营商下拉的一项。</summary>
+/// <param name="Value">写回配置的值（对应 <c>isp.preset</c>）。</param>
+/// <param name="Label">界面显示名。</param>
+/// <param name="IsCustom">是否为「自定义…」项（选中时要展开文本框填 <c>isp.custom</c>）。</param>
+public sealed record CarrierOption(string Value, string Label, bool IsCustom = false);
+
+/// <summary>
+/// 运营商下拉的合并规则（计划任务 24 的实现重点）：
+/// <list type="number">
+/// <item>优先用守护进程 <c>get_carrier_options</c> 拿到的**服务器下发**列表（各校不同）；</item>
+/// <item>取不到（守护进程未运行 / 该部署不提供）时**回退内置预设**；</item>
+/// <item>**始终保留「自定义…」项**且在末位；</item>
+/// <item>当前配置值若不在列表里（服务器改版、或用户之前填过），也要补上，避免下拉显示空白。</item>
+/// </list>
+/// </summary>
+public static class CarrierOptions
+{
+    /// <summary>「自定义…」的值（对应 C++ 的 <c>isp.preset == "custom"</c>）。</summary>
+    public const string CustomValue = "custom";
+
+    /// <summary>内置回退预设（与 C++ <c>IspSuffix</c> 支持的取值一致）。</summary>
+    public static IReadOnlyList<CarrierOption> Builtin { get; } = new[]
+    {
+        new CarrierOption("campus", "校园网（默认）"),
+        new CarrierOption("cmcc", "中国移动"),
+        new CarrierOption("telecom", "中国电信"),
+        new CarrierOption("unicom", "中国联通"),
+    };
+
+    public static CarrierOption Custom { get; } = new(CustomValue, "自定义…", true);
+
+    /// <summary>
+    /// 合并出最终绑定列表。<paramref name="fromServer"/> 为守护进程返回值（可为 null）；
+    /// <paramref name="current"/> 为当前配置里的 <c>isp.preset</c>（可为空）。
+    /// </summary>
+    public static List<CarrierOption> Merge(JsonArray? fromServer, string? current)
+    {
+        var list = new List<CarrierOption>();
+
+        if (fromServer is { Count: > 0 })
+        {
+            foreach (var item in fromServer)
+            {
+                var key = item?["key"]?.GetValue<string>();
+                if (string.IsNullOrEmpty(key)) continue;
+                var label = item?["label"]?.GetValue<string>();
+                list.Add(new CarrierOption(key, string.IsNullOrEmpty(label) ? key : label));
+            }
+        }
+
+        if (list.Count == 0) list.AddRange(Builtin);
+
+        // 当前值不在列表里也要能显示（否则下拉会空白，用户以为配置丢了）
+        if (!string.IsNullOrEmpty(current) && current != CustomValue &&
+            !list.Exists(o => o.Value == current))
+        {
+            list.Add(new CarrierOption(current, current));
+        }
+
+        list.Add(Custom);
+        return list;
+    }
+}

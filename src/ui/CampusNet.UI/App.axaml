@@ -26,6 +26,8 @@
 
   <Application.Styles>
     <FluentTheme/>
+    <!-- 把 Fluent 里不属于本设计系统的部分（彩色选中态等）改回令牌 -->
+    <StyleInclude Source="avares://CampusNet.UI/Controls.axaml"/>
   </Application.Styles>
 
 </Application>

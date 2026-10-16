@@ -40,6 +40,7 @@
   <CornerRadius x:Key="CnkRadiusSm">6</CornerRadius>
   <CornerRadius x:Key="CnkRadiusMd">8</CornerRadius>
   <CornerRadius x:Key="CnkRadiusLg">12</CornerRadius>
+  <CornerRadius x:Key="CnkRadiusPill">9999</CornerRadius>
 
   <!-- §3 字号（只取 DESIGN.md 的 type scale） -->
   <x:Double x:Key="CnkFontSizeTitle">24</x:Double>

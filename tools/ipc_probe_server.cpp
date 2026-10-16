@@ -39,9 +39,37 @@ int main(int argc, char** argv) {
                 // 超过 32KB，触发服务端的「响应过大」保护
                 r.ok = true;
                 r.data_json = "{\"blob\":\"" + std::string(40000, 'x') + "\"}";
+            } else if (req.cmd == "get_status") {
+                // 示例状态：让设置界面能显示"在线"这一真实形态（任务 25 才接真状态机）。
+                // IP 用 TEST-NET-1 文档网段，避免把任何真实地址写进仓库。
+                r.ok = true;
+                r.data_json =
+                    R"({"state":"online","message":"在线（示例数据）","local_ip":"192.0.2.5",)"
+                    R"("last_success":1750000000})";
+            } else if (req.cmd == "get_config") {
+                // 示例配置：**全部为假数据**（不涉及任何真实账号）
+                r.ok = true;
+                r.data_json =
+                    R"({"version":1,"active_profile":"默认","settings":{)"
+                    R"("probe_interval_seconds":5,"probe_timeout_seconds":6,)"
+                    R"("probe_url":"http://captive.apple.com/hotspot-detect.html",)"
+                    R"("probe_expect":"Success","retry_backoff_seconds":[5,10,20,30,60],)"
+                    R"("autostart":true,"notify_on_reconnect":true,"log_level":"info",)"
+                    R"("log_max_kb":512,"log_keep_files":3},"profiles":[{)"
+                    R"("name":"默认","auth_url":"http://10.0.0.1/","username":"202400000001@cmcc",)"
+                    R"("vendor":"auto","isp":{"preset":"cmcc","custom":""},)"
+                    R"("custom_template":{"method":"POST","url":"","body":"",)"
+                    R"("success_regex":"","headers":{}},"has_password":true}]})";
+            } else if (req.cmd == "get_carrier_options") {
+                // 服务器下发的运营商（示例数据）
+                r.ok = true;
+                r.data_json =
+                    R"([{"key":"cmcc","label":"中国移动"},{"key":"telecom","label":"中国电信"}])";
             } else {
                 r.ok = false;
-                r.error = "未知命令（探针仅支持 ping/echo/blob）: " + req.cmd;
+                r.error =
+                    "未知命令（探针支持 ping/echo/blob/get_status/get_config/get_carrier_options）: " +
+                    req.cmd;
             }
             return r;
         },

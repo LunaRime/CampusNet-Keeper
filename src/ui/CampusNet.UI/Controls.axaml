@@ -1,0 +1,49 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!--
+    控件级样式覆盖：把 Fluent 主题里**不属于本设计系统**的部分改回令牌。
+    shadcn/ui 是纯单色系统：选中/悬停靠「面色阶」表达（surface-strong），
+    不用彩色强调；Fluent 默认的青色高亮会直接破坏这个系统（截图里抓到过）。
+    色值一律用 {DynamicResource Cnk*}，本文件不出现裸色值。
+  -->
+
+  <!-- 列表项：选中 = 面色阶 + 正文色；悬停 = 面色阶 -->
+  <Style Selector="ListBoxItem">
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+    <Setter Property="Padding" Value="8,6"/>
+  </Style>
+  <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+  <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+  <Style Selector="ListBoxItem:selected:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+
+  <!-- 下拉项：同一套处理 -->
+  <Style Selector="ComboBoxItem:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+  <Style Selector="ComboBoxItem:selected /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+
+  <!-- 输入框聚焦：边框用聚焦环色（完整 2px 环 + offset 见映射 §6，后续在任务 25 补齐） -->
+  <Style Selector="TextBox:focus /template/ Border#PART_BorderElement">
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkRing}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+  </Style>
+  <Style Selector="ComboBox:focus /template/ Border#Background">
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkRing}"/>
+  </Style>
+
+</Styles>

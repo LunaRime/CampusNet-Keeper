@@ -9406,6 +9406,34 @@ git add -A
 git commit -m "feat: 设置界面，含服务器下发的运营商下拉与多配置切换"
 ```
 
+> **✅ 实施注记（2026-10-16）**：界面本体已实现并**可视化核验**（截图见
+> `docs/design/ui-settings-20261016.png`）。左侧档案栏（新增/删除/切换）、顶部状态条
+> （状态灯 + 本机 IP + 上次登录 + 立即重连）、中部表单（认证网址/账号/密码/运营商/认证方式）、
+> 高级折叠区、底部保存与刷新，全部按 DESIGN.md 的组件规格渲染。
+>
+> **落地细节**：
+> - **状态灯不写死颜色**：原文示例用裸色值（`#2E7D32` 等），实现改为 VM 暴露
+>   `IsOnline/IsBusy/IsFailed` 三个样式类开关，颜色在 XAML 里取令牌
+>   （`CnkSuccess/CnkInfo/CnkDanger`，映射 §5）——这样明暗主题切换、以及"不自造 token"
+>   这条规矩都成立。静态检查脚本会断言 XAML 里不出现裸色值。
+> - **选中态回归单色系统**：Fluent 默认的**青色高亮**不属于 shadcn/ui（截图中抓到），
+>   已在 `Controls.axaml` 里把 `ListBoxItem/ComboBoxItem` 的选中与悬停改回
+>   `CnkSurfaceStrong` + `CnkText`；输入框聚焦边框改用 `CnkRing`。
+> - **运营商下拉**：`get_carrier_options` → 失败/为空回退内置四项 → **恒有「自定义…」**
+>   → 当前值不在列表里也补上（避免下拉空白）。合并逻辑放在
+>   `CampusNet.UI.Core/Services/CarrierOptions.cs`，**有 6 条自检钉住**（沙箱内可跑）。
+> - **密码**：`Profile.PasswordPlain` 非空才序列化，且**从不出现 `password_enc`**；
+>   `has_password` 只读回显。UI 进程不接触已存密码——有 4 条自检钉住。
+> - **配置镜像**：`CampusNet.UI.Core/Models/AppConfig.cs` 与 C++ `Config.h` 字段逐字对应
+>   （snake_case），自检覆盖往返与中文。
+> - 顺带给测试探针 `cnk_ipc_probe` 加了 `get_status`/`get_config`/`get_carrier_options`
+>   的**示例数据**应答，这样界面在没有真守护进程时也能完整呈现（示例 IP 用 TEST-NET-1
+>   文档网段、账号为假数据，仓库里不出现任何真实凭据）。
+>
+> **验证**：`dotnet build` 零错误零警告；令牌检查 4/4；核心自检 **17/17**；窗口截图核验。
+> **未完成**：Step 4 里"启动守护进程后显示在线"这一条要等**任务 25** 把
+> `get_status/get_config/set_config` 接到真实状态机（现在界面连的是探针的示例数据）。
+
 ---
 
 ## 任务 25：高级设置与日志面板
