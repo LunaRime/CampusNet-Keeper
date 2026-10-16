@@ -10363,6 +10363,38 @@ git commit -m "feat: 按需加载 CLR 并解压内嵌 UI，实现单 exe 双形�
 >
 > **发版**：`git push origin master:main` → `git tag -a v0.1.0 -m …` → 推送 tag 触发 Release。
 
+> **🔍 独立审阅（轻量）与修复（2026-10-17）**：结论 **FAIL（1×P0 + 2×P1）**，均已处置。
+>
+> **P0（真实数据截图）**：`docs/design/ui-real-daemon-20261017.png`（任务 25 真机截图）含真实学号、
+> 真实门户地址与用户 SID 管道名，且**已在 origin/main 的历史里**（`e6807ae` 引入），README 当时还引用了它。
+> 处置：① 用 Pillow 把学号/门户地址/日志里的 SID 打成实心块，改名
+> `ui-real-daemon-20261017-redacted.png`（原件不进新历史）；② README 改用两张**合成示例数据**截图
+> （`ui-settings-20261016.png`、`ui-task25-20261016.png`）并加注；③ 按用户决定**重写历史**
+> （`filter-branch --index-filter` 删除旧路径 + 清 refs/reflog + gc）后强推，再用显式代理全新克隆、
+> 以**原件的 sha256** 为判据复核"远端历史 0 命中"。
+>
+> **P1-1（脱敏门禁对栅格图结构性失效）**：`audit_redaction.py` 原来只扫 `docs/evidence/`，于是
+> "审计全绿"与"仓库里躺着真实学号截图"可以同时发生。处置：审计范围扩到**整个仓库**
+> （排除 `.git`/`build*`/`dist`/`build-ui`/`third_party`），文本文件加「学号样数字串 / MAC / 私有网段」
+> 三个高信号模式，并新增 **`SAFE_ASSETS` 资产白名单**——任何未登记的图片/压缩包都会让门禁失败
+> （栅格图里的内容文本模式看不见，只能靠"登记 + 逐张看图"）。
+>
+> **P1-2（证据必须覆盖被审修订）**：`package.ps1` 在出包之后又被改过，因此**改完重跑了一次完整打包**
+> 才提交推送（两个包的自检结论以重跑那次为准）。
+>
+> **P2 已修**：① 嵌套构建的 stdout 不再被变量/管道吞掉（首次发版排障正需要这些明细）；
+> ② 包自检前把 `[Console]::OutputEncoding` 钉成 UTF-8；③ `ci.yml` 精简版自检里的 `$_.Line` 改为 `$_`
+> （原写法只打印空行）；④ `dist` 清理改清 `*.zip`、`try/finally` 收尾 stage/checkRoot、
+> `-LiteOnly -FullOnly` 同时给直接报错；⑤ README 写明完整版**仍是框架依赖**（`-SelfContainedPayload`
+> 未实测）、内存口径改成实测值（总工作集约 15 MB / 进程私有约 2.7 MB；spec S2 的「<10 MB」按
+> 任务管理器"内存"列的专用工作集口径达成）、`<版本>` 指带 v 的版本串；⑥ LICENSE 版权行按计划改为
+> `Copyright (c) 2026 LunaRime`；⑦ 包内补齐 README 引用的 `docs/M1-实测指南.md`、`docs/design/*.png`、
+> `docs/evidence/newapi_login_20261016.md`（否则解压后是死链）；⑧ `docs/evidence/README.md` 注明
+> `dingtalk_password:123456` 是 Dr.COM 门户固件默认值（公开出厂配置，非真实凭据）。
+>
+> **首跑即 dry run**：release job 从未在 CI 执行过（历史 6 次 run 里全是 skipped），所以第一次推 tag
+> 就是它的首跑；失败就删 tag/Release 重来（私有仓库，无外部影响）。
+
 **Files:**
 - Create: `scripts/build.ps1`
 - Create: `scripts/package.ps1`

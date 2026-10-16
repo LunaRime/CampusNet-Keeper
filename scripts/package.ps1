@@ -59,8 +59,8 @@ Write-Host "打包版本：$tag（Version.h = $codeVersion）" -ForegroundColor 
 
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 Remove-Item $checkRoot -Recurse -Force -ErrorAction SilentlyContinue
-# 清掉上一轮的包：CI 用 dist/*.zip 上传，留着旧版本会一起发出去
-Get-ChildItem $dist -Filter 'CampusNet-Keeper-*-win-x64.zip' -ErrorAction SilentlyContinue |
+# 清掉上一轮的所有包：CI 用 dist/*.zip 上传，留着旧版本/旧命名的 zip 会一起发出去
+Get-ChildItem $dist -Filter '*.zip' -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------- 打包 + 自检
@@ -87,8 +87,22 @@ function Build-Package([string]$flavor) {
         $p = Join-Path $root $doc
         if (Test-Path $p) { Copy-Item $p $stage -Force }
     }
+    # README 里引用的是 docs/ 下的相对路径：按原目录结构放进包里，否则解压后图/文档全是坏链。
+    # ⚠ 只放**合成示例数据**的截图（真实学号/门户地址的截图一律不入库、不进包）——
+    #   docs/evidence/audit_redaction.py 的资产白名单会强制这一步被人看过。
+    $docsStage = Join-Path $stage 'docs'
+    New-Item -ItemType Directory -Force -Path (Join-Path $docsStage 'design') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $docsStage 'evidence') | Out-Null
     $guide = Join-Path $root 'docs\M1-实测指南.md'
-    if (Test-Path $guide) { Copy-Item $guide $stage -Force }
+    if (Test-Path $guide) { Copy-Item $guide $docsStage -Force }
+    # README 的认证策略表引用了这份证据说明，带进包免得解压后是死链
+    $evidence = Join-Path $root 'docs\evidence\newapi_login_20261016.md'
+    if (Test-Path $evidence) { Copy-Item $evidence (Join-Path $docsStage 'evidence') -Force }
+    foreach ($shot in @('docs\design\ui-settings-20261016.png',
+                        'docs\design\ui-task25-20261016.png')) {
+        $p = Join-Path $root $shot
+        if (Test-Path $p) { Copy-Item $p (Join-Path $docsStage 'design') -Force }
+    }
 
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
 
@@ -100,20 +114,28 @@ function Build-Package([string]$flavor) {
     $packedExe = Join-Path $checkDir 'CampusNet-Keeper.exe'
     if (-not (Test-Path $packedExe)) { Die "$zipName 里没有 CampusNet-Keeper.exe" }
 
-    $verOut = & $packedExe --version 2>&1
-    if ($LASTEXITCODE -ne 0 -or ($verOut -notmatch [regex]::Escape($codeVersion))) {
-        Die "解包后的 exe --version 异常（退出码 $LASTEXITCODE，输出：$verOut）"
+    # 原生 exe 输出中文：先把控制台编码钉成 UTF-8，免得下面的中文断言因解码口径不同而误报
+    $oldEncoding = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    try {
+        $verOut = @(& $packedExe --version 2>&1)
+        $verRc = $LASTEXITCODE
+        if ($verRc -ne 0 -or (($verOut -join "`n") -notmatch [regex]::Escape($codeVersion))) {
+            Die "解包后的 exe --version 异常（退出码 $verRc，输出：$($verOut -join ' / ')）"
+        }
+        $infoOut = @(& $packedExe --ui-info 2>&1)
+        $infoRc = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $oldEncoding
     }
-    $infoOut = & $packedExe --ui-info 2>&1
-    $infoRc = $LASTEXITCODE
     $wantRc = if ($isFull) { 0 } else { 3 }
     if ($infoRc -ne $wantRc) {
         Die ("解包后的 exe 形态不符：--ui-info 退出码 $infoRc，期望 $wantRc" +
              "（完整版=0 内嵌载荷就绪；精简版=3 无载荷）。输出：`n" + ($infoOut -join "`n"))
     }
-    if ($isFull -and -not ($infoOut -match '全部为存储型')) { Die '完整版载荷里含压缩条目（运行时会被拒绝）' }
-    if ($isFull -and -not ($infoOut -match '载荷校验: 通过')) { Die '完整版载荷未通过干跑校验' }
-    if (-not $isFull -and ($infoOut -match '载荷: 存在')) { Die '精简版包里居然有内嵌载荷' }
+    if ($isFull -and -not (($infoOut -join "`n") -match '全部为存储型')) { Die '完整版载荷里含压缩条目（运行时会被拒绝）' }
+    if ($isFull -and -not (($infoOut -join "`n") -match '载荷校验: 通过')) { Die '完整版载荷未通过干跑校验' }
+    if (-not $isFull -and (($infoOut -join "`n") -match '载荷: 存在')) { Die '精简版包里居然有内嵌载荷' }
 
     $info = Get-Item $zip
     Ok ("{0}  {1:N1} MB（解包自检：--version OK，--ui-info 退出 {2}）" -f $zipName, ($info.Length / 1MB), $infoRc)
@@ -121,11 +143,20 @@ function Build-Package([string]$flavor) {
     return $zip
 }
 
-$made = @()
-if (-not $FullOnly) { $made += Build-Package 'lite' }
-if (-not $LiteOnly) { $made += Build-Package 'full' }
+# -LiteOnly 与 -FullOnly 同时给会一个包都不打（历史上会"退出 0 却零产物"）
+if ($LiteOnly -and $FullOnly) { Die '-LiteOnly 与 -FullOnly 不能同时指定' }
 
-Remove-Item $checkRoot -Recurse -Force -ErrorAction SilentlyContinue
+# 临时目录与 stage 是"半成品"的来源：无论成功失败都收尾
+try {
+    # 刻意**裸调用**（既不赋值 `$x = …` 也不 `| Out-Null`）：任何捕获/管道都会把嵌套 pwsh 的
+    # 全部 stdout 吞掉，CI 日志里就看不到 cmake/dotnet/测试/--ui-info 明细了（审阅 P2-2）
+    if (-not $FullOnly) { Build-Package 'lite' }
+    if (-not $LiteOnly) { Build-Package 'full' }
+} finally {
+    Remove-Item $checkRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem $dist -Directory -Filter 'stage-*' -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Step '发布包'
 Get-ChildItem $dist -Filter '*.zip' | Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } } |

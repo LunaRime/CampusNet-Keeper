@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           $out = & .\build-m1\Release\CampusNet-Keeper.exe --ui-info 2>&1
-          $out | ForEach-Object { $_.Line }
+          $out | ForEach-Object { $_ }
           if ($LASTEXITCODE -ne 3) {
             Write-Error "--ui-info 应返回 3（本构建没有 build/generated 载荷），实际 $LASTEXITCODE"
             exit 1
