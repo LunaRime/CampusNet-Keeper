@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using CampusNet.UI.Models;
 using CampusNet.UI.Services;
@@ -10,10 +11,11 @@ namespace CampusNet.UI.ViewModels;
 /// <summary>认证方式下拉项（对应 C++ 的 <c>vendor</c> 字段）。</summary>
 public sealed record VendorOption(string Value, string Label);
 
-/// <summary>设置界面的主视图模型（计划任务 24）。</summary>
+/// <summary>设置界面的主视图模型（计划任务 24/25）。</summary>
 public partial class MainViewModel : ObservableObject
 {
     private readonly IpcClient _ipc;
+    private readonly CancellationTokenSource _pollCts = new();
 
     public ObservableCollection<ProfileViewModel> Profiles { get; } = new();
     public ObservableCollection<CarrierOption> AllCarrierOptions { get; } = new();
@@ -33,12 +35,14 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private CarrierOption? _selectedCarrier;
     [ObservableProperty] private VendorOption? _selectedVendor;
     [ObservableProperty] private string _statusText = "正在连接守护进程…";
-    [ObservableProperty] private string _state = "unknown";   // 供样式类使用（online/offline/…）
+    [ObservableProperty] private string _state = "unknown";
     [ObservableProperty] private bool _daemonRunning;
     [ObservableProperty] private string _localIp = "—";
     [ObservableProperty] private string _lastSuccessText = "从未";
     [ObservableProperty] private bool _showAdvanced;
     [ObservableProperty] private string? _lastError;
+
+    /// <summary>日志面板内容（每 2 秒拉一次 <c>get_log_tail</c>）。</summary>
     [ObservableProperty] private string _logText = "";
 
     // 高级设置（镜像 C++ Settings）。数值型用 decimal 以便直接绑 NumericUpDown。
@@ -50,10 +54,14 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _retryBackoffText = "5, 10, 20, 30, 60";
     [ObservableProperty] private string _logLevel = "info";
 
-    // 状态指示灯用的样式类开关（颜色一律来自设计令牌，见 MainWindow.axaml 的 Style）
     public bool IsOnline => State == "online";
     public bool IsBusy => State == "authenticating";
     public bool IsFailed => State is "auth_failed" or "not_campus";
+
+    /// <summary>日志目录（「打开日志目录」按钮用）。</summary>
+    public static string LogDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "CampusNet-Keeper", "logs");
 
     public MainViewModel() : this(new IpcClient()) { }
 
@@ -61,6 +69,7 @@ public partial class MainViewModel : ObservableObject
     {
         _ipc = ipc;
         _ = RefreshAsync();
+        _ = PollLogAsync();
     }
 
     partial void OnStateChanged(string value)
@@ -72,7 +81,6 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnSelectedProfileChanged(ProfileViewModel? value)
     {
-        // 切换档案时同步下拉与高级区（运营商项按该档案补齐，避免显示空白）
         SetCarrierOptions(CarrierOptions.Merge(null, value?.IspPreset));
         SelectedVendor = Vendors.FirstOrDefault(v => v.Value == value?.Vendor) ?? Vendors[0];
     }
@@ -93,7 +101,54 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void TogglePassword()
     {
+        // 只切换显示本回合输入的字符：**不去向守护进程索取已存密码**
+        //（任务 24 的硬约束：UI 进程不接触已存密码的明文）
         if (SelectedProfile is not null) SelectedProfile.ShowPassword = !SelectedProfile.ShowPassword;
+    }
+
+    /// <summary>日志轮询：每 2 秒拉一次尾部日志。守护进程不在时静默跳过。</summary>
+    private async Task PollLogAsync()
+    {
+        while (!_pollCts.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), _pollCts.Token).ConfigureAwait(false);
+                if (!DaemonRunning) continue;
+
+                var resp = await _ipc.SendAsync("get_log_tail", null, _pollCts.Token)
+                                    .ConfigureAwait(false);
+                var lines = resp?["data"]?["lines"] as JsonArray;
+                if (lines is null) continue;
+
+                LogText = string.Join('\n', lines.Select(l => l?.GetValue<string>() ?? ""));
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (IpcException)
+            {
+                // 守护进程刚退出等情况：下一轮再说，不在界面刷错误
+            }
+        }
+    }
+
+    [RelayCommand]
+    private void OpenLogFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(LogDirectory);
+            Process.Start(new ProcessStartInfo("explorer.exe", $"\"{LogDirectory}\"")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            LastError = "打开日志目录失败：" + ex.Message;
+        }
     }
 
     [RelayCommand]
@@ -161,19 +216,16 @@ public partial class MainViewModel : ObservableObject
                           ?? Profiles.FirstOrDefault();
     }
 
-    /// <summary>
-    /// 取服务器下发的运营商列表并合并（回退内置 + 恒有「自定义…」）。
-    /// 见 <see cref="CarrierOptions.Merge"/> 的四条规则。
-    /// </summary>
     private async Task RefreshCarrierOptionsAsync(string? current)
     {
-        JsonArray? fromServer = null;
+        JsonNode? fromServer = null;
         if (DaemonRunning)
         {
             try
             {
                 var resp = await _ipc.SendAsync("get_carrier_options");
-                if (resp?["ok"]?.GetValue<bool>() == true) fromServer = resp["data"] as JsonArray;
+                // 形态：{"options":[{"id","name","suffix"}], ...}；Merge 也吃裸数组
+                if (resp?["ok"]?.GetValue<bool>() == true) fromServer = resp["data"];
             }
             catch (IpcException)
             {
@@ -232,11 +284,17 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            var resp = await _ipc.SendAsync("set_config", new JsonObject { ["config"] = cfg.ToJson() });
+            // 注意：config 必须是 **JSON 对象**（守护进程侧按对象解析）；不能塞字符串。
+            var resp = await _ipc.SendAsync("set_config", new JsonObject
+            {
+                ["config"] = JsonNode.Parse(cfg.ToJson()),
+            });
+
             if (resp?["ok"]?.GetValue<bool>() == true)
             {
                 StatusText = "已保存";
-                foreach (var vm in Profiles) vm.PasswordInput = "";
+                LastError = null;
+                foreach (var vm in Profiles) vm.PasswordInput = "";   // 已交给守护进程，界面不再留存
             }
             else
             {
@@ -250,8 +308,20 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void ReconnectNow() =>
-        StatusText = "已请求立即重连…（守护进程的命令接口在任务 25 接入）";
+    private async Task ReconnectNowAsync()
+    {
+        try
+        {
+            var resp = await _ipc.SendAsync("reconnect_now");
+            StatusText = resp?["ok"]?.GetValue<bool>() == true
+                ? "已触发立即重连"
+                : resp?["error"]?.GetValue<string>() ?? "重连请求失败";
+        }
+        catch (IpcException ex)
+        {
+            LastError = ex.Message;
+        }
+    }
 
     private static List<int> ParseBackoff(string text)
     {

@@ -61,10 +61,22 @@ int main(int argc, char** argv) {
                     R"("custom_template":{"method":"POST","url":"","body":"",)"
                     R"("success_regex":"","headers":{}},"has_password":true}]})";
             } else if (req.cmd == "get_carrier_options") {
-                // 服务器下发的运营商（示例数据）
+                // 形态与守护进程一致：{"options":[{"id","name","suffix"}], title, default_id}
                 r.ok = true;
                 r.data_json =
-                    R"([{"key":"cmcc","label":"中国移动"},{"key":"telecom","label":"中国电信"}])";
+                    R"({"title":"请选择运营商","default_id":"cmcc","options":[)"
+                    R"({"id":"cmcc","name":"中国移动","suffix":"@cmcc"},)"
+                    R"({"id":"telecom","name":"中国电信","suffix":"@telecom"},)"
+                    R"({"id":"campus","name":"校园网（默认）","suffix":""}]})";
+            } else if (req.cmd == "get_log_tail") {
+                // 形态与守护进程一致：{"lines":[...]}
+                r.ok = true;
+                r.data_json =
+                    R"({"lines":[)"
+                    R"("2026-10-16 23:10:01 [INFO ] 进入托盘守护循环（示例数据）",)"
+                    R"("2026-10-16 23:10:06 [INFO ] 探测结果：Online（第 1 次探测）",)"
+                    R"("2026-10-16 23:10:06 [INFO ] 设置界面 IPC 已就绪",)"
+                    R"("2026-10-16 23:10:11 [INFO ] 探测结果：Online（第 2 次探测）"]})";
             } else {
                 r.ok = false;
                 r.error =

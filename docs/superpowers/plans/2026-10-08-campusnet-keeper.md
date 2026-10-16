@@ -9663,6 +9663,34 @@ git add -A
 git commit -m "feat: 日志面板与守护进程 IPC 命令实现"
 ```
 
+> **🟡 实施注记（2026-10-16，主体完成）**
+> **守护进程侧**：新增 `src/native/ipc/DaemonCommands.{h,cpp}`（命令实现）与
+> `src/native/core/ConfigForUi.{h,cpp}`（两段安全关键逻辑），并在 `tray/TrayIcon.cpp` 的守护
+> 循环里接上 `PipeServer`（管道起不来只记日志、不影响守护主功能；生命周期由局部变量管理，
+> 函数返回即 Stop ✓）。已实现：`get_status` / `reconnect_now` / `get_log_tail` /
+> `get_config` / `set_config` / `get_carrier_options` ✓
+> **UI 侧**：`Views/LogPanel.axaml`（等宽可选中 + 打开日志目录 + 新行自动滚到底）、每 2 秒
+> `get_log_tail` 轮询、`reconnect_now` 接到真命令、`set_config` 改为传 **JSON 对象**、
+> 运营商解析兼容 `{options:[{id,name,suffix}]}`（计划形态）与裸数组、默认窗口高度调到能
+> 一屏看到日志。
+>
+> **⚠ 两处按更严的规矩执行 / 记档的偏差**：
+> ① **刻意不实现 `get_password`**：任务 24 明令「UI 进程从头到尾不接触已存密码的明文」，
+> 而该命令会把明文交给界面；冲突时按更严的执行（界面上的「显示」只揭示用户本回合输入的字符）。
+> ② `get_status` 的 `last_success` 目前恒为 0（界面显示「从未」）：计划引用的
+> `sch->LastSuccessUnix()` **在代码里并不存在**（Scheduler 只暴露 State/LastMessage/LocalIp/
+> LastPortalBody/RunProbeNow/ForceReconnect/SetConfig），需要补一个访问器才能真正上报。
+>
+> **验证**：新增 `tests/config_for_ui_test.cpp` 7 条用例钉住两段安全逻辑（**给 UI 的配置绝不
+> 含 `password_enc`、只给 `has_password`**；新密码优先、否则按档案名沿用旧密码、空串视为不改、
+> 新增档案留空、非法输入返回错误不抛异常）→ 全量 **247 用例 / 245 通过**（仍只剩 2 项环境性）；
+> 核心自检 17/17；UI 构建零错误零警告；日志面板截图核验
+> （`docs/design/ui-task25-20261016.png`）。
+>
+> **仍未做**：`test_profile`（规格里有，实现未做）；`last_success` 访问器；
+> **真实守护进程 ↔ UI 的端到端**（会启动守护进程并让它自动登录校园网，属于影响用户网络的
+> 动作，需用户同意后再跑；目前界面连的是探针的示例数据）。
+
 ---
 
 ## 任务 26：按需加载 CLR 与内嵌 UI

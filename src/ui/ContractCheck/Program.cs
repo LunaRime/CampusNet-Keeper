@@ -57,9 +57,11 @@ Check(fallback.Any(o => o.IsCustom), "始终保留「自定义…」项");
 Check(fallback.Any(o => o.Value == "campus"), "取不到服务器列表时回退内置预设");
 Check(fallback[^1].IsCustom, "「自定义…」在末位");
 
-var fromServer = JsonNode.Parse("""[{"key":"cmcc","label":"移动"}]""")!.AsArray();
+// 守护进程的实际形态（计划任务 25）：{"options":[{"id","name","suffix"}]}
+var fromServer = JsonNode.Parse(
+    """{"options":[{"id":"cmcc","name":"移动","suffix":"@cmcc"}],"title":"请选择运营商","default_id":"cmcc"}""")!;
 var merged = CarrierOptions.Merge(fromServer, "cmcc");
-Check(merged[0].Value == "cmcc" && merged[0].Label == "移动", "服务器项的 key/label 原样使用");
+Check(merged[0].Value == "cmcc" && merged[0].Label == "移动", "服务器项的 id/name 原样使用");
 Check(merged[^1].IsCustom, "服务器列表下同样保留「自定义…」");
 
 var stale = CarrierOptions.Merge(fromServer, "telecom");

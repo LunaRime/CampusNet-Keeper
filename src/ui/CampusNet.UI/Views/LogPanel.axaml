@@ -1,0 +1,40 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CampusNet.UI.ViewModels"
+             x:Class="CampusNet.UI.Views.LogPanel"
+             x:DataType="vm:MainViewModel">
+
+  <!--
+    日志面板（任务 25）：等宽 + 可选中，白底发丝线卡片（DESIGN.md 的 code-block 规格），
+    每 2 秒由视图模型刷新 get_log_tail；新行到达时自动滚到底部（见 code-behind）。
+  -->
+  <Border Background="{DynamicResource CnkSurface}"
+          BorderBrush="{DynamicResource CnkBorder}"
+          BorderThickness="1"
+          CornerRadius="{DynamicResource CnkRadiusMd}"
+          Padding="12">
+    <Grid RowDefinitions="Auto,*">
+      <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
+        <TextBlock Grid.Column="0" Text="日志" FontWeight="SemiBold"
+                   Foreground="{DynamicResource CnkText}"
+                   VerticalAlignment="Center"/>
+        <Button Grid.Column="1" Content="打开日志目录" Height="28" Padding="10,0"
+                CornerRadius="{DynamicResource CnkRadiusSm}"
+                Background="{DynamicResource CnkSurfaceStrong}"
+                Foreground="{DynamicResource CnkText}"
+                Command="{Binding OpenLogFolderCommand}"/>
+      </Grid>
+
+      <ScrollViewer x:Name="LogScroll" Grid.Row="1" Height="220"
+                    HorizontalScrollBarVisibility="Auto"
+                    VerticalScrollBarVisibility="Auto">
+        <SelectableTextBlock x:Name="LogTextBlock"
+                             Text="{Binding LogText}"
+                             FontFamily="{DynamicResource CnkFontMono}"
+                             FontSize="{DynamicResource CnkFontSizeMono}"
+                             Foreground="{DynamicResource CnkTextSecondary}"
+                             TextWrapping="NoWrap"/>
+      </ScrollViewer>
+    </Grid>
+  </Border>
+</UserControl>

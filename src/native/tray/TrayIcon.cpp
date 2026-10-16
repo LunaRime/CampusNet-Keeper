@@ -3,6 +3,8 @@
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/NetworkChange.h"
+#include "ipc/DaemonCommands.h"
+#include "ipc/PipeServer.h"
 #include <shellapi.h>
 #include <memory>
 #include <thread>
@@ -233,6 +235,20 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg) {
         netwatch.Stop();
         tray.Destroy();
         return false;
+    }
+
+    // ---- 设置界面的 IPC（任务 25）----
+    // 起命名管道服务并把命令交给 DaemonCommands；管道不可用时只记日志、不影响守护主功能。
+    // 生命周期由局部变量管理：本函数返回时 ~PipeServer 会 Stop()（有界、不阻塞退出）。
+    PipeServer ipc;
+    {
+        std::string ipc_err;
+        if (ipc.Start([sch](const IpcRequest& req) { return HandleDaemonCommand(req, *sch); },
+                      ipc_err)) {
+            LogInfo("设置界面 IPC 已就绪：" + ipc.Name());
+        } else {
+            LogWarn("设置界面 IPC 启动失败：" + ipc_err + "（界面将连不上，守护功能不受影响）");
+        }
     }
 
     RunState last_state = RunState::Disconnected;

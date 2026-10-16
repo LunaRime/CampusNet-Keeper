@@ -34,20 +34,23 @@ public static class CarrierOptions
     public static CarrierOption Custom { get; } = new(CustomValue, "自定义…", true);
 
     /// <summary>
-    /// 合并出最终绑定列表。<paramref name="fromServer"/> 为守护进程返回值（可为 null）；
+    /// 合并出最终绑定列表。<paramref name="fromServer"/> 为守护进程 <c>get_carrier_options</c>
+    /// 的返回（计划任务 25 的形态是 <c>{"options":[{"id","name","suffix"}],"title","default_id"}</c>；
+    /// 为了向前兼容也接受裸数组，以及 <c>{key,label}</c> 这种旧字段名）。
     /// <paramref name="current"/> 为当前配置里的 <c>isp.preset</c>（可为空）。
     /// </summary>
-    public static List<CarrierOption> Merge(JsonArray? fromServer, string? current)
+    public static List<CarrierOption> Merge(JsonNode? fromServer, string? current)
     {
         var list = new List<CarrierOption>();
+        var array = fromServer as JsonArray ?? fromServer?["options"] as JsonArray;
 
-        if (fromServer is { Count: > 0 })
+        if (array is { Count: > 0 })
         {
-            foreach (var item in fromServer)
+            foreach (var item in array)
             {
-                var key = item?["key"]?.GetValue<string>();
+                var key = item?["id"]?.GetValue<string>() ?? item?["key"]?.GetValue<string>();
                 if (string.IsNullOrEmpty(key)) continue;
-                var label = item?["label"]?.GetValue<string>();
+                var label = item?["name"]?.GetValue<string>() ?? item?["label"]?.GetValue<string>();
                 list.Add(new CarrierOption(key, string.IsNullOrEmpty(label) ? key : label));
             }
         }

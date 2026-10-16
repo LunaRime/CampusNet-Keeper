@@ -2,10 +2,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:CampusNet.UI.ViewModels"
         xmlns:svc="using:CampusNet.UI.Services"
+        xmlns:views="using:CampusNet.UI.Views"
         x:Class="CampusNet.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="校园网助手 — 设置"
-        Width="920" Height="660" MinWidth="760" MinHeight="520"
+        Width="920" Height="812" MinWidth="760" MinHeight="560"
         Background="{DynamicResource CnkBg}"
         FontFamily="{DynamicResource CnkFontSans}">
 
@@ -284,6 +285,9 @@
               </StackPanel>
             </Expander>
           </Border>
+
+          <!-- 日志面板（任务 25）：每 2 秒刷新，自动滚到底 -->
+          <views:LogPanel/>
 
         </StackPanel>
       </ScrollViewer>
