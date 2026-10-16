@@ -288,13 +288,16 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         // 网络恢复（返回 nCSI 应答）——用于验证「探测 → 劫持 → 登录 → 恢复」整链。
         //
         // fail_mode==5：劫持以「裸 302」表达——真实形态（2026-10-16 实测）为
-        // `Server: NetEngine Server 1.0`（拦截器特征，**非 Dr.COM 指纹**）、空正文，
-        // 指纹只在跳转目标页。Location 指向本模拟器的第二监听端口（「同 IP、不同端口」
-        // ——spec 判定规则明确要求判为异主机），客户端必须抓取该目标页才能完成识别。
+        // `Server: NetEngine Server 1.0`（拦截器特征，**非 Dr.COM 指纹**）、空正文、
+        // HTTP/1.0；指纹只在跳转目标页。Location 指向本模拟器的第二监听端口（「同 IP、
+        // 不同端口」——spec 判定规则明确要求判为异主机），客户端必须抓取该目标页才能完成识别。
         if (opts.fail_mode == 5 && !logged_in.load()) {
             std::ostringstream oss;
-            oss << "HTTP/1.1 302 Found\r\n"
+            oss << "HTTP/1.0 302 Moved Temporarily\r\n"
+                << "Allow: GET,POST,HEAD\r\n"
+                << "MIME-Version: 1.0\r\n"
                 << "Server: NetEngine Server 1.0\r\n"
+                << "Pragma: No-Cache\r\n"
                 << "Location: http://127.0.0.1:" << portal_port << "/a79.htm\r\n"
                 << "Content-Length: 0\r\n"
                 << "Connection: close\r\n\r\n";

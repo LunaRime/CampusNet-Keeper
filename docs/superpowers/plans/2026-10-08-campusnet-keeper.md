@@ -3492,6 +3492,9 @@ git commit -m "feat: 认证策略接口与工厂，先以桩实现占位"
 
 - 目标：`{auth_url 的 host 与 port 部分}/eportal/?c=ACSetting&a=Login&url=drappall`
   - 由 `profile.auth_url` 推导：取其 scheme+host，端口**强制为 801**（若 `auth_url` 已带端口则沿用）
+  - ⚠ **实测修订（2026-10-16，见任务 18「实测回修 2」）**：端口**不再强制 801**——老式
+    c=ACSetting 协议与门户页同源（801 只服务 SPA/新 API），实现改为取 `auth_url` 自身端口
+    （未显式写端口则按 scheme 缺省 80/443）。下文「成功判定」级别与 17 个字段不变。
 - 方法：`POST`，`Content-Type: application/x-www-form-urlencoded`
 - 正文 17 个字段，`DDDDD` 为 `username + IspSuffix(profile)`，`upass` 为密码，其余按 spec §7.2 的固定值
 

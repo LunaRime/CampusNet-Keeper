@@ -10,29 +10,34 @@ namespace cnk {
 
 namespace {
 
-// 取信息页里 msga='...' / msga="..." 的值（首个命中，限长防异常回显）。
+// 取信息页里 msga='...' / msga="..." 的值（首个合法命中，限长防异常回显）。
 // msga 是厂商对该次登录的原始判定码（实测样例：'userid error1'/'userid error2'），
 // 诊断价值高，随失败信息一并呈现。
 std::string ExtractJsString(const std::string& body, const std::string& name) {
-    const std::string needle = name + "=";
     size_t pos = 0;
-    while ((pos = body.find(needle, pos)) != std::string::npos) {
+    while ((pos = body.find(name, pos)) != std::string::npos) {
         const bool at_boundary =
             pos == 0 ||
             !(std::isalnum((unsigned char)body[pos - 1]) || body[pos - 1] == '_');
+        size_t i = pos + name.size();
         if (at_boundary) {
-            size_t i = pos + needle.size();
-            while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) ++i;
-            if (i >= body.size()) return {};
-            const char quote = body[i];
-            if (quote != '\'' && quote != '"') return {};
-            const size_t end = body.find(quote, i + 1);
-            if (end == std::string::npos) return {};
-            std::string v = body.substr(i + 1, end - i - 1);
-            if (v.size() > 64) v.resize(64);
-            return v;
+            while (i < body.size() && std::isspace((unsigned char)body[i])) ++i;
+            if (i < body.size() && body[i] == '=') {
+                ++i;
+                while (i < body.size() && std::isspace((unsigned char)body[i])) ++i;
+                if (i < body.size() && (body[i] == '\'' || body[i] == '"')) {
+                    const char quote = body[i];
+                    const size_t end = body.find(quote, i + 1);
+                    if (end != std::string::npos) {
+                        std::string v = body.substr(i + 1, end - i - 1);
+                        if (v.size() > 64) v.resize(64);
+                        return v;
+                    }
+                }
+            }
         }
-        pos += needle.size();
+        // 该处命中非法形态时继续找后续出现（防首个坏值吞掉后面的合法值）
+        pos += name.size();
     }
     return {};
 }

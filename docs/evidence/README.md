@@ -12,6 +12,11 @@
 所有文件已脱敏：真实账号替换为 `202400000000`，本机 IP 替换为 `10.0.0.100`，
 设备相关标识（`ss1` / `mip` / `mac1`）清零。
 
+> **脱敏必须做「十六进制级」审计**（2026-10-16 审阅漏检教训）：本机 IP 与设备标识在页面里
+> 同时存在 hex 形态（如 `0a10217d` = 192.0.2.5、`0010f371831f`、`mip` 的编码值），
+> **裸 grep 点分 IP 抓不到**。新增/修改证据文件后，除字符串扫描外还要对全体做一次
+> 「hex 解码后比对已知敏感值」的全量校验，再提交。
+
 | 文件 | 来源 | 编码 | 内容 |
 |---|---|---|---|
 | `loadconfig_185_801.json` | `GET :801/eportal/portal/page/loadConfig` | UTF-8 | 服务器下发的门户配置：`visit_blacklist` 免劫持地址清单（15 项）、`en_md5` `ep_http_port` `program_index` `page_index` 等 |
@@ -73,7 +78,7 @@ Portal 把配置**分散在两个响应里**，不要假设它们都在同一处
 |---|---|
 | `POST :801/eportal/?c=ACSetting&a=Login&url=drappall`（无论凭据对错） | **HTTP 200 + SPA 外壳**（`<title>EPortal</title>`，11561 字节，Webpack 空壳；不处理登录） |
 | `POST :80/eportal/?c=ACSetting&a=Login&url=drappall`（老协议与门户同源） | **真正处理登录**：返回 `信息页`（`<!--Dr.COMWebLoginID_2.htm-->`、`msga='userid error1/2'`、`page.run(2)`），响应头 `Server: DrcomServer1.0`、`charset=gbk` |
-| `GET :80/eportal/?c=ACSetting...` | 空响应——该端点**只认 POST** |
+| `GET :80/eportal/?c=ACSetting...` | HTTP 302（`Location` 指回门户根、`Server: DrcomServer1.5`），正文为空——该端点**只认 POST** |
 
 - :801 是老 SPA/新式 REST API（`/eportal/portal/...`，`jsonpReturn(...)` 包裹）的端口；
   老式 c=ACSetting 协议在其上不被处理。**登录 URL 应取 `auth_url` 自身端口**
