@@ -6532,6 +6532,32 @@ git commit -m "feat: 托盘图标与守护消息循环，接上调度与单实�
 >
 > 遗留（不阻断 M1）：注销态的真实成功登录仍需用户跑一次 `--test-login` 收尾；
 > 新式 API 的**凭据错误文案全集**未采齐（现以「账号/密码/用户」字样启发式归类）。
+>
+> **⚑ 实测回修 4（2026-10-16 晚，真机 M1 复测）——内置探测地址不可达**：用户复测
+> `--test-login` 时登录**成功**（连续两次 `result:1`），但复测探测连续 5 次报「离线
+> （12002 超时）」。独立取证：门户 `chkstatus` 回 `result:1`、`uid=账号@cmcc`（会话
+> 确实在线），而 `www.msftncsi.com/ncsi.txt` **直连 0/4 可达**（4 次都卡满 3 秒），
+> 同清单内 `captive.apple.com/hotspot-detect.html` **4/4 可达、47–73ms**。
+> 即：旧内置默认在本校园网已不可达，会把「在线」永久误判成「离线」——**这是 M1
+> 验收（复测应显示「已在线 OK」）的阻塞缺陷，不是建议**。
+> 已修：`Settings` 默认改为 `http://captive.apple.com/hotspot-detect.html` +
+> `probe_expect=Success`，`probe_timeout_seconds` 3→6；`Config.cpp` 缺键回落改用
+> 结构体默认（不再写死字面量）；`ProbeTarget::DefaultProbeTarget()` 同步；
+> 新增默认值钉桩测试（防止改回不可达地址）。用户已落盘的 `config.json` 需一并更新，
+> 否则旧值仍然生效。
+>
+> 另两处同一根因的探测健壮性修复（本次一并完成）：
+> ① 登录接口成功 → AC 数据面放行有秒级延迟，**紧跟的单次复探会误报「仍不在线」**
+> → `ProbeUntilOnline`（轮询到在线，5×1.5s）；
+> ② 会话正常时也曾**单次探测超时**（12002）→ 若据此判离线，整条链路会走成
+> 「厂商 unknown → GenericFormAuth 尚未实现」的死路（实机复现）→
+> `ProbeUntilDecided`（只对「离线」重试，被劫持/在线立即返回，避免注销窗口白等）。
+>
+> **遗留（需独立审阅后再动）**：`ProbeTarget.cpp` 的候选优先级仍把 msftncsi 排在
+> 首位，且 `DefaultProbeTarget`/候选表没有失败切换——一旦将来接上
+> `visit_blacklist` 驱动的探测路径（Scheduler 已有该分支，只是门户页不含该变量、
+> 当前不触发），就会选中这个已不可达的地址。建议：按实测把 `captive.apple` /
+> `detectportal` 提前，并加多目标失败切换。
 
 **Files:**
 - Create: `README.md`（M1 版本）

@@ -75,8 +75,22 @@ Portal 把配置**分散在两个响应里**，不要假设它们都在同一处
    注意：登录页与注销页下发的 `carrier` 列表**可能不同**，实测在线会话后缀为 `@cmcc`，
    但注销页列表里并没有 `@cmcc` 项。
 5. **探测地址优先取自 `visit_blacklist`**，但它只在 `loadConfig` 响应里 —— 客户端必须
-   容忍首页取不到的情形，回退到内置默认值（`www.msftncsi.com/ncsi.txt`，该地址本身就在
-   真实的 15 项清单内，故回退路径可用）。
+   容忍首页取不到的情形，回退到内置默认值：**`http://captive.apple.com/hotspot-detect.html`
+   （期望正文 `Success`）**。
+   ⚠ **2026-10-16 实测修订**：原内置默认 `www.msftncsi.com/ncsi.txt` 在本校园网
+   **直连实测 0/4 可达**（每次都卡满超时），会把「在线」误判成「离线」（守护程序永远
+   认为不在线、`--test-login` 复测报「仍不在线」）。同清单内各候选实测（各 5 次、直连）：
+
+   | 候选 | 成功 | 平均 | 各次(ms) |
+   |---|---|---|---|
+   | `www.msftncsi.com/ncsi.txt`（原默认） | 4/5 | 1227 | 240,648,643,3376 |
+   | `detectportal.firefox.com/success.txt` | 5/5 | 221 | 268,303,213,122,199 |
+   | `captive.apple.com/hotspot-detect.html` | 5/5 | **86** | 101,85,59,124,60 |
+   | `www.apple.com/library/test/success.html` | 5/5 | **61** | 72,63,58,49,65 |
+   | `connectivitycheck.gstatic.com/generate_204` | 0/5 | — | 不在花园内 |
+
+   ⇒ 内置默认与 `Settings::probe_timeout_seconds`（3→6 秒）已按实测修订；
+   `ProbeTarget.cpp` 的候选优先级与失败切换仍待跟进（见计划「实测回修 4」）。
 6. **编码按 Content-Type 动态判定**：首页声明 `charset=gbk`（meta 写 `gb2312`），
    `/eportal/` 路径声明 `charset=utf-8`。硬编码任一种都会让另一条路径乱码。
 7. **劫持指纹只在跳转目标页上**（2026-10-16 实测回修）：真实环境的劫持是
