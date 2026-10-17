@@ -41,6 +41,9 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
         if (a == "--daemon")         { o.mode = CliMode::Daemon; continue; }
         // 开机自启专用：守护照常启动，但**不**自动弹设置界面（双击启动才弹）
         if (a == "--autostart")      { o.autostart_launch = true; continue; }
+        // 内部标志（用户不用管）：分离重启后的无控制台实例 / 父进程交代的"打开界面"
+        if (a == "--detached")       { o.detached = true; continue; }
+        if (a == "--open-ui")        { o.open_ui = true; continue; }
 
         // 带值的参数：--simulate-user/pass/fail 必须排在 --simulate 之前，
         // 否则会被 --simulate 的 "=" 前缀逻辑抢先匹配成厂商名

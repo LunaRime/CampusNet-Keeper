@@ -253,18 +253,62 @@ int RunTestLogin(cnk::AppConfig& cfg) {
     return lr.success ? 0 : 2;
 }
 
-// 守护形态：若进程拥有独占控制台（双击 / 开机自启等独立启动方式），
-// 隐藏它以避免黑窗常驻；从终端启动时控制台是共享的（不能隐藏，
-// 否则会把用户自己的终端窗口一起隐藏）。
-// 注意：曾尝试 WIN32 子系统 + AttachConsole 方案（完全无黑窗），
-// 但在真实 cmd 环境下 attach 链路失效导致所有 CLI 输出丢失
-//（2026-10-14 用户实测），已回退为控制台子系统 + 选择性隐藏。
+// 守护形态：**兜底**隐藏控制台（正常路径已在 wmain 里分离重启，见 SpawnDetachedCopy）。
+// 注意：Win11 默认终端是 Windows Terminal 时，可见窗口属 WindowsTerminal.exe，
+// GetConsoleWindow() 拿不到它 → 这里藏不住；所以真正的解法是"无控制台重启自身"。
+// 另外：曾尝试 WIN32 子系统 + AttachConsole 方案（完全无黑窗），但在真实 cmd 环境下
+// attach 链路失效导致所有 CLI 输出丢失（2026-10-14 用户实测），已回退。
 void HideConsoleIfStandalone() {
     DWORD pids[2] = {0, 0};
     if (GetConsoleProcessList(pids, 2) == 1) {
         HWND wnd = GetConsoleWindow();
         if (wnd) ShowWindow(wnd, SW_HIDE);
     }
+}
+
+// 是否"独占"一个控制台：双击/开机自启时新开的控制台里只有我们自己；
+// 从 cmd/pwsh 启动时 shell 与我们共享控制台 → 不能分离（用户要看输出、也要能 Ctrl+C）。
+bool OwnsConsole() {
+    DWORD pids[2] = {0, 0};
+    return GetConsoleProcessList(pids, 2) == 1;
+}
+
+// 把参数列表拼成命令行（每个参数加引号；本项目的参数不含引号字符）
+std::wstring BuildDetachedCommandLine(const std::vector<std::string>& args, bool open_ui) {
+    const std::string exe = cnk::ExecutablePath();
+    if (exe.empty()) return {};
+    std::wstring cmd = L"\"" + cnk::Utf8ToWide(exe) + L"\"";
+    for (const auto& a : args) {
+        cmd += L" \"";
+        cmd += cnk::Utf8ToWide(a);
+        cmd += L"\"";
+    }
+    cmd += L" --detached";
+    if (open_ui) cmd += L" --open-ui";
+    return cmd;
+}
+
+// 以无控制台方式重新启动自身（成功则调用方应立即退出）。
+// 为什么是"重启"而不是"隐藏窗口"：双击/自启时 Win11 的默认终端是 Windows Terminal，
+// 可见窗口属于 WindowsTerminal.exe，GetConsoleWindow() 拿到的是伪控制台窗口 → 藏不住；
+// 而用户关掉那个终端窗口时，Windows 会给控制台进程发 CTRL_CLOSE_EVENT，守护进程跟着被杀。
+// CREATE_NO_WINDOW 启动的进程没有任何可见终端，也就不会因"关终端"而死。
+bool SpawnDetachedCopy(const std::vector<std::string>& args, bool open_ui) {
+    const std::wstring cmd = BuildDetachedCommandLine(args, open_ui);
+    if (cmd.empty()) return false;
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &si, &pi)) {
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
 }
 
 // open_ui_on_start：用户**双击 exe**（无参数）启动时，守护起来后自动打开设置界面。
@@ -274,7 +318,7 @@ int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst, bool open_ui_on_start) {
     std::printf("从终端启动时可按 Ctrl+C 退出；其它情况请使用托盘菜单退出。\n");
     std::fflush(stdout);
     HideConsoleIfStandalone();
-    if (open_ui_on_start) cnk::LogInfo("双击启动（无参数）：守护就绪后将自动打开设置界面");
+    if (open_ui_on_start) cnk::LogInfo("启动后自动打开设置界面（双击意图）");
     if (!cnk::RunDaemonLoop(hinst, cfg, open_ui_on_start)) {
         std::printf("守护循环启动失败\n");
         return 1;
@@ -578,6 +622,22 @@ int wmain(int, wchar_t**) {
     }
     cnk::LogInfo("启动，模式=" + std::to_string((int)opts.mode));
 
+    // 双击 exe / 开机自启：本进程独占控制台（Win11 下是一个 Windows Terminal 窗口）。
+    // 控制台子系统程序会把终端窗口留在任务栏，且**用户关掉终端就会杀掉守护进程**。
+    // 这里把自己以 CREATE_NO_WINDOW 分离重启，父进程立即退出（终端标签随之关闭）：
+    // 用户看不到终端，关掉任何窗口都不影响守护进程。从 cmd/pwsh 启动时控制台是共享的，
+    // 保持原样（用户要看输出、也能用 Ctrl+C 退出）。
+    // --detached 的实例不再走这里（避免无限重启）。
+    if (opts.mode == cnk::CliMode::Daemon && !opts.detached && OwnsConsole()) {
+        const bool want_ui = args.empty() && !opts.autostart_launch;
+        if (SpawnDetachedCopy(args, want_ui)) {
+            cnk::LogInfo("检测到独立控制台：已分离到无控制台进程（不再留下终端窗口）");
+            cnk::LogShutdown();
+            return 0;
+        }
+        cnk::LogWarn("分离到无控制台进程失败，退化为隐藏控制台窗口");
+    }
+
     // 任务 26：UI 形态与载荷自检都不需要配置、模拟会话与单实例，提前分流。
     //（界面自己通过 IPC 从守护进程取配置；也绝不能去抢守护进程的单实例。）
     if (opts.mode == cnk::CliMode::Ui || opts.mode == cnk::CliMode::UiInfo) {
@@ -623,8 +683,8 @@ int wmain(int, wchar_t**) {
     }
 
     // 双击启动 = 一个参数都没有（不是 --autostart、不是任何显式开关）→ 守护起来后自动开界面。
-    // 开机自启带 --autostart（见 Autostart.cpp），其它形态（CLI/模拟/探针）都不会弹窗。
-    const bool open_ui_on_start = args.empty() && !opts.autostart_launch;
+    // 分离重启后的子进程没有参数里的"双击"信息，由父进程用 --open-ui 交代。
+    const bool open_ui_on_start = opts.open_ui || (args.empty() && !opts.autostart_launch);
 
     int rc = 0;
     switch (opts.mode) {

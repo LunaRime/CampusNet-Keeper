@@ -12,6 +12,9 @@
   右下角按状态合成小徽标（在线绿 / 探测蓝 / 失败红 / 断开灰）
 - **双击就开界面**：双击 exe 会启动守护并**自动打开设置界面**（不再出现"点了没反应"）；
   开机自启带 `--autostart`，静默驻留不打扰
+- **不留终端窗口**：exe 是控制台子系统程序，但双击/开机自启时发现控制台是独占的，会用
+  `CREATE_NO_WINDOW` 把自己**分离重启**再让父进程退出——任务栏不会留下终端，关掉任何窗口
+  也不影响守护；从 cmd/pwsh 启动时保持原样（能看输出、能用 Ctrl+C）
 - **极低占用**：后台常驻工作集约 15 MB（进程私有约 2.7 MB，其余为共享的 DLL 页；spec 的
   S2 目标「<10 MB」按任务管理器的"内存"列/专用工作集口径达成），空闲 CPU ≈ 0%（500ms 定时器驱动）
 - **自动重连**：网络断开或被 Portal 劫持时自动重新登录（Dr.COM 完整实现）
@@ -147,6 +150,14 @@ Windows 对**未签名**的下载程序会提示"未知发布者"（SmartScreen�
     # 用真实的 OV/EV 代码签名证书（推荐用于公开发布）
     pwsh -File build.ps1 -SingleExe -Sign -PfxPath codesign.pfx -PfxPassword <密码>
 
+- **签名工具从哪来**：`signtool.exe` **不装在 VS 的 IDE 目录里**，它随 **Windows SDK** 分发；
+  VS 2022 的「使用 C++ 的桌面开发」工作负载默认就会装 Windows SDK，所以签名工具通常已经在
+  `C:\Program Files (x86)\Windows Kits\10\bin\<版本>\x64\signtool.exe`。VS/.NET SDK 还会带一个
+  **ClickOnce SignTool**（老版本 32 位，同样支持 `/fd /tr /td`）：
+  `C:\Program Files (x86)\Microsoft SDKs\ClickOnce\SignTool\signtool.exe`。
+  `scripts/sign.ps1` 按 PATH → `WindowsSdkDir` 环境变量 → Windows Kits（取最高版本）→ ClickOnce
+  的顺序自动找；万一都没有，会退回 PowerShell 自带的 `Set-AuthenticodeSignature`
+  （可签名，但不支持时间戳）。
 - 自签名模式会自动创建/复用证书（`Cert:\CurrentUser\My`），公钥导出到
   `build\certs\CampusNet-Keeper-codesign.cer`。想让**本机**不再警告，可把该 .cer 导入
   「当前用户 → 受信任的根证书颁发机构」（`Import-Certificate -CertStoreLocation Cert:\CurrentUser\Root`）——

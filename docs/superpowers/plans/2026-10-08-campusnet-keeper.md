@@ -10661,6 +10661,65 @@ Expected: GitHub Actions 自动构建并发布 Release，附带两个发布包�
 
 ---
 
+## 任务 29（追加，2026-10-17 用户反馈二）：启动不留终端窗口 / signtool 来源
+
+> **用户反馈**：① 精简版启动后任务栏留下一个终端，**关掉终端守护进程也跟着被杀**；
+> ② 问"为什么不用 VS 2022 通常会自带的 SignTool"。
+
+> **根因（实测确认，不是猜测）**：Win11 默认终端是 **Windows Terminal**。双击 exe 后出现的
+> 可见窗口 class 是 `CASCADIA_HOSTING_WINDOW_CLASS`，属 `WindowsTerminal.exe`（探针实测：
+> 启动后新增 `WindowsTerminal#7848 / OpenConsole#21576 / conhost#8252` 且窗口 visible=True）。
+> `HideConsoleIfStandalone()` 里的 `GetConsoleWindow()` 拿到的是**伪控制台窗口**，藏不住 WT 的
+> 窗口；而用户关掉 WT 窗口时 Windows 会给控制台进程发 `CTRL_CLOSE_EVENT` → 守护进程被杀。
+> （这在 conhost 经典终端下不会暴露，所以 v0.1.0/0.1.1 没发现。）
+
+> **修复**：控制台子系统不能改成 WIN32（以前试过 AttachConsole，CLI 输出全丢，已回退），
+> 改为**分离重启**：
+> 1. `wmain` 在守护模式下判断 `OwnsConsole()`（`GetConsoleProcessList()==1`，即双击/自启）；
+> 2. 是 → `SpawnDetachedCopy()`：`CreateProcessW(..., CREATE_NO_WINDOW, ...)` 重新启动自身，
+>    参数原样传递 + 内部标志 `--detached`（不再分离）+ `--open-ui`（双击意图）；
+> 3. 父进程写日志"已分离到无控制台进程"后立即 `return 0` → 终端标签随之关闭；
+> 4. 子进程没有任何可见终端 → 不会因"关终端"被杀，任务栏也不留窗口；
+> 5. **从 cmd/pwsh 启动时控制台是共享的**（`GetConsoleProcessList()>1`）→ 不分离，保持输出与 Ctrl+C；
+> 6. 精简单文件版（无载荷）被双击/点「设置」时只弹气泡说明，**不再拉起必然报错的 `--ui` 子进程**。
+>
+> **验证**：`tools/verify_startup_ux.ps1` 新增两条断言——"双击/自启后没有可见终端窗口（含
+> Windows Terminal）"和"没有误判为双击"，并更新日志断言（分离、双击意图）；完整版全过。
+> 另单独构建精简版（`-DCNK_UI_PAYLOAD_DIR=<空目录>`）实测：分离 ✓、无可见终端 ✓、
+> 走气泡不拉 `--ui` ✓、无错误对话框 ✓。
+>
+> **signtool 的来源**（回答用户）：`signtool.exe` 不是 VS IDE 的一部分，它随 **Windows SDK**
+> 分发；VS 2022 的「使用 C++ 的桌面开发」工作负载默认安装 Windows SDK，所以通常在
+> `C:\Program Files (x86)\Windows Kits\10\bin\<版本>\x64\signtool.exe`（本项目实测就是这个
+> 路径）。已把 `Find-SignTool` 扩展为 PATH → `WindowsSdkDir` → Windows Kits（最高版本），并新增
+> "没有 signtool 时退回 `Set-AuthenticodeSignature`（无时间戳）"的兜底。
+>
+> **教训（记录以免重犯）**：验证终端窗口时**不要**用 `Stop-Process` 去杀枚举到的"控制台窗口
+> PID"——`ConsoleWindowClass` 的窗口可能属于任意进程（那次误杀了 pid 22392 的 pwsh）。要按
+> **窗口标题/类名**判断，杀进程只按自己的 exe 名。
+
+> **补充（同日实证）**：
+> 1. **signtool 两个来源都实测可用**：`C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe`
+>    与 `C:\Program Files (x86)\Microsoft SDKs\ClickOnce\SignTool\signtool.exe`（VS/.NET SDK 带的老版本，
+>    支持 `/fd /tr /td`）都能签出 `Status=Valid` 的签名。`Find-SignTool` 已按此顺序查找，
+>    并经 `sign.ps1` 实测确认会选中 SDK 版；找不到 signtool 时退回 `Set-AuthenticodeSignature`。
+> 2. **`verify_tray_open_ui.ps1` 需要显式 `--detached`**：脚本用 `CreateNoWindow` 起守护进程时，
+>    该进程"拥有独立控制台"，会触发分离重启 → 脚本手里的 `$daemon` 立刻退出，导致
+>    "守护进程仍在运行"误报失败。传 `--detached` 后（表示已无控制台、别再分离）通过。
+>    以后所有**脚本/测试**起守护进程都应该带 `--detached`；只有模拟"用户双击"才不带。
+> 3. **教训：不要用临时副构建树做行为验证**。为测精简版临时 `-B build-lite` 建的第二棵树在
+>    并发操作（另一条命令同时跑构建/杀进程）下产物异常（不写日志、托盘创建失败），
+>    一度被误判成"精简版有 bug"；换回正常构建树（把 `build-m1` 配成无载荷）后精简版一切正常
+>    （分离 ✓、守护存活 ✓、气泡 ✓、无终端 ✓、无对话框 ✓）。
+>    **行为验证要在正规构建/安装产物（`build.ps1` / `build\Release`）上做。**
+> 4. **`ProcessStartInfo.StandardOutput.ReadToEnd()` 在进程还活着时会永久阻塞**——诊断守护进程
+>    时看起来像"命令挂死"。要么重定向到文件、要么先结束进程再读。
+>
+> **v0.1.2**：以上修复 + 签名（secrets 配好的自签名）随此版本发布；三项真机验证
+> （启动体验 / 托盘拉起界面+S5 / 界面宿主）在 `build\Release` 安装产物上全部通过。
+
+---
+
 ## 完成标准
 
 全部任务完成后，应能验证：

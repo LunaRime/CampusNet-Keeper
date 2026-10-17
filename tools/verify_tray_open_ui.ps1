@@ -92,7 +92,10 @@ $uiDirect = $null
 try {
     # ------------------------------------------------------------ 1) 起模拟守护
     Title '1) 启动模拟守护进程（--simulate=drcom，不碰真实网络）'
-    $daemon = Start-Ui '--simulate=drcom'
+    # --detached：本脚本用 CreateNoWindow 起的进程会"拥有独立控制台"，守护进程会把自己
+    # 分离重启（双击/自启的正常行为）→ $daemon 会立刻退出，导致后面按 PID 的检查误判失败。
+    # 传 --detached 表示"已经是无控制台实例，别再分离"，这样 $daemon 就是守护进程本体。
+    $daemon = Start-Ui '--simulate=drcom --detached'
     Info "守护 PID=$($daemon.Id)"
     $baseline = Read-LogText
     Check ($null -ne (Wait-LogMatch '进入托盘守护循环' $baseline $TimeoutSec)) '守护循环已进入（托盘图标已就绪）'
@@ -101,7 +104,7 @@ try {
     # ------------------------------------------------------------ 2) 触发"打开设置界面"
     Title '2) 触发打开设置界面（第二实例通知 = 托盘菜单「设置…」的同一条回调）'
     $baseline = Read-LogText
-    $trigger = Start-Ui ''
+    $trigger = Start-Ui '--detached'
     $trigger.WaitForExit(15000) | Out-Null
     Check ($null -ne (Wait-LogMatch '已启动设置界面进程（--ui）' $baseline 20)) '守护进程日志确认已启动 --ui 子进程'
 
@@ -116,7 +119,7 @@ try {
     # ------------------------------------------------------------ 3) 已在运行时不该再开一个
     Title '3) 界面已在运行时：托盘请求只提示、不再开第二个窗口'
     $baseline = Read-LogText
-    $trigger2 = Start-Ui ''
+    $trigger2 = Start-Ui '--detached'
     $trigger2.WaitForExit(15000) | Out-Null
     Check ($null -ne (Wait-LogMatch '设置界面已在运行，忽略本次打开请求' $baseline 20)) '守护日志确认「已在运行，忽略请求」'
     Start-Sleep -Seconds 1

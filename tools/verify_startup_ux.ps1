@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
   启动体验的真机验证：① 无参数启动（=双击 exe）后**自动打开设置界面**；
-  ② 开机自启形态（--autostart）**不**弹界面；③ 托盘图标确实用的是应用图标。
+  ② 启动后**不留下可见终端窗口**（Win11 的 Windows Terminal 尤其要盯），关掉窗口也不会影响守护；
+  ③ 开机自启形态（--autostart）**不**弹界面；④ 托盘图标确实用的是应用图标。
 
 .DESCRIPTION
   ⚠ 需要 GUI 与 %APPDATA%/%LOCALAPPDATA% 写入，必须在非受限沙箱下运行。
@@ -71,7 +72,30 @@ public static extern int GetClassNameW(System.IntPtr h, System.Text.StringBuilde
 public static extern bool PostMessageW(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, System.IntPtr lParam);
 [System.Runtime.InteropServices.DllImport("user32.dll")]
 public static extern bool SetProcessDPIAware();
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool IsWindowVisible(System.IntPtr hWnd);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetWindowTextW(System.IntPtr hWnd, System.Text.StringBuilder sb, int max);
 '@
+}
+# 可见的终端/控制台窗口（Win11 默认终端是 CASCADIA_HOSTING_WINDOW_CLASS）
+function Get-VisibleTerminalWindows {
+    $script:termWins = @()
+    $cb = [CnkUx.Win32+EnumProc]{
+        param($h, $p)
+        $sb = [System.Text.StringBuilder]::new(256)
+        [void][CnkUx.Win32]::GetClassNameW($h, $sb, 256)
+        $cls = $sb.ToString()
+        if (($cls -eq 'ConsoleWindowClass' -or $cls -eq 'CASCADIA_HOSTING_WINDOW_CLASS') -and
+            [CnkUx.Win32]::IsWindowVisible($h)) {
+            $tb = [System.Text.StringBuilder]::new(256)
+            [void][CnkUx.Win32]::GetWindowTextW($h, $tb, 256)
+            $script:termWins += "$cls|$($tb.ToString())"
+        }
+        return $true
+    }
+    [void][CnkUx.Win32]::EnumWindows($cb, [IntPtr]::Zero)
+    return @($script:termWins)
 }
 function Stop-DaemonCleanly([int]$timeoutSec = 15) {
     $script:hidden = [IntPtr]::Zero
@@ -114,14 +138,14 @@ if ($running.Count -gt 0) {
 }
 
 # ---------------------------------------------------------------- 1) 双击形态
-Title '1) 无参数启动（= 双击 exe）：应自动打开设置界面'
+Title '1) 无参数启动（= 双击 exe）：应自动打开设置界面，且不留下终端窗口'
 $baseline = Read-LogText
 $daemon = Start-Process -FilePath $Exe -PassThru   # 默认 ShellExecute，最接近双击
-Info "启动 PID=$($daemon.Id)（无参数）"
+Info "启动 PID=$($daemon.Id)（无参数；该进程会被分离重启后立即退出）"
 
-$tail = Wait-LogMatch '双击启动（无参数）' $baseline 30
-Check ($null -ne $tail) '守护进程日志确认「双击启动（无参数）」'
-Check ($null -ne (Wait-LogMatch '自动打开设置界面' $baseline 30)) '守护进程日志确认「自动打开设置界面」'
+# 双击 → 拥有独立控制台 → 父进程分离到无控制台子进程后退出
+Check ($null -ne (Wait-LogMatch '已分离到无控制台进程' $baseline 30)) '双击启动时已分离到无控制台进程（父进程退出）'
+Check ($null -ne (Wait-LogMatch '启动后自动打开设置界面（双击意图）' $baseline 30)) '守护进程日志确认「启动后自动打开设置界面」'
 # 托盘图标：应用图标加载成功时守护进程会记一行（Win11 会把新图标收进溢出区，截图不可靠）
 Check ($null -ne (Wait-LogMatch '托盘图标：应用图标' $baseline 20)) '托盘图标使用应用图标（日志确认 IDI_APPICON 已加载）'
 
@@ -135,7 +159,12 @@ while ((Get-Date) -lt $deadline) {
 Check ($null -ne $ui) '设置界面窗口已自动出现'
 if ($ui) { Info "界面 PID=$($ui.Id) 标题=『$($ui.MainWindowTitle)』" }
 
-# 托盘图标本身由上面的日志断言覆盖；这里不再截图（截图会拍到用户桌面/其它窗口，不入库）
+# ★ 用户报的 bug：启动后不能留下终端窗口（Win11 的 Windows Terminal 尤其要盯）
+Start-Sleep -Seconds 2      # 父进程退出后终端标签应已关闭
+$terms = Get-VisibleTerminalWindows
+if ($terms.Count -gt 0) { Info ("当前可见终端窗口: " + (($terms | Group-Object | ForEach-Object { "$($_.Name)" }) -join ' ; ')) }
+Check (-not (@($terms) | Where-Object { $_ -match 'CampusNet' })) '启动后没有留下可见终端窗口（含 Windows Terminal）'
+
 
 # 关掉界面，守护应继续
 if ($ui) { $null = $ui.CloseMainWindow(); $null = $ui.WaitForExit(15000) }
@@ -143,11 +172,12 @@ Start-Sleep -Seconds 1
 Check (@(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue).Count -ge 1) '关窗后守护进程继续运行'
 
 # ---------------------------------------------------------------- 2) 自启形态
-Title '2) 开机自启形态（--autostart）：守护启动但**不**弹界面'
+Title '2) 开机自启形态（--autostart）：守护启动但**不**弹界面、也不留终端'
 Check (Stop-DaemonCleanly) '守护进程已干净退出（为下一步腾出单实例）'
 $baseline = Read-LogText
 $auto = Start-Process -FilePath $Exe -ArgumentList '--autostart' -PassThru
-Info "启动 PID=$($auto.Id)（--autostart）"
+Info "启动 PID=$($auto.Id)（--autostart；父进程分离后退出）"
+Check ($null -ne (Wait-LogMatch '已分离到无控制台进程' $baseline 30)) '自启形态同样分离到无控制台进程'
 Check ($null -ne (Wait-LogMatch '进入托盘守护循环' $baseline 30)) '守护循环已启动'
 $ui2 = $null
 $deadline = (Get-Date).AddSeconds(10)
@@ -157,11 +187,13 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 300
 }
 Check ($null -eq $ui2) '没有自动弹出设置界面（开机自启不应打扰用户）'
+$terms2 = Get-VisibleTerminalWindows
+Check (-not (@($terms2) | Where-Object { $_ -match 'CampusNet' })) '自启形态也没有留下可见终端窗口'
 # 只检查**本次**启动新增的日志：整段日志里还留着上一步"自动打开设置界面"的记录
 $autoTail = Read-LogText
 $autoTail = if ($autoTail.Length -ge $baseline.Length) { $autoTail.Substring($baseline.Length) } else { $autoTail }
 Check (-not ($autoTail -match '自动打开设置界面')) '本次自启的日志里没有「自动打开设置界面」'
-Check (-not ($autoTail -match '双击启动')) '本次自启没有被误判为双击启动'
+Check (-not ($autoTail -match '启动意图=双击')) '本次自启没有被误判为双击'
 
 # ---------------------------------------------------------------- 收尾
 Title '3) 收尾'

@@ -51,23 +51,49 @@ function Warn($m) { Write-Host "  [注意] $m" -ForegroundColor Yellow }
 function Die($m) { Write-Host "  [失败] $m" -ForegroundColor Red; exit 1 }
 
 # ---------------------------------------------------------------- 找 signtool
+# signtool 并不"装在 VS 的 IDE 目录里"：它随 **Windows SDK** 分发，而 VS 2022 的
+# 「使用 C++ 的桌面开发」工作负载默认就会装 Windows SDK →
+#   C:\Program Files (x86)\Windows Kits\10\bin\<版本>\x64\signtool.exe
+# 另外 VS/.NET SDK 还会带一个 **ClickOnce SignTool**（老版本 32 位，同样支持 /fd /tr /td）：
+#   C:\Program Files (x86)\Microsoft SDKs\ClickOnce\SignTool\signtool.exe
+# 查找顺序：PATH → Windows SDK（取最高版本，x64）→ ClickOnce SignTool；
+# 实在都没有就退回 PowerShell 自带的 Set-AuthenticodeSignature（零依赖，但不支持时间戳）。
 function Find-SignTool {
     $cmd = Get-Command signtool -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
-    $kits = 'C:\Program Files (x86)\Windows Kits\10\bin'
-    if (Test-Path $kits) {
-        $found = Get-ChildItem $kits -Directory -ErrorAction SilentlyContinue |
+
+    $candidates = @()
+    # 1) Windows SDK（新版，x64）
+    $sdkRoots = @()
+    if ($env:WindowsSdkDir) { $sdkRoots += $env:WindowsSdkDir.TrimEnd('\') }
+    if (${env:ProgramFiles(x86)}) { $sdkRoots += (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10') }
+    if ($env:ProgramFiles) { $sdkRoots += (Join-Path $env:ProgramFiles 'Windows Kits\10') }
+    foreach ($root in $sdkRoots) {
+        if (-not (Test-Path $root)) { continue }
+        # 根可能是 ...\Windows Kits\10，也可能已经是 ...\bin
+        $binRoot = Join-Path $root 'bin'
+        if (-not (Test-Path $binRoot)) { $binRoot = $root }
+        $candidates += Get-ChildItem $binRoot -Directory -ErrorAction SilentlyContinue |
             Sort-Object Name -Descending |
-            ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($found) { return $found }
+            ForEach-Object { Join-Path (Join-Path $_.FullName 'x64') 'signtool.exe' } |
+            Where-Object { Test-Path $_ }
     }
+    # 2) VS / .NET SDK 附带的 ClickOnce SignTool（老版本但够用）
+    foreach ($pf in @(${env:ProgramFiles(x86)}, $env:ProgramFiles)) {
+        if ($pf) { $candidates += (Join-Path $pf 'Microsoft SDKs\ClickOnce\SignTool\signtool.exe') }
+    }
+    foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
     return $null
 }
 
 $signtool = Find-SignTool
-if (-not $signtool) { Die '找不到 signtool.exe：请安装 Windows SDK（签名工具）' }
-Write-Host "签名工具：$signtool"
+if ($signtool) {
+    Write-Host "签名工具：$signtool"
+} else {
+    Warn '找不到 signtool.exe（VS 2022 的「C++ 桌面开发」工作负载会随 Windows SDK 一起装它；'
+    Warn '也可能是 Microsoft SDKs\ClickOnce\SignTool 下的那份）'
+    Warn '→ 退回 PowerShell 自带的 Set-AuthenticodeSignature：可签名，但不支持时间戳'
+}
 
 $targets = @()
 foreach ($f in $Files) {
@@ -136,6 +162,17 @@ if ($PfxPath) {
 # ---------------------------------------------------------------- 签名
 Step "签名 $($targets.Count) 个文件"
 foreach ($file in $targets) {
+    if (-not $signtool) {
+        # 兜底：PowerShell 自带签名（无时间戳；证书必须已在当前用户证书库里）
+        try {
+            Set-AuthenticodeSignature -FilePath $file -Certificate $cert -HashAlgorithm SHA256 `
+                -ErrorAction Stop | Out-Null
+        } catch {
+            Die "签名失败（Set-AuthenticodeSignature）：$($_.Exception.Message)"
+        }
+        Ok "已签名（Set-AuthenticodeSignature，无时间戳）：$(Split-Path -Leaf $file)"
+        continue
+    }
     # 注意：变量不能叫 $args（PowerShell 自动变量），也别把参数数组塞进另一个数组再遍历
     #（`$list += $array` 在 PowerShell 里会被扁平化，结果是对 signtool 只传了 "sign" 一个词）。
     # 无论证书来自 PFX 还是本机证书库，统一用指纹（/sha1）— 上一节已把 PFX 导入证书库。

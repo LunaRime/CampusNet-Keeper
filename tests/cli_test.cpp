@@ -136,3 +136,23 @@ TEST_CASE("解析 --autostart（开机自启：守护照常启动但不自动弹
     CHECK_FALSE(plain.autostart_launch);
     CHECK(plain.unknown.empty());
 }
+
+TEST_CASE("解析内部标志 --detached / --open-ui（分离重启用）") {
+    // 这两个是 main.cpp 自己传给自己、或双击意图的传递标志，不能被当成未知参数
+    auto d = cnk::ParseCli({"--detached"});
+    CHECK(d.mode == cnk::CliMode::Daemon);
+    CHECK(d.detached);
+    CHECK_FALSE(d.open_ui);
+    CHECK(d.unknown.empty());
+
+    auto both = cnk::ParseCli({"--detached", "--open-ui"});
+    CHECK(both.detached);
+    CHECK(both.open_ui);
+    CHECK(both.unknown.empty());
+
+    // 自启+分离：静默，但 detached 必须被识别
+    auto autoDetached = cnk::ParseCli({"--autostart", "--detached"});
+    CHECK(autoDetached.autostart_launch);
+    CHECK(autoDetached.detached);
+    CHECK_FALSE(autoDetached.open_ui);
+}

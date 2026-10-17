@@ -6,6 +6,7 @@
 #include "ipc/DaemonCommands.h"
 #include "ipc/PipeServer.h"
 #include "ui_host/Hostfxr.h"
+#include "ui_host/PayloadExtract.h"
 #include <shellapi.h>
 #include <algorithm>
 #include <cstdint>
@@ -36,15 +37,7 @@ enum MenuId {
     kMenuQuit = 5,
 };
 
-std::wstring Utf8ToWide(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    if (n <= 0) return {};
-    std::wstring out((size_t)n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), out.data(), n);
-    return out;
-}
-
+// Utf8ToWide 用 cnk 命名空间里的公共实现（ui_host/PayloadExtract.h），这里不再重复定义
 void OpenPathInExplorer(const std::string& path) {
     ShellExecuteW(nullptr, L"open", Utf8ToWide(path).c_str(),
                   nullptr, nullptr, SW_SHOWNORMAL);
@@ -339,7 +332,20 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
     }
     LogInfo("进入托盘守护循环");
 
-    auto open_ui = [&tray]() {
+    // 精简版没有内嵌界面载荷：点「设置」/双击时不该拉起一个必弹错误框的子进程，
+    // 改成气泡说明（用户看到的是"这个版本不含界面"，而不是一个莫名其妙的报错框）。
+    std::string payload_err_storage;
+    const EmbeddedPayload payload = LoadEmbeddedPayload(payload_err_storage);
+    const bool has_ui_payload = payload.present;
+    const std::string payload_err = payload_err_storage;
+
+    auto open_ui = [&tray, has_ui_payload, payload_err]() {
+        if (!has_ui_payload) {
+            LogWarn("本版本不含内嵌设置界面（精简单文件版）：" + payload_err);
+            tray.ShowBalloon("设置界面", "这是精简单文件版，不含设置界面。"
+                                         "完整版请用 build.ps1 -SingleExe 构建。");
+            return;
+        }
         // 任务 26：真的启动设置界面（自身副本 + --ui）。
         // 已经在运行时只提示、不再开第二个窗口（托盘单击/双击都会走到这里）。
         if (UiProcessRunning()) {
@@ -392,7 +398,7 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
     // 否则双击后只有托盘图标（还可能被折叠进溢出区）——对用户来说就像"什么都没发生"。
     // 开机自启带 --autostart，不会走到这里。
     if (open_ui_on_start) {
-        LogInfo("检测到双击启动（无参数）：自动打开设置界面");
+        LogInfo("启动意图=双击/父进程交代：自动打开设置界面");
         open_ui();
     }
 
