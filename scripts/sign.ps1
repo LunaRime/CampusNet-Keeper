@@ -82,11 +82,23 @@ if (-not $PfxPassword) { $PfxPassword = $env:CNK_SIGN_PFX_PASSWORD }
 
 $usePfx = $false
 $cert = $null
+$isSelfSigned = $false
 if ($PfxPath) {
     if (-not (Test-Path $PfxPath)) { Die "PFX 不存在：$PfxPath" }
-    if (-not $PfxPassword) { Warn 'PFX 没给密码（-PfxPassword / CNK_SIGN_PFX_PASSWORD）；若 PFX 有密码会失败' }
-    $usePfx = $true
-    Ok "使用 PFX 证书：$PfxPath"
+    # 导入到当前用户证书库（CI runner 是临时环境），之后统一**按指纹**签名：
+    # 既避免在命令行/进程参数里暴露密码，也让复核能按指纹比对——自签名证书链在 CI 上
+    # 不会被信任（Status≠Valid），不能拿"链是否受信"当成功判据。
+    $secure = $null
+    if ($PfxPassword) { $secure = ConvertTo-SecureString $PfxPassword -AsPlainText -Force }
+    try {
+        $cert = Import-PfxCertificate -FilePath $PfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $secure
+    } catch {
+        Die "导入 PFX 失败：$($_.Exception.Message)"
+    }
+    if (-not $cert) { Die '导入 PFX 后没拿到证书（PFX 里是不是没有私钥？）' }
+    $Thumbprint = $cert.Thumbprint
+    $isSelfSigned = ($cert.Issuer -eq $cert.Subject)
+    Ok "已导入 PFX 证书：$($cert.Subject)（指纹 $Thumbprint）"
 } else {
     if (-not $Thumbprint) {
         # 没指定就找本机已有的同 subject 自签名证书；没有则创建
@@ -110,9 +122,10 @@ if ($PfxPath) {
         if (-not $cert) { Die "证书库（CurrentUser\My）里找不到指纹为 $Thumbprint 的代码签名证书" }
     }
     $Thumbprint = $cert.Thumbprint
+    $isSelfSigned = ($cert.Issuer -eq $cert.Subject)
     Ok "使用证书：$($cert.Subject)（指纹 $Thumbprint，有效期至 $($cert.NotAfter.ToString('yyyy-MM-dd'))）"
     if (-not $ExportCer) { $ExportCer = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\certs' }
-    if ($cert.Subject -like '*CampusNet-Keeper*') {
+    if ($isSelfSigned) {
         New-Item -ItemType Directory -Force -Path $ExportCer | Out-Null
         $cerPath = Join-Path $ExportCer 'CampusNet-Keeper-codesign.cer'
         Export-Certificate -Cert $cert -FilePath $cerPath -Type CERT | Out-Null
@@ -125,28 +138,16 @@ Step "签名 $($targets.Count) 个文件"
 foreach ($file in $targets) {
     # 注意：变量不能叫 $args（PowerShell 自动变量），也别把参数数组塞进另一个数组再遍历
     #（`$list += $array` 在 PowerShell 里会被扁平化，结果是对 signtool 只传了 "sign" 一个词）。
+    # 无论证书来自 PFX 还是本机证书库，统一用指纹（/sha1）— 上一节已把 PFX 导入证书库。
     $signArgs = @('sign', '/fd', 'SHA256')
     if (-not $NoTimestamp) { $signArgs += @('/td', 'SHA256', '/tr', $TimestampUrl) }
-    if ($usePfx) {
-        $signArgs += @('/f', $PfxPath)
-        if ($PfxPassword) { $signArgs += @('/p', $PfxPassword) }
-    } else {
-        $signArgs += @('/sha1', $Thumbprint)
-    }
-    $signArgs += $file
+    $signArgs += @('/sha1', $Thumbprint, $file)
 
     & $signtool @signArgs
     $signed = ($LASTEXITCODE -eq 0)
     if (-not $signed -and -not $NoTimestamp) {
         Warn "带时间戳签名失败（可能是离线/时间戳服务器不可达）→ 重试不带时间戳"
-        $noTs = @('sign', '/fd', 'SHA256')
-        if ($usePfx) {
-            $noTs += @('/f', $PfxPath)
-            if ($PfxPassword) { $noTs += @('/p', $PfxPassword) }
-        } else {
-            $noTs += @('/sha1', $Thumbprint)
-        }
-        $noTs += $file
+        $noTs = @('sign', '/fd', 'SHA256', '/sha1', $Thumbprint, $file)
         & $signtool @noTs
         $signed = ($LASTEXITCODE -eq 0)
     }
@@ -160,8 +161,10 @@ $failed = 0
 foreach ($file in $targets) {
     $sig = Get-AuthenticodeSignature -FilePath $file
     $signer = if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { '' }
-    $isOurCert = if ($usePfx) { $sig.Status -eq 'Valid' } else { $signer -eq $Thumbprint }
-    $chainNote = if ($sig.Status -eq 'Valid') { '证书链可信' } else { "证书链状态=$($sig.Status)（自签名属预期）" }
+    # 成功判据 = 签名者是我们这张证书。**不能**用"证书链是否受信"当判据：
+    # 自签名证书在没导入受信任根的机器（例如 CI runner）上永远是 UnknownError。
+    $isOurCert = ($signer -eq $Thumbprint)
+    $chainNote = if ($sig.Status -eq 'Valid') { '证书链可信' } else { "证书链状态=$($sig.Status)（未导入受信任根时属预期）" }
     if ($sig.SignerCertificate -and $isOurCert) {
         Ok "$(Split-Path -Leaf $file)：已签名，$chainNote"
     } else {
@@ -171,8 +174,8 @@ foreach ($file in $targets) {
 }
 if ($failed -gt 0) { Die "$failed 个文件签名复核未通过" }
 
-if (-not $usePfx) {
-    Warn '当前是**自签名**：只有把导出的 .cer 装进「受信任的发布者」的机器才认；'
+if ($isSelfSigned) {
+    Warn '当前是**自签名**：只有把导出的 .cer 装进「受信任的根证书」的机器才认它；'
     Warn '陌生用户下载仍会看到 SmartScreen 警告——要彻底解决需购买 OV/EV 代码签名证书。'
 }
 Write-Host "`n签名完成 ✓" -ForegroundColor Green

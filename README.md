@@ -156,6 +156,10 @@ Windows 对**未签名**的下载程序会提示"未知发布者"（SmartScreen�
 - **GitHub Release 自动签名**：在仓库 Settings → Secrets and variables → Actions 配
   `CODESIGN_PFX_BASE64`（PFX 的 base64：`[Convert]::ToBase64String([IO.File]::ReadAllBytes('codesign.pfx'))`）
   与 `CODESIGN_PFX_PASSWORD`，release job 就会给两个发布包里的 exe 签名并复核；不配则跳过。
+- **本项目 v0.1.1 起的官方发布包是用自签名证书签的**（签名者显示 `CampusNet-Keeper (self-signed)`）：
+  文件属性里能看到数字签名，但**陌生机器上 SmartScreen 仍会警告**——这是自签名的本质局限，
+  不是没签。信任该证书的办法：把 `build\certs\CampusNet-Keeper-codesign.cer`（仓库里没有，
+  由 `-Sign` 生成）导入「受信任的根」。
 - EV 证书更容易获得 SmartScreen 信誉；OV 证书需要一定下载量才逐步解除警告。
 
 ## 构建
