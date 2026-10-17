@@ -10622,6 +10622,45 @@ Expected: GitHub Actions 自动构建并发布 Release，附带两个发布包�
 
 ---
 
+## 任务 28（追加，2026-10-17 用户反馈）：托盘图标 / 双击启动 / 数字签名
+
+> **背景（用户直接反馈的三件事）**：① 托盘图标还是 Windows 通用图标，要换成应用图标；
+> ② "第一次双击完整版 exe 时为什么不出现 UI 界面"——因为无参数启动走守护模式、只留托盘图标
+>（Win11 还会把它收进溢出区），用户以为没反应；③ 要给 exe 打数字签名。
+>
+> **实现**：
+> 1. **托盘图标改用应用图标 + 状态徽标**（`tray/TrayIcon.cpp`）：`LoadImageW` 从 exe 资源
+>    `IDI_APPICON`（`app.rc`，101）加载应用图标，按 `RunState` 在右下角合成状态圆点
+>    （在线绿 / 探测蓝 / 失败红 / 断开灰，与 DESIGN.md 语义令牌同源）。**踩坑记录**：GDI 往
+>    32bpp DIB 上画**不会补 alpha**，圆点在托盘里会变透明 → 改为逐像素写 ARGB + 1px 深色描边。
+>    图标按状态缓存、`Destroy()` 里 `DestroyIcon`，不泄漏。
+> 2. **双击 exe 自动打开设置界面**：无参数启动（`args.empty()`）时守护就绪后自动 `LaunchUiProcess()`；
+>    开机自启改为注册 `"<exe>" --autostart`，新增 CLI 标志 `--autostart` 表示"静默启动、不弹界面"。
+>    `IsAutostartEnabled` 比较改为"带引号 exe 路径前缀"，旧注册项（无参数）也仍算已启用。
+> 3. **数字签名**：新增 `scripts/sign.ps1`（signtool 自动定位；支持 PFX / 证书库指纹 / **自签名**三种
+>    来源；带时间戳，离线自动降级为不带时间戳并告警；签完用 `Get-AuthenticodeSignature` 复核；
+>    自签名公钥导出到 `build\certs\`）。`build.ps1 -Sign`（在"构建"与"安装"之间签名，保证安装后
+>    哈希一致仍成立）；`scripts/package.ps1 -Sign` 透传并在包自检里复核"包内 exe 有签名"；
+>    CI release job 新增"导入代码签名证书（可选）"（`CODESIGN_PFX_BASE64`/`CODESIGN_PFX_PASSWORD`
+>    两个 secret，未配置则跳过）+ 签名复核步骤。
+>
+> **顺带修的真问题**：IPC 测试原来用**正式用户管道名**，本机开着托盘实例时测试会连到真守护上
+>（拿到"未知命令"、Stop 后仍有监听）→ 4 条用例假失败。现在 `PipeServer` 支持 `SetName()`，
+> 测试一律用 `CampusNetKeeperTest.<pid>.<n>` 独立名字。**教训：测试与常驻进程共享命名资源 =
+> 假失败温床**。
+>
+> **验证**（真机）：`tools/verify_startup_ux.ps1` 全过——无参数启动自动弹界面（窗口标题
+> 「校园网助手 — 设置」）、日志确认"托盘图标：应用图标 IDI_APPICON"、`--autostart` 不弹界面且
+> 不被误判为双击、关窗后守护继续、干净退出无残留；C++ 全量 **274 用例 / 1189 断言全绿**；
+> 签名后 `--version` / `--ui-info` 仍正常（签名不破坏内嵌载荷）；`Get-AuthenticodeSignature`
+> 显示签名有效（自签名证书链"不受信任"属预期）。
+>
+> **遗留与注意**：① 自签名**只在本机信任该证书后**才不警告，公开分发仍需 OV/EV 证书（README
+> 写了 CI secrets 配置法）；② 托盘图标在 Win11 默认位于溢出区，这是系统行为、应用无法强制显示；
+> ③ 双击启动时若 daemon 已在运行，第二实例走"通知已有实例弹界面"路径（既有行为）。
+
+---
+
 ## 完成标准
 
 全部任务完成后，应能验证：

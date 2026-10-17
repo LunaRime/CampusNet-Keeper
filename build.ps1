@@ -44,7 +44,16 @@ param(
     [switch]$SelfContainedPayload,
     [switch]$SkipTests,
     [switch]$SkipUi,
-    [switch]$Package
+    [switch]$Package,
+    # ---- 数字签名（可选）----
+    # -Sign 后：给了 PfxPath 就用真实证书，给了 CertThumbprint 就用证书库里的，
+    # 什么都不给则用/创建自签名证书（免费，但只有信任它的机器认）。
+    [switch]$Sign,
+    [string]$CertThumbprint = '',
+    [string]$PfxPath = '',
+    [string]$PfxPassword = '',
+    [string]$TimestampUrl = '',
+    [switch]$NoTimestamp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,7 +67,7 @@ $outDir = Join-Path $root 'build\Release'   # **用户实际运行**的目录：
 $payloadDir = Join-Path $root 'build\generated'
 $script:failed = 0
 $script:stepNo = 0
-$script:stepTotal = 7 + $(if ($Package) { 1 } else { 0 })
+$script:stepTotal = 7 + $(if ($Package) { 1 } else { 0 }) + $(if ($Sign) { 1 } else { 0 })
 if ($SelfContainedPayload -and -not $SingleExe) {
     Write-Host '[警告] -SelfContainedPayload 只在 -SingleExe 下有意义；本次会被忽略（精简版不嵌载荷）' -ForegroundColor Yellow
 }
@@ -142,6 +151,24 @@ Invoke-Checked $cmake @(
 # ---------------------------------------------------------------- 3) 构建
 Step '构建 C++（cnk_core / 主程序 / 测试 / 探针）'
 Invoke-Checked $cmake @('--build', $devBuild, '--config', $Config) 'C++ 构建'
+
+# ---------------------------------------------------------------- 3b) 数字签名（可选）
+# 在**安装/打包之前**签开发树里的主程序：第 6 步的"安装后哈希一致"校验因此仍然成立，
+# 用户拿到的就是签名后的文件。
+if ($Sign) {
+    Step '数字签名'
+    $exeToSign = Join-Path $devBuild "$Config\CampusNet-Keeper.exe"
+    if (-not (Test-Path $exeToSign)) { Die "待签名文件不存在：$exeToSign" }
+    $signArgs = @('-NoProfile', '-File', (Join-Path $root 'scripts\sign.ps1'),
+                  '-Files', $exeToSign)
+    if ($CertThumbprint) { $signArgs += @('-Thumbprint', $CertThumbprint) }
+    if ($PfxPath) { $signArgs += @('-PfxPath', $PfxPath) }
+    if ($PfxPassword) { $signArgs += @('-PfxPassword', $PfxPassword) }
+    if ($TimestampUrl) { $signArgs += @('-TimestampUrl', $TimestampUrl) }
+    if ($NoTimestamp) { $signArgs += '-NoTimestamp' }
+    & pwsh @signArgs
+    if ($LASTEXITCODE -ne 0) { Die '数字签名失败' }
+}
 
 # ---------------------------------------------------------------- 4) 测试
 Step '运行 C++ 测试'

@@ -267,12 +267,15 @@ void HideConsoleIfStandalone() {
     }
 }
 
-int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst) {
+// open_ui_on_start：用户**双击 exe**（无参数）启动时，守护起来后自动打开设置界面。
+// 否则双击后只有托盘图标（还可能被折叠进溢出区），用户会以为"什么都没发生"。
+int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst, bool open_ui_on_start) {
     std::printf("CampusNet-Keeper 守护模式已启动（托盘驻留）。\n");
     std::printf("从终端启动时可按 Ctrl+C 退出；其它情况请使用托盘菜单退出。\n");
     std::fflush(stdout);
     HideConsoleIfStandalone();
-    if (!cnk::RunDaemonLoop(hinst, cfg)) {
+    if (open_ui_on_start) cnk::LogInfo("双击启动（无参数）：守护就绪后将自动打开设置界面");
+    if (!cnk::RunDaemonLoop(hinst, cfg, open_ui_on_start)) {
         std::printf("守护循环启动失败\n");
         return 1;
     }
@@ -619,6 +622,10 @@ int wmain(int, wchar_t**) {
         return 0;
     }
 
+    // 双击启动 = 一个参数都没有（不是 --autostart、不是任何显式开关）→ 守护起来后自动开界面。
+    // 开机自启带 --autostart（见 Autostart.cpp），其它形态（CLI/模拟/探针）都不会弹窗。
+    const bool open_ui_on_start = args.empty() && !opts.autostart_launch;
+
     int rc = 0;
     switch (opts.mode) {
         case cnk::CliMode::ProbeNow:  rc = RunProbeNow(cfg); break;
@@ -626,7 +633,7 @@ int wmain(int, wchar_t**) {
         case cnk::CliMode::TestLogin: rc = RunTestLogin(cfg); break;
         case cnk::CliMode::SetPassword: rc = RunSetPassword(cfg, opts); break;
         case cnk::CliMode::Daemon:
-        default:                      rc = RunDaemon(cfg, hinst); break;
+        default:                      rc = RunDaemon(cfg, hinst, open_ui_on_start); break;
     }
 
     if (sim.active) sim.server.Stop();

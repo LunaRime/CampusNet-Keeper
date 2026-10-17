@@ -1,0 +1,179 @@
+<#
+.SYNOPSIS
+  启动体验的真机验证：① 无参数启动（=双击 exe）后**自动打开设置界面**；
+  ② 开机自启形态（--autostart）**不**弹界面；③ 托盘图标确实用的是应用图标。
+
+.DESCRIPTION
+  ⚠ 需要 GUI 与 %APPDATA%/%LOCALAPPDATA% 写入，必须在非受限沙箱下运行。
+  ⚠ 会占用守护进程单实例名额，脚本启动前要求没有正在运行的 CampusNet-Keeper。
+
+  托盘图标的判定用**日志断言**（"托盘图标：应用图标 IDI_APPICON"）而不是截图：
+  Win11 默认把新托盘图标收进溢出区，截屏既拍不到、还会把用户桌面拍进去。
+
+.PARAMETER Exe
+  被测可执行文件（默认 build\Release\CampusNet-Keeper.exe；建议先用 -SingleExe 构建）。
+
+.EXAMPLE
+  pwsh -File tools/verify_startup_ux.ps1 -Exe build-m1\Release\CampusNet-Keeper.exe
+#>
+[CmdletBinding()]
+param(
+    [string]$Exe = 'build\Release\CampusNet-Keeper.exe',
+    [int]$TimeoutSec = 60
+)
+
+$ErrorActionPreference = 'Stop'
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+$root = Split-Path -Parent $PSScriptRoot
+if (-not [System.IO.Path]::IsPathRooted($Exe)) { $Exe = Join-Path $root $Exe }
+
+$script:failed = 0
+function Ok($m) { Write-Host "  [OK] $m" -ForegroundColor Green }
+function Bad($m) { Write-Host "  [失败] $m" -ForegroundColor Red; $script:failed++ }
+function Info($m) { Write-Host "  $m" -ForegroundColor DarkGray }
+function Title($m) { Write-Host "`n=== $m ===" -ForegroundColor Cyan }
+function Check($cond, $m) { if ($cond) { Ok $m } else { Bad $m } }
+
+$logPath = Join-Path $env:APPDATA 'CampusNet-Keeper\logs\keeper.log'
+function Read-LogText {
+    if (-not (Test-Path $logPath)) { return '' }
+    try { return (Get-Content -Raw -Path $logPath -ErrorAction Stop) } catch { return '' }
+}
+function Wait-LogMatch([string]$pattern, [string]$baseline, [int]$timeoutSec = 20) {
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $text = Read-LogText
+        $tail = if ($null -ne $baseline -and $text.Length -ge $baseline.Length) {
+            $text.Substring($baseline.Length)
+        } else { $text }
+        if ($tail -match $pattern) { return $tail }
+        Start-Sleep -Milliseconds 250
+    }
+    return $null
+}
+function Get-UiWindows {
+    return @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue |
+             Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero -and
+                            $_.MainWindowTitle -match '设置' })
+}
+
+# 让守护进程干净退出：给隐藏窗口发 WM_CLOSE（与托盘菜单「退出」同一条路径）
+if (-not ('CnkUx.Win32' -as [type])) {
+    Add-Type -Namespace CnkUx -Name Win32 -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool EnumWindows(EnumProc cb, System.IntPtr p);
+public delegate bool EnumProc(System.IntPtr h, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern int GetClassNameW(System.IntPtr h, System.Text.StringBuilder sb, int max);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool PostMessageW(System.IntPtr hWnd, uint Msg, System.IntPtr wParam, System.IntPtr lParam);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool SetProcessDPIAware();
+'@
+}
+function Stop-DaemonCleanly([int]$timeoutSec = 15) {
+    $script:hidden = [IntPtr]::Zero
+    $cb = [CnkUx.Win32+EnumProc]{
+        param($h, $p)
+        $sb = [System.Text.StringBuilder]::new(256)
+        [void][CnkUx.Win32]::GetClassNameW($h, $sb, 256)
+        if ($sb.ToString() -eq 'CampusNetKeeperHidden') { $script:hidden = $h; return $false }
+        return $true
+    }
+    [void][CnkUx.Win32]::EnumWindows($cb, [IntPtr]::Zero)
+    if ($script:hidden -eq [IntPtr]::Zero) { return $false }
+    [void][CnkUx.Win32]::PostMessageW($script:hidden, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue)) { return $true }
+        Start-Sleep -Milliseconds 250
+    }
+    return $false
+}
+function Screenshot-TrayArea([string]$outPath) {
+    Add-Type -AssemblyName System.Drawing, System.Windows.Forms -ErrorAction Stop
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $w = [Math]::Min(620, $b.Width)
+    $h = [Math]::Min(80, $b.Height)
+    $bmp = New-Object System.Drawing.Bitmap $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($b.Width - $w, $b.Height - $h, 0, 0, $bmp.Size)
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $outPath) | Out-Null
+    $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $g.Dispose(); $bmp.Dispose()
+    return $outPath
+}
+
+if (-not (Test-Path $Exe)) { throw "找不到可执行文件：$Exe" }
+$running = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue)
+if ($running.Count -gt 0) {
+    $running | Select-Object Id, MainWindowTitle | Format-Table -AutoSize | Out-String | Write-Host
+    throw '请先退出正在运行的 CampusNet-Keeper（本脚本要占用单实例名额）'
+}
+
+# ---------------------------------------------------------------- 1) 双击形态
+Title '1) 无参数启动（= 双击 exe）：应自动打开设置界面'
+$baseline = Read-LogText
+$daemon = Start-Process -FilePath $Exe -PassThru   # 默认 ShellExecute，最接近双击
+Info "启动 PID=$($daemon.Id)（无参数）"
+
+$tail = Wait-LogMatch '双击启动（无参数）' $baseline 30
+Check ($null -ne $tail) '守护进程日志确认「双击启动（无参数）」'
+Check ($null -ne (Wait-LogMatch '自动打开设置界面' $baseline 30)) '守护进程日志确认「自动打开设置界面」'
+# 托盘图标：应用图标加载成功时守护进程会记一行（Win11 会把新图标收进溢出区，截图不可靠）
+Check ($null -ne (Wait-LogMatch '托盘图标：应用图标' $baseline 20)) '托盘图标使用应用图标（日志确认 IDI_APPICON 已加载）'
+
+$ui = $null
+$deadline = (Get-Date).AddSeconds($TimeoutSec)
+while ((Get-Date) -lt $deadline) {
+    $ui = Get-UiWindows | Select-Object -First 1
+    if ($ui) { break }
+    Start-Sleep -Milliseconds 300
+}
+Check ($null -ne $ui) '设置界面窗口已自动出现'
+if ($ui) { Info "界面 PID=$($ui.Id) 标题=『$($ui.MainWindowTitle)』" }
+
+# 托盘图标本身由上面的日志断言覆盖；这里不再截图（截图会拍到用户桌面/其它窗口，不入库）
+
+# 关掉界面，守护应继续
+if ($ui) { $null = $ui.CloseMainWindow(); $null = $ui.WaitForExit(15000) }
+Start-Sleep -Seconds 1
+Check (@(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue).Count -ge 1) '关窗后守护进程继续运行'
+
+# ---------------------------------------------------------------- 2) 自启形态
+Title '2) 开机自启形态（--autostart）：守护启动但**不**弹界面'
+Check (Stop-DaemonCleanly) '守护进程已干净退出（为下一步腾出单实例）'
+$baseline = Read-LogText
+$auto = Start-Process -FilePath $Exe -ArgumentList '--autostart' -PassThru
+Info "启动 PID=$($auto.Id)（--autostart）"
+Check ($null -ne (Wait-LogMatch '进入托盘守护循环' $baseline 30)) '守护循环已启动'
+$ui2 = $null
+$deadline = (Get-Date).AddSeconds(10)
+while ((Get-Date) -lt $deadline) {
+    $ui2 = Get-UiWindows | Select-Object -First 1
+    if ($ui2) { break }
+    Start-Sleep -Milliseconds 300
+}
+Check ($null -eq $ui2) '没有自动弹出设置界面（开机自启不应打扰用户）'
+# 只检查**本次**启动新增的日志：整段日志里还留着上一步"自动打开设置界面"的记录
+$autoTail = Read-LogText
+$autoTail = if ($autoTail.Length -ge $baseline.Length) { $autoTail.Substring($baseline.Length) } else { $autoTail }
+Check (-not ($autoTail -match '自动打开设置界面')) '本次自启的日志里没有「自动打开设置界面」'
+Check (-not ($autoTail -match '双击启动')) '本次自启没有被误判为双击启动'
+
+# ---------------------------------------------------------------- 收尾
+Title '3) 收尾'
+Check (Stop-DaemonCleanly) '守护进程已干净退出'
+$left = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue)
+Check ($left.Count -eq 0) '无残留进程'
+
+Write-Host ''
+if ($script:failed -eq 0) {
+    Write-Host '启动体验验证：全部通过 ✓' -ForegroundColor Green
+    exit 0
+} else {
+    Write-Host "启动体验验证：$($script:failed) 项失败 ✗" -ForegroundColor Red
+    exit 1
+}

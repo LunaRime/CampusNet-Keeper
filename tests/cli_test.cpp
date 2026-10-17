@@ -122,3 +122,17 @@ TEST_CASE("帮助文本列出 --ui-info 与三档退出码") {
     CHECK(h.find("--ui-info") != std::string::npos);
     CHECK(h.find("精简版") != std::string::npos);
 }
+
+TEST_CASE("解析 --autostart（开机自启：守护照常启动但不自动弹界面）") {
+    // 双击 exe（无参数）→ 守护 + 自动开界面；开机自启带 --autostart → 静默。
+    auto o = cnk::ParseCli({"--autostart"});
+    CHECK(o.mode == cnk::CliMode::Daemon);
+    CHECK(o.autostart_launch);
+    CHECK(o.unknown.empty());
+
+    // 无参数时不算自启（main.cpp 据此决定要不要自动打开界面）
+    auto plain = cnk::ParseCli({});
+    CHECK(plain.mode == cnk::CliMode::Daemon);
+    CHECK_FALSE(plain.autostart_launch);
+    CHECK(plain.unknown.empty());
+}

@@ -9,6 +9,11 @@ namespace cnk {
 
 class TrayIcon {
 public:
+    TrayIcon() = default;
+    ~TrayIcon();
+    TrayIcon(const TrayIcon&) = delete;
+    TrayIcon& operator=(const TrayIcon&) = delete;
+
     bool Create(HINSTANCE hinst, const char* tooltip);
     void Destroy();
     void SetState(RunState state, const std::string& tooltip);
@@ -36,11 +41,19 @@ private:
 
     void OnTrayMessage(LPARAM lparam);
     void ShowContextMenu();
-    HICON IconForState(RunState s) const;
+    // 应用图标 + 状态徽标（按状态缓存；不再是 Windows 通用图标）
+    HICON IconForState(RunState s);
+    void DestroyIcons();
+
+    HICON app_icon_ = nullptr;        // exe 资源里的应用图标（IDI_APPICON）
+    HICON state_icons_[8] = {};       // 按 RunState 缓存的合成图标
 };
 
 // 阻塞式守护循环：创建托盘、装 500ms 定时器驱动 Scheduler、
 // 接入地址变更监听，直到退出消息。
-bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg);
+// open_ui_on_start：用户**双击 exe**（无参数）启动时，托盘就绪后自动打开设置界面——
+// 否则双击后只看得到托盘图标（还可能被折叠进溢出区），像是"什么都没发生"。
+// 开机自启带 --autostart，不会传这个标志。
+bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start = false);
 
 }  // namespace cnk

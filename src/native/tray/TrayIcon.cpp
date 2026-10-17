@@ -7,8 +7,12 @@
 #include "ipc/PipeServer.h"
 #include "ui_host/Hostfxr.h"
 #include <shellapi.h>
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <thread>
+#include <vector>
 
 namespace cnk {
 
@@ -19,6 +23,10 @@ namespace {
 constexpr UINT kTrayCallbackMsg = WM_APP + 1;   // 已与 kMsgShowUiRequest(+100) 错开
 constexpr UINT kTimerId = 1;
 constexpr UINT kTimerIntervalMs = 500;
+
+// 应用图标资源 id：必须与 src/native/app.rc 的 `#define IDI_APPICON` 一致
+constexpr int kAppIconResourceId = 101;
+constexpr int kStateCount = 8;   // RunState 目前 7 个，留一个余量
 
 enum MenuId {
     kMenuStatus = 1,
@@ -42,23 +50,132 @@ void OpenPathInExplorer(const std::string& path) {
                   nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-}  // namespace
+// ---------------------------------------------------------------- 托盘图标
 
-HICON TrayIcon::IconForState(RunState s) const {
-    // 使用系统内置图标区分状态，避免外部资源依赖（M2 可替换为自绘图标）
-    LPCWSTR id = IDI_APPLICATION;
+// 状态徽标颜色（与 DESIGN.md 的语义令牌同源：成功绿 / 信息蓝 / 危险红 / 中性灰）
+COLORREF BadgeColor(RunState s) {
     switch (s) {
-        case RunState::Online:            id = IDI_INFORMATION; break;
-        case RunState::Disconnected:      id = IDI_WARNING; break;
-        case RunState::AuthFailed:
-        case RunState::NotCampusNetwork:  id = IDI_ERROR; break;
+        case RunState::Online: return RGB(0x16, 0xA3, 0x4A);
         case RunState::Probing:
         case RunState::PortalDetected:
-        case RunState::Authenticating:
-        default:                          break;   // 默认图标
+        case RunState::Authenticating: return RGB(0x25, 0x63, 0xEB);
+        case RunState::AuthFailed:
+        case RunState::NotCampusNetwork: return RGB(0xDC, 0x26, 0x26);
+        case RunState::Disconnected:
+        default: return RGB(0x6B, 0x72, 0x80);
     }
-    return LoadIconW(nullptr, id);
 }
+
+// 从本 exe 资源加载应用图标；资源缺失（例如测试程序没编进 app.rc）时回退系统图标
+HICON LoadAppIcon(HINSTANCE hinst, int size) {
+    HICON icon = (HICON)LoadImageW(hinst, MAKEINTRESOURCEW(kAppIconResourceId),
+                                   IMAGE_ICON, size, size, LR_DEFAULTCOLOR);
+    if (!icon) {
+        icon = (HICON)LoadImageW(nullptr, IDI_APPLICATION, IMAGE_ICON, size, size,
+                                 LR_DEFAULTCOLOR | LR_SHARED);
+    }
+    return icon;
+}
+
+// 合成"应用图标 + 右下角状态圆点"的托盘图标。
+// 为什么手写像素而不是用 GDI 画圆：GDI 往 32bpp DIB 上画**不会补 alpha**，
+// 画出来的圆点在托盘里会变透明（经典坑）。这里逐像素写 ARGB，并给圆点加 1px 深色
+// 描边，保证在深/浅任务栏上都有边界感。
+HICON ComposeStateIcon(HICON base, COLORREF color, int size) {
+    if (!base || size <= 0) return nullptr;
+
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = size;
+    bi.bmiHeader.biHeight = -size;   // 负高度 = 自上而下，行序与直觉一致
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    if (!screen) return nullptr;
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP color_bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!mem || !color_bmp || !bits) {
+        if (color_bmp) DeleteObject(color_bmp);
+        if (mem) DeleteDC(mem);
+        ReleaseDC(nullptr, screen);
+        return nullptr;
+    }
+    HGDIOBJ old = SelectObject(mem, color_bmp);
+    std::memset(bits, 0, (size_t)size * (size_t)size * 4u);
+    DrawIconEx(mem, 0, 0, base, size, size, 0, nullptr, DI_NORMAL);
+    SelectObject(mem, old);
+
+    auto* px = static_cast<uint32_t*>(bits);
+    const int r = std::max(3, size / 3);      // 徽标半径
+    const int cx = size - r - 1;
+    const int cy = size - r - 1;
+    const uint8_t cr = GetRValue(color);
+    const uint8_t cg = GetGValue(color);
+    const uint8_t cb = GetBValue(color);
+    const int r_in = std::max(1, r - 1);      // 描边内圈
+    for (int y = cy - r; y <= cy + r; ++y) {
+        for (int x = cx - r; x <= cx + r; ++x) {
+            if (x < 0 || y < 0 || x >= size || y >= size) continue;
+            const int dx = x - cx;
+            const int dy = y - cy;
+            const int d2 = dx * dx + dy * dy;
+            uint32_t argb = 0;
+            if (d2 <= r_in * r_in) {
+                argb = 0xFF000000u | ((uint32_t)cr << 16) | ((uint32_t)cg << 8) | cb;
+            } else if (d2 <= r * r) {
+                argb = 0xFF1F1F1Fu;           // 深色描边：浅色任务栏上也看得见边界
+            } else {
+                continue;
+            }
+            px[(size_t)y * size + x] = argb;
+        }
+    }
+
+    // 32bpp 图标靠 alpha 通道；mask 全 0（不透明）即可，现代 shell 不看 mask
+    std::vector<uint8_t> mask_bits((size_t)(((size + 15) / 16) * 2) * (size_t)size, 0);
+    HBITMAP mask = CreateBitmap(size, size, 1, 1, mask_bits.data());
+    ICONINFO ii{};
+    ii.fIcon = TRUE;
+    ii.hbmColor = color_bmp;
+    ii.hbmMask = mask;
+    HICON icon = CreateIconIndirect(&ii);
+
+    DeleteObject(color_bmp);
+    if (mask) DeleteObject(mask);
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return icon;
+}
+
+}  // namespace
+
+HICON TrayIcon::IconForState(RunState s) {
+    const int idx = (int)s;
+    if (idx < 0 || idx >= kStateCount) return app_icon_;
+    if (!state_icons_[idx]) {
+        state_icons_[idx] = ComposeStateIcon(app_icon_, BadgeColor(s),
+                                             GetSystemMetrics(SM_CXSMICON));
+    }
+    return state_icons_[idx] ? state_icons_[idx] : app_icon_;
+}
+
+void TrayIcon::DestroyIcons() {
+    for (auto& icon : state_icons_) {
+        if (icon) {
+            DestroyIcon(icon);
+            icon = nullptr;
+        }
+    }
+    if (app_icon_) {
+        DestroyIcon(app_icon_);
+        app_icon_ = nullptr;
+    }
+}
+
+TrayIcon::~TrayIcon() { DestroyIcons(); }
 
 LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     TrayIcon* self = (TrayIcon*)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -99,6 +216,15 @@ bool TrayIcon::Create(HINSTANCE hinst, const char* tooltip) {
     wc.lpszClassName = kHiddenWindowClass;
     RegisterClassExW(&wc);   // 已注册时返回 0，可忽略
 
+    // 托盘/任务栏用**应用自己的图标**（exe 资源 IDI_APPICON），不再用 Windows 通用图标
+    const int icon_size = GetSystemMetrics(SM_CXSMICON);
+    app_icon_ = LoadAppIcon(hinst, icon_size > 0 ? icon_size : 16);
+    if (app_icon_) {
+        LogInfo("托盘图标：应用图标 IDI_APPICON（" + std::to_string(icon_size) + "px，按状态合成徽标）");
+    } else {
+        LogWarn("加载应用图标失败（app.rc 里的 IDI_APPICON？），托盘将用系统默认图标");
+    }
+
     hwnd_ = CreateWindowExW(0, kHiddenWindowClass, L"CampusNetKeeper",
                             0, 0, 0, 0, 0, nullptr, nullptr, hinst, this);
     if (!hwnd_) return false;
@@ -131,6 +257,7 @@ void TrayIcon::Destroy() {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
+    DestroyIcons();
 }
 
 void TrayIcon::SetState(RunState state, const std::string& tooltip) {
@@ -197,7 +324,7 @@ void TrayIcon::ShowContextMenu() {
     DestroyMenu(menu);
 }
 
-bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg) {
+bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
     auto sch = std::make_shared<Scheduler>(cfg);
     TrayIcon tray;
 
@@ -259,6 +386,14 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg) {
         } else {
             LogWarn("设置界面 IPC 启动失败：" + ipc_err + "（界面将连不上，守护功能不受影响）");
         }
+    }
+
+    // 用户**双击 exe**（无参数）首次启动时，托盘就绪后自动打开设置界面。
+    // 否则双击后只有托盘图标（还可能被折叠进溢出区）——对用户来说就像"什么都没发生"。
+    // 开机自启带 --autostart，不会走到这里。
+    if (open_ui_on_start) {
+        LogInfo("检测到双击启动（无参数）：自动打开设置界面");
+        open_ui();
     }
 
     RunState last_state = RunState::Disconnected;

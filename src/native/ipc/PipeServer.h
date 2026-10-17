@@ -39,6 +39,11 @@ public:
     // 读一条请求的超时（毫秒）。默认 3000。必须在 Start 之前调用。
     void SetReadTimeoutMs(int ms);
 
+    // 自定义完整管道路径（含 `\\.\pipe\` 前缀）。必须在 Start 之前调用。
+    // 不给就用 PipeNameForCurrentUser()。**测试专用**：本机可能正跑着守护进程，
+    // 测试若用正式管道名会连到真守护上（"未知命令"、Stop 后仍有监听）→ 一串假失败。
+    void SetName(const std::string& full_name);
+
     // 当前使用的完整管道路径（Start 之前也会算出来，便于日志与排查）
     std::string Name() const;
 

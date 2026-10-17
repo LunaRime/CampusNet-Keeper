@@ -8,6 +8,10 @@
 ## 特性
 
 - **原生实现**：C++17，静态链接运行库（/MT），零动态库依赖
+- **托盘即应用图标**：托盘/任务栏显示的是应用自己的图标（不再是 Windows 通用图标），
+  右下角按状态合成小徽标（在线绿 / 探测蓝 / 失败红 / 断开灰）
+- **双击就开界面**：双击 exe 会启动守护并**自动打开设置界面**（不再出现"点了没反应"）；
+  开机自启带 `--autostart`，静默驻留不打扰
 - **极低占用**：后台常驻工作集约 15 MB（进程私有约 2.7 MB，其余为共享的 DLL 页；spec 的
   S2 目标「<10 MB」按任务管理器的"内存"列/专用工作集口径达成），空闲 CPU ≈ 0%（500ms 定时器驱动）
 - **自动重连**：网络断开或被 Portal 劫持时自动重新登录（Dr.COM 完整实现）
@@ -20,11 +24,12 @@
 
 ## 快速开始
 
-    CampusNet-Keeper.exe --detect                      # 识别你学校的认证系统
-    CampusNet-Keeper.exe --probe-now                   # 检查当前网络状态
-    CampusNet-Keeper.exe --set-password --user=学号    # 录入密码（DPAPI 加密保存）
-    CampusNet-Keeper.exe --test-login                  # 试一次登录（需先在门户注销）
-    CampusNet-Keeper.exe                               # 后台守护（托盘驻留）
+    CampusNet-Keeper.exe                              # 双击/无参数：守护 + 自动打开设置界面
+    CampusNet-Keeper.exe --autostart                  # 开机自启用：守护静默驻留，不弹界面
+    CampusNet-Keeper.exe --detect                     # 识别你学校的认证系统
+    CampusNet-Keeper.exe --probe-now                  # 检查当前网络状态
+    CampusNet-Keeper.exe --set-password --user=学号   # 录入密码（DPAPI 加密保存）
+    CampusNet-Keeper.exe --test-login                 # 试一次登录（需先在门户注销）
 
 完整步骤与反馈要求见 `docs/M1-实测指南.md`。
 
@@ -49,8 +54,9 @@ IPC 与守护进程通信，**密码明文从不离开守护进程**（界面只
 
 | 选项 | 说明 |
 |---|---|
-| （无选项） | 以守护模式运行，托盘驻留 |
-| `--ui` | 打开设置界面（托盘「设置…」就是启动自身副本并带上这个参数） |
+| （无选项） | 启动守护并**自动打开设置界面**（双击 exe 就是这个行为） |
+| `--autostart` | 开机自启形态：守护静默驻留、**不**弹界面（自启动项里会自动带上） |
+| `--ui` | 只打开设置界面（托盘「设置…」就是启动自身副本并带上这个参数） |
 | `--ui-info` | 自检界面载荷与 .NET 运行时可用性（不弹窗；退出码 0=就绪 3=精简版 4=缺运行时） |
 | `--probe-now` | 执行一次网络探测并输出结果 |
 | `--test-login` | 一次探测 + 登录尝试，输出完整请求（已脱敏） |
@@ -132,6 +138,26 @@ IPC 与守护进程通信，**密码明文从不离开守护进程**（界面只
 6. **界面已打开但被别的窗口盖住/最小化时，再点托盘只弹一句气泡**，不会把已有窗口带到前台
    （第二个 `--ui` 会直接退出，避免连点堆出一串窗口）。想前置窗口请从任务栏切换。
 
+## 数字签名
+
+Windows 对**未签名**的下载程序会提示"未知发布者"（SmartScreen）。项目内置签名流程：
+
+    # 本地自签名（免费；只有信任该证书的机器认，公开分发仍会被 SmartScreen 拦）
+    pwsh -File build.ps1 -SingleExe -Sign
+    # 用真实的 OV/EV 代码签名证书（推荐用于公开发布）
+    pwsh -File build.ps1 -SingleExe -Sign -PfxPath codesign.pfx -PfxPassword <密码>
+
+- 自签名模式会自动创建/复用证书（`Cert:\CurrentUser\My`），公钥导出到
+  `build\certs\CampusNet-Keeper-codesign.cer`。想让**本机**不再警告，可把该 .cer 导入
+  「当前用户 → 受信任的根证书颁发机构」（`Import-Certificate -CertStoreLocation Cert:\CurrentUser\Root`）——
+  这等于信任"持有该证书私钥的人"签名的任何代码，请自行判断。
+- 签名后自动复核（`Get-AuthenticodeSignature`）：自签名会显示证书链"不受信任"（预期）；
+  只要签名者证书匹配即算成功。
+- **GitHub Release 自动签名**：在仓库 Settings → Secrets and variables → Actions 配
+  `CODESIGN_PFX_BASE64`（PFX 的 base64：`[Convert]::ToBase64String([IO.File]::ReadAllBytes('codesign.pfx'))`）
+  与 `CODESIGN_PFX_PASSWORD`，release job 就会给两个发布包里的 exe 签名并复核；不配则跳过。
+- EV 证书更容易获得 SmartScreen 信誉；OV 证书需要一定下载量才逐步解除警告。
+
 ## 构建
 
 依赖：Visual Studio 2022（含 C++ 桌面开发工作负载）。设置界面额外需要 .NET SDK 10。
@@ -140,6 +166,7 @@ IPC 与守护进程通信，**密码明文从不离开守护进程**（界面只
 
     pwsh -File build.ps1              # 完整构建（精简版单 exe：不含设置界面）
     pwsh -File build.ps1 -SingleExe   # 完整版单 exe：发布界面 → 内嵌载荷（exe 约 24 MB）
+    pwsh -File build.ps1 -SingleExe -Sign   # 同上，并对 exe 打数字签名（见「数字签名」）
     pwsh -File build.ps1 -Package     # 额外产出发布压缩包
     pwsh -File build.ps1 -SkipUi      # 只构建 C++（没装 .NET SDK 也能跑）
     pwsh -File scripts/package.ps1    # 正式发布：精简版 + 完整版两个包（见下）
@@ -188,10 +215,14 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
     pwsh -File tools/check_ui_tokens.ps1          # UI 令牌层静态检查（不需要编译器）
     pwsh -File tools/verify_ui_host.ps1           # 单 exe 界面：释放载荷 → 弹窗 → 关窗退出 → 命中版本戳
     pwsh -File tools/verify_tray_open_ui.ps1      # 托盘「设置…」拉起 --ui（模拟守护，不碰真实网络）
+    pwsh -File tools/verify_startup_ux.ps1        # 双击启动自动开界面、--autostart 静默、托盘用应用图标
     python docs/evidence/audit_redaction.py       # 证据文件脱敏审计
 
-两个 `verify_*.ps1` 脚本都是**真机验证**（要 GUI 与 `%LOCALAPPDATA%` 写入，不能在受限沙箱里跑），
-`--simulate=drcom` 那条不会碰真实校园网。界面宿主（载荷 + hostfxr）的细节见 `src/ui/README.md`。
+三个 `verify_*.ps1` 脚本都是**真机验证**（要 GUI 与 `%LOCALAPPDATA%` 写入，不能在受限沙箱里跑），
+`--simulate=drcom` 那条不会碰真实校园网；跑之前要先退出正在运行的托盘实例。
+界面宿主（载荷 + hostfxr）的细节见 `src/ui/README.md`。
+
+> IPC 测试用的是**独立测试管道名**，所以即使你正开着托盘实例，测试也不会串到真守护上。
 
 `build-m1\Release\cnk_ipc_probe.exe` 是**测试用探针服务端**（不随发布分发）：用
 `--seconds=45` 起它，再跑 `ContractCheck`，即可验证跨语言 IPC 契约与界面命令。

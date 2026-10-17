@@ -146,6 +146,7 @@ std::string PipeNameForCurrentUser() {
 
 struct PipeServer::Impl {
     std::wstring pipe_name;      // 完整路径（宽字符）
+    std::wstring custom_name;    // SetName() 指定的路径（测试用）；空则用当前用户管道名
     SECURITY_ATTRIBUTES sa{};
     PSECURITY_DESCRIPTOR sd = nullptr;  // 必须活到所有 CreateNamedPipeW 之后
     HANDLE stop_event = nullptr;
@@ -355,7 +356,9 @@ bool PipeServer::Start(Handler handler, std::string& error) {
     // 绝不能对 joinable 线程重新赋值（会 std::terminate）。
     if (impl_->worker.joinable()) impl_->worker.join();
 
-    impl_->pipe_name = Utf8ToWide(PipeNameForCurrentUser());
+    impl_->pipe_name = impl_->custom_name.empty()
+        ? Utf8ToWide(PipeNameForCurrentUser())
+        : impl_->custom_name;
     if (impl_->pipe_name.empty()) {
         error = "无法生成管道名";
         return false;
@@ -422,8 +425,13 @@ void PipeServer::SetReadTimeoutMs(int ms) {
     if (ms > 0) impl_->read_timeout_ms = ms;
 }
 
+void PipeServer::SetName(const std::string& full_name) {
+    impl_->custom_name = Utf8ToWide(full_name);
+}
+
 std::string PipeServer::Name() const {
     if (!impl_->pipe_name.empty()) return WideToUtf8(impl_->pipe_name);
+    if (!impl_->custom_name.empty()) return WideToUtf8(impl_->custom_name);
     return PipeNameForCurrentUser();
 }
 

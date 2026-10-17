@@ -125,6 +125,31 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: 导入代码签名证书（可选）
+        shell: pwsh
+        env:
+          # 仓库 Settings → Secrets and variables → Actions 配这两个 secret 即启用签名：
+          #   CODESIGN_PFX_BASE64   代码签名证书 PFX 的 base64
+          #                          Windows 生成： [Convert]::ToBase64String([IO.File]::ReadAllBytes('codesign.pfx'))
+          #   CODESIGN_PFX_PASSWORD PFX 密码
+          # 没配置 → 本次发布**不签名**（见 README「数字签名」）。
+          PFX_BASE64: ${{ secrets.CODESIGN_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.CODESIGN_PFX_PASSWORD }}
+        run: |
+          if (-not $env:PFX_BASE64) {
+            Write-Host "未配置 CODESIGN_PFX_BASE64 secret：本次发布不签名（自签名证书不适合公开发布）"
+            exit 0
+          }
+          if (-not $env:PFX_PASSWORD) {
+            Write-Error "配置了 CODESIGN_PFX_BASE64 但没有 CODESIGN_PFX_PASSWORD"
+            exit 1
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+          "CNK_SIGN_PFX_PATH=$pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CNK_SIGN_PFX_PASSWORD=$env:PFX_PASSWORD" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "已导入签名证书（PFX 来自 secrets，不落库）"
+
       - name: 校验 tag 与 Version.h 一致
         shell: pwsh
         run: |
@@ -141,8 +166,27 @@ jobs:
       - name: 构建两个发布包（走 scripts/package.ps1）
         shell: pwsh
         run: |
-          pwsh -NoProfile -File scripts/package.ps1 -Version "${{ github.ref_name }}"
+          $pkgArgs = @('-NoProfile', '-File', 'scripts/package.ps1', '-Version', "${{ github.ref_name }}")
+          # 上一步导入过证书（CNK_SIGN_PFX_PATH 经 GITHUB_ENV 提供）才签名
+          if ($env:CNK_SIGN_PFX_PATH) { $pkgArgs += '-Sign' }
+          & pwsh @pkgArgs
           if ($LASTEXITCODE -ne 0) { Write-Error "打包失败"; exit 1 }
+
+      - name: 签名复核（有签名时）
+        shell: pwsh
+        run: |
+          if (-not $env:CNK_SIGN_PFX_PATH) { Write-Host "未签名，跳过"; exit 0 }
+          $failed = 0
+          Get-ChildItem dist -Filter '*.zip' | ForEach-Object {
+            $tmp = Join-Path $env:RUNNER_TEMP $_.BaseName
+            Expand-Archive $_.FullName -DestinationPath $tmp -Force
+            $exe = Join-Path $tmp 'CampusNet-Keeper.exe'
+            $sig = Get-AuthenticodeSignature $exe
+            Write-Host ("{0}: {1} / {2}" -f $_.Name, $sig.Status, $sig.SignerCertificate.Subject)
+            if (-not $sig.SignerCertificate) { $failed++ }
+          }
+          if ($failed -gt 0) { Write-Error "$failed 个发布包里的 exe 没有签名"; exit 1 }
+          exit 0
 
       - name: 列出产物
         shell: pwsh

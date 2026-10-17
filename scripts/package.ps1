@@ -29,7 +29,14 @@ param(
     [string]$Version = '',
     [switch]$SkipTests,
     [switch]$LiteOnly,
-    [switch]$FullOnly
+    [switch]$FullOnly,
+    # ---- 数字签名（可选，透传给 build.ps1）----
+    [switch]$Sign,
+    [string]$CertThumbprint = '',
+    [string]$PfxPath = '',
+    [string]$PfxPassword = '',
+    [string]$TimestampUrl = '',
+    [switch]$NoTimestamp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +84,14 @@ function Build-Package([string]$flavor) {
     $buildArgs = @('-NoProfile', '-File', (Join-Path $root 'build.ps1'))
     if ($isFull) { $buildArgs += '-SingleExe' }
     if ($SkipTests) { $buildArgs += '-SkipTests' }
+    if ($Sign) {
+        $buildArgs += '-Sign'
+        if ($CertThumbprint) { $buildArgs += @('-CertThumbprint', $CertThumbprint) }
+        if ($PfxPath) { $buildArgs += @('-PfxPath', $PfxPath) }
+        if ($PfxPassword) { $buildArgs += @('-PfxPassword', $PfxPassword) }
+        if ($TimestampUrl) { $buildArgs += @('-TimestampUrl', $TimestampUrl) }
+        if ($NoTimestamp) { $buildArgs += '-NoTimestamp' }
+    }
     & pwsh @buildArgs
     if ($LASTEXITCODE -ne 0) { Die "build.ps1$(if ($isFull) { ' -SingleExe' }) 失败（退出码 $LASTEXITCODE）" }
 
@@ -136,6 +151,14 @@ function Build-Package([string]$flavor) {
     if ($isFull -and -not (($infoOut -join "`n") -match '全部为存储型')) { Die '完整版载荷里含压缩条目（运行时会被拒绝）' }
     if ($isFull -and -not (($infoOut -join "`n") -match '载荷校验: 通过')) { Die '完整版载荷未通过干跑校验' }
     if (-not $isFull -and (($infoOut -join "`n") -match '载荷: 存在')) { Die '精简版包里居然有内嵌载荷' }
+
+    # 签名自检：要求签名时，包里那个 exe 必须带签名（防止"本机签了、装进包的却是旧文件"）
+    if ($Sign) {
+        $sig = Get-AuthenticodeSignature -FilePath $packedExe
+        if (-not $sig.SignerCertificate) { Die "$zipName 里的 exe 没有数字签名（-Sign 已开启）" }
+        Ok ("签名：{0}（状态 {1}；自签名在未信任机器上显示不信任属预期）" -f
+            $sig.SignerCertificate.Subject, $sig.Status)
+    }
 
     $info = Get-Item $zip
     Ok ("{0}  {1:N1} MB（解包自检：--version OK，--ui-info 退出 {2}）" -f $zipName, ($info.Length / 1MB), $infoRc)

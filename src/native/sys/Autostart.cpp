@@ -57,7 +57,9 @@ bool SetAutostart(bool enable, std::string& error) {
         std::wstring wexe((size_t)wn, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, exe.c_str(), (int)exe.size(),
                             wexe.data(), wn);
-        std::wstring value = L"\"" + wexe + L"\"";  // 路径含空格时需引号
+        std::wstring value = L"\"" + wexe + L"\" --autostart";  // 路径含空格时需引号
+        // --autostart：开机自启是静默启动，**不**自动弹设置界面（双击启动才弹）。
+        // 见 main.cpp 的 open_ui_on_start 与 Cli.cpp 的 --autostart。
         rc = RegSetValueExW(key, kValueName, 0, REG_SZ,
                             (const BYTE*)value.c_str(),
                             (DWORD)((value.size() + 1) * sizeof(wchar_t)));
@@ -92,7 +94,9 @@ bool IsAutostartEnabled() {
     if (rc != ERROR_SUCCESS) return false;
     while (!buf.empty() && buf.back() == L'\0') buf.pop_back();
 
-    // 校验指向的确实是本程序：exe 被移动/改名后不得误报「已启用」
+    // 校验指向的确实是本程序：exe 被移动/改名后不得误报「已启用」。
+    // 只比较**带引号的 exe 路径前缀**：这样"旧版（无 --autostart）"与"新版（带 --autostart）"
+    // 两种注册形态都算已启用，不会因为升级后写法变了就误报"未启用"。
     std::string exe = ExecutablePath();
     if (exe.empty()) return false;
     int wn = MultiByteToWideChar(CP_UTF8, 0, exe.c_str(), (int)exe.size(),
@@ -101,7 +105,8 @@ bool IsAutostartEnabled() {
     std::wstring wexe((size_t)wn, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, exe.c_str(), (int)exe.size(),
                         wexe.data(), wn);
-    return buf == (L"\"" + wexe + L"\"");
+    const std::wstring prefix = L"\"" + wexe + L"\"";
+    return buf.rfind(prefix, 0) == 0;
 }
 
 }  // namespace cnk

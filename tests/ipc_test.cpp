@@ -226,15 +226,30 @@ TEST_CASE("IPC 响应解析对类型不符必须宽松（不抛异常）") {
 
 // ================= PipeServer =================
 
+namespace {
+// 测试专用管道名：**绝不能**与正在运行的守护进程用同一个名字——否则测试会连到真守护上
+// （拿到"未知命令"、Stop 之后管道仍在监听），出现一串与改动无关的假失败。
+// 2026-10-17 实测踩过：用户双击 exe 开着托盘时跑全量测试，挂了 4 条 IPC 用例。
+std::string UniqueTestPipeName() {
+    static int counter = 0;
+    static const std::string base = [] {
+        return std::string("\\\\.\\pipe\\CampusNetKeeperTest.") +
+               std::to_string((unsigned long)GetCurrentProcessId());
+    }();
+    return base + "." + std::to_string(++counter);
+}
+}  // namespace
+
 TEST_CASE("IPC 管道名限定当前用户") {
-    const std::string name = cnk::PipeNameForCurrentUser();
-    CHECK(name.rfind("\\\\.\\pipe\\CampusNetKeeper.", 0) == 0);
-    CHECK(name.find("S-1-") != std::string::npos);  // 含当前用户 SID
+    const std::string user_pipe = cnk::PipeNameForCurrentUser();
+    CHECK(user_pipe.rfind("\\\\.\\pipe\\CampusNetKeeper.", 0) == 0);
+    CHECK(user_pipe.find("S-1-") != std::string::npos);  // 含当前用户 SID
 }
 
 TEST_CASE("IPC 往返：请求进、响应出，且可连续服务多个连接") {
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     std::string err;
     REQUIRE(srv.Start(
         [](const cnk::IpcRequest& req) {
@@ -250,7 +265,7 @@ TEST_CASE("IPC 往返：请求进、响应出，且可连续服务多个连接")
             return r;
         },
         err));
-    const std::string name = cnk::PipeNameForCurrentUser();
+    const std::string name = srv.Name();
 
     const std::string a = RoundTrip(name, R"({"id":7,"cmd":"get_status","args":{}})");
     REQUIRE_FALSE(a.empty());
@@ -271,6 +286,7 @@ TEST_CASE("IPC 往返：请求进、响应出，且可连续服务多个连接")
 TEST_CASE("IPC 收到非法请求时回错误响应而不是打死服务") {
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest& req) {
         cnk::IpcResponse r;
@@ -278,7 +294,7 @@ TEST_CASE("IPC 收到非法请求时回错误响应而不是打死服务") {
         r.ok = true;
         return r;
     }, err));
-    const std::string name = cnk::PipeNameForCurrentUser();
+    const std::string name = srv.Name();
 
     const std::string bad = RoundTrip(name, "this is not json");
     REQUIRE_FALSE(bad.empty());
@@ -298,10 +314,11 @@ TEST_CASE("IPC 管道 ACL 只授予当前用户（不得是 Everyone）") {
     // 使「仅授予当前用户 SID」这条安全要求完全落空。本用例打开管道读其 DACL 来钉住。
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest&) { return cnk::IpcResponse{}; }, err));
 
-    HANDLE h = ConnectToServer(cnk::PipeNameForCurrentUser());
+    HANDLE h = ConnectToServer(srv.Name());
     REQUIRE(h != INVALID_HANDLE_VALUE);
 
     PACL dacl = nullptr;
@@ -364,6 +381,7 @@ TEST_CASE("IPC 挂起的客户端不得永久占住服务（有读取超时）")
     // 后续任何连接都得不到响应（本地 UI 崩溃即可触发）。
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     srv.SetReadTimeoutMs(300);  // 测试用短超时；默认 3000
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest& req) {
@@ -372,7 +390,7 @@ TEST_CASE("IPC 挂起的客户端不得永久占住服务（有读取超时）")
         r.ok = true;
         return r;
     }, err));
-    const std::string name = cnk::PipeNameForCurrentUser();
+    const std::string name = srv.Name();
 
     HANDLE hung = ConnectToServer(name);
     REQUIRE(hung != INVALID_HANDLE_VALUE);
@@ -391,6 +409,7 @@ TEST_CASE("IPC 挂起的客户端不得永久占住服务（有读取超时）")
 TEST_CASE("IPC 处理器抛异常时回错误响应而不是打死服务") {
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest& req) -> cnk::IpcResponse {
         if (req.cmd == "boom") throw std::runtime_error("处理器内部爆炸");
@@ -399,7 +418,7 @@ TEST_CASE("IPC 处理器抛异常时回错误响应而不是打死服务") {
         r.ok = true;
         return r;
     }, err));
-    const std::string name = cnk::PipeNameForCurrentUser();
+    const std::string name = srv.Name();
 
     const std::string boom = RoundTrip(name, R"({"id":1,"cmd":"boom"})");
     REQUIRE_FALSE(boom.empty());
@@ -419,6 +438,7 @@ TEST_CASE("IPC 响应过大时明确拒绝而不是写出半截") {
     // 而客户端又不读，阻塞写会把 IPC 线程钉死。故超限一律换成错误响应。
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest& req) {
         cnk::IpcResponse r;
@@ -427,7 +447,7 @@ TEST_CASE("IPC 响应过大时明确拒绝而不是写出半截") {
         r.data_json = "{\"blob\":\"" + std::string(40000, 'x') + "\"}";
         return r;
     }, err));
-    const std::string name = cnk::PipeNameForCurrentUser();
+    const std::string name = srv.Name();
 
     const std::string big = RoundTrip(name, R"({"id":3,"cmd":"dump"})");
     REQUIRE_FALSE(big.empty());
@@ -441,6 +461,7 @@ TEST_CASE("IPC 响应过大时明确拒绝而不是写出半截") {
 TEST_CASE("IPC 客户端发完请求就不读响应，也不得钉死服务") {
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     srv.SetReadTimeoutMs(500);
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest& req) {
@@ -450,7 +471,7 @@ TEST_CASE("IPC 客户端发完请求就不读响应，也不得钉死服务") {
         r.data_json = "{\"pad\":\"" + std::string(2000, 'y') + "\"}";
         return r;
     }, err));
-    const std::string name = cnk::PipeNameForCurrentUser();
+    const std::string name = srv.Name();
 
     HANDLE rude = ConnectToServer(name);
     REQUIRE(rude != INVALID_HANDLE_VALUE);
@@ -491,6 +512,7 @@ TEST_CASE("IPC 生命周期与命名冲突：不得漏 join（否则 std::termin
     // ~std::thread 对 joinable 线程会直接 std::terminate。
     {
         cnk::PipeServer srv;
+        srv.SetName(UniqueTestPipeName());
         std::string err;
         CHECK(srv.Start([](const cnk::IpcRequest&) { return cnk::IpcResponse{}; }, err));
         CHECK(srv.IsRunning());
@@ -505,12 +527,13 @@ TEST_CASE("IPC 生命周期与命名冲突：不得漏 join（否则 std::termin
     }
     {
         cnk::PipeServer srv;  // 不显式 Stop 直接析构
+        srv.SetName(UniqueTestPipeName());
         std::string err;
         REQUIRE(srv.Start([](const cnk::IpcRequest&) { return cnk::IpcResponse{}; }, err));
     }
     {
         // 命名冲突：先用**不同参数**占住同名管道 → 后者的 CreateNamedPipeW 必然失败
-        const std::string name = cnk::PipeNameForCurrentUser();
+        const std::string name = UniqueTestPipeName();
         const std::wstring wname(name.begin(), name.end());
         HANDLE squatter = CreateNamedPipeW(
             wname.c_str(), PIPE_ACCESS_DUPLEX,
@@ -518,6 +541,7 @@ TEST_CASE("IPC 生命周期与命名冲突：不得漏 join（否则 std::termin
         REQUIRE(squatter != INVALID_HANDLE_VALUE);
 
         cnk::PipeServer srv;
+        srv.SetName(name);
         std::string err;
         srv.Start([](const cnk::IpcRequest&) { return cnk::IpcResponse{}; }, err);
         Sleep(1200);                           // 让工作线程走到失败分支
@@ -531,6 +555,7 @@ TEST_CASE("IPC 客户端发完请求不关也不换行，也要得到应答") {
     // 对"忘了发换行"的客户端就是完全没有响应。这里钉住宽限行为。
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     srv.SetReadTimeoutMs(400);
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest& req) {
@@ -539,7 +564,7 @@ TEST_CASE("IPC 客户端发完请求不关也不换行，也要得到应答") {
         r.ok = true;
         return r;
     }, err));
-    const std::string name = cnk::PipeNameForCurrentUser();
+    const std::string name = srv.Name();
 
     const ConnectResult c = ConnectToServerEx(name);
     REQUIRE(c.h != INVALID_HANDLE_VALUE);
@@ -554,10 +579,11 @@ TEST_CASE("IPC 客户端发完请求不关也不换行，也要得到应答") {
 TEST_CASE("IPC Stop 后端口关闭且不挂死") {
     CNK_REQUIRE_PIPE_ENV();
     cnk::PipeServer srv;
+    srv.SetName(UniqueTestPipeName());
     std::string err;
     REQUIRE(srv.Start([](const cnk::IpcRequest&) { return cnk::IpcResponse{}; }, err));
     const DWORD t0 = GetTickCount();
     srv.Stop();
     CHECK(GetTickCount() - t0 < 3000);  // Stop 必须能及时返回
-    CHECK(ConnectToServer(cnk::PipeNameForCurrentUser(), 300) == INVALID_HANDLE_VALUE);
+    CHECK(ConnectToServer(srv.Name(), 300) == INVALID_HANDLE_VALUE);
 }

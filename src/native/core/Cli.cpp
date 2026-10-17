@@ -39,6 +39,8 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
         if (a == "--ui")             { o.mode = CliMode::Ui; continue; }
         if (a == "--ui-info")        { o.mode = CliMode::UiInfo; continue; }
         if (a == "--daemon")         { o.mode = CliMode::Daemon; continue; }
+        // 开机自启专用：守护照常启动，但**不**自动弹设置界面（双击启动才弹）
+        if (a == "--autostart")      { o.autostart_launch = true; continue; }
 
         // 带值的参数：--simulate-user/pass/fail 必须排在 --simulate 之前，
         // 否则会被 --simulate 的 "=" 前缀逻辑抢先匹配成厂商名
@@ -60,7 +62,8 @@ std::string CliHelpText() {
         "\n"
         "用法：CampusNet-Keeper [选项]\n"
         "\n"
-        "  （无选项）            以守护模式运行，常驻托盘\n"
+        "  （无选项）            以守护模式运行，常驻托盘，并自动打开设置界面\n"
+        "                        （开机自启会带 --autostart，此时不弹界面）\n"
         "  --ui                  打开设置界面\n"
         "  --ui-info             自检设置界面载荷与 .NET 运行时的可用性（不弹窗）；\n"
         "                        退出码 0=就绪 3=精简版（无内嵌界面）4=缺 .NET 运行时\n"
