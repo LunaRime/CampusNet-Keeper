@@ -244,9 +244,10 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
 
 ## CI 与发布
 
-**最新发布**：[v0.1.1](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.1)
+**最新发布**：[v0.1.2](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.2)
 （完整版单 exe + 精简版两个 zip，均已数字签名；附带公钥证书 `CampusNet-Keeper-codesign.cer`）。
-历史版本：[v0.1.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0)。
+历史版本：[v0.1.1](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.1)、
+[v0.1.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0)。
 
 `.github/workflows/ci.yml`：
 
