@@ -20,6 +20,9 @@ struct CliOptions {
     // 不会再次分离；--open-ui 表示父进程交代过"就绪后打开设置界面"（双击启动）。
     bool detached = false;
     bool open_ui = false;
+    // 内部标志（测试/脚本用）：不把配置里的 autostart 同步到注册表，
+    // 免得验证脚本起守护进程时改掉用户真实的开机自启项。
+    bool no_autostart = false;
     std::vector<std::string> unknown;
 };
 

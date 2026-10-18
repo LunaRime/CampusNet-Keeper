@@ -95,7 +95,8 @@ try {
     # --detached：本脚本用 CreateNoWindow 起的进程会"拥有独立控制台"，守护进程会把自己
     # 分离重启（双击/自启的正常行为）→ $daemon 会立刻退出，导致后面按 PID 的检查误判失败。
     # 传 --detached 表示"已经是无控制台实例，别再分离"，这样 $daemon 就是守护进程本体。
-    $daemon = Start-Ui '--simulate=drcom --detached'
+    # --no-autostart：别把开发树里的 exe 写成用户的开机自启项（验证脚本不该改注册表）。
+    $daemon = Start-Ui '--simulate=drcom --detached --no-autostart'
     Info "守护 PID=$($daemon.Id)"
     $baseline = Read-LogText
     Check ($null -ne (Wait-LogMatch '进入托盘守护循环' $baseline $TimeoutSec)) '守护循环已进入（托盘图标已就绪）'

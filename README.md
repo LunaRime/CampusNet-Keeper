@@ -15,6 +15,9 @@
 - **不留终端窗口**：exe 是控制台子系统程序，但双击/开机自启时发现控制台是独占的，会用
   `CREATE_NO_WINDOW` 把自己**分离重启**再让父进程退出——任务栏不会留下终端，关掉任何窗口
   也不影响守护；从 cmd/pwsh 启动时保持原样（能看输出、能用 Ctrl+C）
+- **开机自启**：配置里开启（默认开）时，守护进程把 `"<exe>" --autostart` 写进
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`；登录后静默拉起、不弹设置界面。
+  设置界面里改「开机自启」**保存即生效**（立即同步注册表，无需重启守护）
 - **极低占用**：后台常驻工作集约 15 MB（进程私有约 2.7 MB，其余为共享的 DLL 页；spec 的
   S2 目标「<10 MB」按任务管理器的"内存"列/专用工作集口径达成），空闲 CPU ≈ 0%（500ms 定时器驱动）
 - **自动重连**：网络断开或被 Portal 劫持时自动重新登录（Dr.COM 完整实现）
@@ -140,6 +143,12 @@ IPC 与守护进程通信，**密码明文从不离开守护进程**（界面只
    （exe 会大很多，且首次需联网 restore 运行时包；本机未实测这条路径）。
 6. **界面已打开但被别的窗口盖住/最小化时，再点托盘只弹一句气泡**，不会把已有窗口带到前台
    （第二个 `--ui` 会直接退出，避免连点堆出一串窗口）。想前置窗口请从任务栏切换。
+7. **重启后没自动启动怎么查**：先确认自启项在不在——
+   `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v CampusNetKeeper`
+   （应显示 `"…\CampusNet-Keeper.exe" --autostart`）；再打开**任务管理器 → 启动应用**看是否被
+   禁用（禁用记录在 `…\Explorer\StartupApproved\Run`）。也可以直接再双击运行一次 exe：
+   守护进程启动时会按配置重新登记自启项。注意自启项指向**当前运行的 exe 路径**，把程序挪了
+   目录就重新运行一次即可。
 
 ## 数字签名
 
@@ -231,10 +240,12 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
     pwsh -File tools/verify_ui_host.ps1           # 单 exe 界面：释放载荷 → 弹窗 → 关窗退出 → 命中版本戳
     pwsh -File tools/verify_tray_open_ui.ps1      # 托盘「设置…」拉起 --ui（模拟守护，不碰真实网络）
     pwsh -File tools/verify_startup_ux.ps1        # 双击启动自动开界面、--autostart 静默、托盘用应用图标
+    pwsh -File tools/verify_autostart.ps1         # 开机自启端到端：写/删 Run 键、模拟登录启动、界面保存即时生效
     python docs/evidence/audit_redaction.py       # 证据文件脱敏审计
 
-三个 `verify_*.ps1` 脚本都是**真机验证**（要 GUI 与 `%LOCALAPPDATA%` 写入，不能在受限沙箱里跑），
+四个 `verify_*.ps1` 脚本都是**真机验证**（要 GUI 与 `%LOCALAPPDATA%` 写入，不能在受限沙箱里跑），
 `--simulate=drcom` 那条不会碰真实校园网；跑之前要先退出正在运行的托盘实例。
+`verify_autostart.ps1` 会临时改动并恢复注册表自启项（并备份/恢复你的真实配置）。
 界面宿主（载荷 + hostfxr）的细节见 `src/ui/README.md`。
 
 > IPC 测试用的是**独立测试管道名**，所以即使你正开着托盘实例，测试也不会串到真守护上。

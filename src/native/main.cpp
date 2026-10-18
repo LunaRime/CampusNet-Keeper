@@ -682,6 +682,20 @@ int wmain(int, wchar_t**) {
         return 0;
     }
 
+    // 开机自启：配置里的 settings.autostart 是唯一真源，启动时把注册表同步成期望状态。
+    // （此前 SetAutostart 没有任何调用方 —— 界面里"开机自启"只写进 config.json，
+    //   注册表 Run 键从未被写入，所以重启后不会自启。2026-10-18 用户反馈。）
+    // --no-autostart 供验证脚本使用，避免脚本起守护进程时改掉用户真实的自启项。
+    if (opts.mode == cnk::CliMode::Daemon && !opts.no_autostart) {
+        std::string aerr;
+        if (!cnk::SyncAutostart(cfg.settings.autostart, aerr)) {
+            cnk::LogWarn("同步开机自启失败：" + aerr);
+        } else {
+            cnk::LogInfo(std::string("开机自启：") +
+                         (cfg.settings.autostart ? "已登记（HKCU Run 键）" : "已关闭（已移除 Run 键）"));
+        }
+    }
+
     // 双击启动 = 一个参数都没有（不是 --autostart、不是任何显式开关）→ 守护起来后自动开界面。
     // 分离重启后的子进程没有参数里的"双击"信息，由父进程用 --open-ui 交代。
     const bool open_ui_on_start = opts.open_ui || (args.empty() && !opts.autostart_launch);

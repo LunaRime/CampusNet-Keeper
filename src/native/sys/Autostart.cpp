@@ -76,6 +76,17 @@ bool SetAutostart(bool enable, std::string& error) {
     return true;
 }
 
+bool SyncAutostart(bool desired, std::string& error) {
+    error.clear();
+    if (desired) {
+        // 已指向本程序就不重写：避免每次启动都动注册表（也会打乱 StartUpApproved 的排序偏好）
+        if (IsAutostartEnabled()) return true;
+        return SetAutostart(true, error);
+    }
+    // 关闭：不管之前指向谁，都删掉本程序的自启值（避免残留指向旧路径的死条目）
+    return SetAutostart(false, error);
+}
+
 bool IsAutostartEnabled() {
     HKEY key = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &key)

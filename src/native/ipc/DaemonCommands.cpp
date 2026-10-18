@@ -8,6 +8,7 @@
 #include "core/Log.h"
 #include "core/Probe.h"
 #include "store/Config.h"
+#include "sys/Autostart.h"
 #include "json.hpp"
 
 namespace cnk {
@@ -98,6 +99,20 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
             return Fail(req, "保存失败：" + serr);
         }
         sch.SetConfig(merged);   // 热重载：不重启即生效
+
+        // 开机自启是「配置项 → 注册表」的副作用：界面里一开关就要立刻生效，
+        // 不能等下次启动（否则用户会以为开关没生效，重启后才发现没自启）。
+        {
+            std::string aerr;
+            const bool want = merged.settings.autostart;
+            if (!SyncAutostart(want, aerr)) {
+                LogWarn("同步开机自启失败：" + aerr);
+            } else {
+                LogInfo(std::string("设置界面更新了开机自启：") +
+                        (want ? "已登记（HKCU Run 键）" : "已关闭（已移除 Run 键）"));
+            }
+        }
+
         LogInfo("配置已由设置界面更新并热重载");
         return Ok(req, "{}");
     }

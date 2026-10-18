@@ -156,3 +156,18 @@ TEST_CASE("解析内部标志 --detached / --open-ui（分离重启用）") {
     CHECK(autoDetached.detached);
     CHECK_FALSE(autoDetached.open_ui);
 }
+
+TEST_CASE("解析 --no-autostart（测试/脚本专用：不碰注册表自启项）") {
+    auto o = cnk::ParseCli({"--no-autostart", "--detached"});
+    CHECK(o.mode == cnk::CliMode::Daemon);
+    CHECK(o.no_autostart);
+    CHECK(o.unknown.empty());
+
+    // 默认是"要同步"的（配置里的 autostart 为真源）
+    CHECK_FALSE(cnk::ParseCli({}).no_autostart);
+    // 与 --autostart（登录自启形态）互不相干，两个都可以同时出现
+    auto both = cnk::ParseCli({"--autostart", "--no-autostart"});
+    CHECK(both.autostart_launch);
+    CHECK(both.no_autostart);
+    CHECK(both.unknown.empty());
+}

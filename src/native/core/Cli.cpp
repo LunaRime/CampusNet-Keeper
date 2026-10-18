@@ -44,6 +44,8 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
         // 内部标志（用户不用管）：分离重启后的无控制台实例 / 父进程交代的"打开界面"
         if (a == "--detached")       { o.detached = true; continue; }
         if (a == "--open-ui")        { o.open_ui = true; continue; }
+        // 内部标志：测试/脚本起守护时别改注册表里的开机自启项
+        if (a == "--no-autostart")   { o.no_autostart = true; continue; }
 
         // 带值的参数：--simulate-user/pass/fail 必须排在 --simulate 之前，
         // 否则会被 --simulate 的 "=" 前缀逻辑抢先匹配成厂商名
