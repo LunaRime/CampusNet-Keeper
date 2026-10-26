@@ -22,6 +22,15 @@ long long NowUnix() {
 // 既不打扰用户，也不彻底放弃感知「接入校园网后自动恢复」
 constexpr int kStoppedProbeIntervalSeconds = 60;
 
+const char* NetStateName(NetState s) {
+    switch (s) {
+        case NetState::Online:         return "online";
+        case NetState::PortalDetected: return "portal";
+        case NetState::Offline:        return "offline";
+        default:                       return "unknown";
+    }
+}
+
 }  // namespace
 
 const char* RunStateName(RunState s) {
@@ -56,6 +65,8 @@ struct Scheduler::Impl {
     std::atomic<bool> network_changed{false};
 
     std::string local_ip;  // TODO：待接入网卡信息查询（GetAdaptersAddresses）后填充
+    // 上一次写进日志的探测结论（-1 = 还没记过）：只在变化时记一行，避免刷屏
+    int last_logged_probe_state = -1;
     std::string cached_portal_body;
     std::string cached_portal_url;
     std::string cached_server_header;
@@ -117,6 +128,15 @@ void Scheduler::Impl::DoProbe() {
 
     ProbeResult pr = ProbeOnce(cfg.settings);
     last_probe_response = pr.response;
+
+    // 探测结论只在**变化时**记 INFO：出问题时能一眼看出是"根本没网"还是"被劫持"。
+    // 2026-10-26 的事故就是缺这一行——日志里只有"网络变更事件"和"连接恢复"，
+    // 中间 8 分钟既没网也连不上门户，事后完全看不出当时探测到的是什么。
+    if ((int)pr.state != last_logged_probe_state) {
+        last_logged_probe_state = (int)pr.state;
+        LogInfo(std::string("探测结果：") + NetStateName(pr.state) + "（" +
+                RedactSecrets(pr.message) + "）");
+    }
 
     if (pr.state == NetState::Online) {
         state = RunState::Online;
