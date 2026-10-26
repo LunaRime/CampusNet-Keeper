@@ -30,6 +30,14 @@
     <PackageReference Include="Avalonia.Desktop" Version="11.3.0" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+    <!--
+      显式钉住传递依赖：Avalonia.Desktop → Avalonia.FreeDesktop → Tmds.DBus.Protocol。
+      0.21.2 及以下有高危漏洞 CVE-2026-39959 / GHSA-xrw6-gwf8-vvr9（恶意 D-Bus 对端可
+      伪造信号、耗尽 fd、用畸形消息体打崩进程；CVSS 7.1）。官方把修复 backport 到 0.21.3。
+      只升补丁号，与 0.21.x 的 API 完全兼容；不要顺手升到 0.22+（受影响区间是 <0.92.0 的
+      0.22~0.91，跳过它只能直接上 0.92.0，那是跨大版本，得单独验证）。
+    -->
+    <PackageReference Include="Tmds.DBus.Protocol" Version="0.21.3" />
   </ItemGroup>
 
   <ItemGroup>

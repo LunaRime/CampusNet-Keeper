@@ -61,6 +61,14 @@ $ErrorActionPreference = 'Stop'
 if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
+
+# 统一编码口径：本脚本会拿正则去匹配 C++ exe 打印的中文（--ui-info 的「全部为存储型」
+# 「载荷校验: 通过」）。控制台默认是 cp936 时，PowerShell 会把 exe 输出的 UTF-8 字节
+# 按 GBK 解码，个别汉字变成 U+FFFD，正则静默失配 → 误报「载荷含压缩条目」。
+# 2026-10-26 实测踩到；CI 上曾因同类原因让审计脚本崩过，所以这里显式钉死。
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
+
 $root = $PSScriptRoot
 $devBuild = Join-Path $root 'build-m1'      # 开发/沙箱友好的构建树（见 .gitignore）
 $outDir = Join-Path $root 'build\Release'   # **用户实际运行**的目录：必须每次同步
