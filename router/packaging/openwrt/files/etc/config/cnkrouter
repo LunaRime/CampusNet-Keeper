@@ -1,0 +1,33 @@
+# cnkrouter UCI 配置
+# 改完执行：/etc/init.d/cnkrouter restart
+#
+# 安全提示：本文件含明文密码，请执行
+#   chmod 600 /etc/config/cnkrouter
+
+config main 'main'
+	option enabled '1'
+
+	# 门户地址：浏览器里被劫持后跳到的那个地址（保留端口；没有端口则按 801 走新式 API）
+	option auth_url 'http://10.0.0.1/'
+
+	# 校园网账号（不要带 @cmcc 之类的后缀，由 isp 决定）
+	option username ''
+	option password ''
+
+	# campus=不带后缀 / cmcc=@cmcc / telecom=@dx / unicom=@lt
+	# 也可以用 custom:xxx 直接指定后缀
+	option isp 'campus'
+
+	# 在线探测：不要用 msftncsi（部分校园网不可达，会把在线误判成离线）
+	option probe_url 'http://captive.apple.com/hotspot-detect.html'
+	option probe_expect 'Success'
+	option probe_timeout '6'
+
+	# 在线时的巡检间隔（秒）；<=10 会被钳到 60
+	option probe_interval '60'
+
+	# 多 WAN 时指定出口源地址（一般留空，走默认路由）
+	option bind_ip ''
+
+	# 0=只报错 1=警告 2=信息 3=调试
+	option log_level '2'

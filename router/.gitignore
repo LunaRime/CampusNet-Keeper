@@ -1,0 +1,11 @@
+# 构建产物
+build/
+build-*/
+*.obj
+*.exe
+*.ipk
+
+# SDK 打包时会拷进来的源码副本（由 scripts/build_openwrt.sh 生成）
+packaging/openwrt/src/
+
+__pycache__/

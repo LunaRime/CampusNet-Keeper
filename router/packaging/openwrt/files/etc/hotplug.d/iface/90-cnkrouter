@@ -1,0 +1,13 @@
+#!/bin/sh
+# WAN 拨号/获取地址后立刻重认证一次。
+#
+# 为什么需要：路由器开机常快于 WAN 就绪（PPPoE 拨号、DHCP 租约），
+# 首次探测会失败并退避；WAN 起来后主动重启一次，把恢复时间从"最多 5 分钟"
+# 压到"秒级"。这也是 Windows 版 NetworkChange 监听的作用。
+
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$INTERFACE" = "wan" ] || exit 0
+
+[ -x /etc/init.d/cnkrouter ] || exit 0
+/etc/init.d/cnkrouter enabled && /etc/init.d/cnkrouter restart >/dev/null 2>&1
+exit 0

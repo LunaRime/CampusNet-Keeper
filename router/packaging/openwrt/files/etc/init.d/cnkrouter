@@ -1,0 +1,81 @@
+#!/bin/sh /etc/rc.common
+# cnkrouter —— OpenWrt procd 服务脚本
+#
+# UCI 里存账号密码（/etc/config/cnkrouter，建议 chmod 600），
+# 启动时渲染成 /var/etc/cnkrouter.conf（tmpfs，不落 Flash）。
+# 密码不进命令行参数：ps 在路由器上任何用户都看得到。
+
+START=95
+STOP=10
+USE_PROCD=1
+
+CONF_DIR=/var/etc
+CONF_FILE=$CONF_DIR/cnkrouter.conf
+
+render_config() {
+	local enabled username password auth_url isp probe_url probe_expect
+	local probe_timeout probe_interval bind_ip log_level
+
+	config_load cnkrouter
+	config_get_bool enabled main enabled 1
+	[ "$enabled" = "1" ] || return 1
+
+	config_get username      main username      ""
+	config_get password      main password      ""
+	config_get auth_url      main auth_url      "http://10.0.0.1/"
+	config_get isp           main isp           "campus"
+	config_get probe_url     main probe_url     "http://captive.apple.com/hotspot-detect.html"
+	config_get probe_expect  main probe_expect  "Success"
+	config_get probe_timeout main probe_timeout 6
+	config_get probe_interval main probe_interval 60
+	config_get bind_ip       main bind_ip       ""
+	config_get log_level     main log_level     2
+
+	if [ -z "$username" ] || [ -z "$password" ]; then
+		logger -t cnkrouter "未配置 username/password，服务不启动"
+		return 1
+	fi
+
+	mkdir -p $CONF_DIR
+	umask 077
+	{
+		echo "auth_url=$auth_url"
+		echo "username=$username"
+		echo "password=$password"
+		echo "isp=$isp"
+		echo "probe_url=$probe_url"
+		echo "probe_expect=$probe_expect"
+		echo "probe_timeout=$probe_timeout"
+		echo "probe_interval=$probe_interval"
+		echo "bind_ip=$bind_ip"
+		echo "log_level=$log_level"
+	} > $CONF_FILE
+	return 0
+}
+
+start_service() {
+	render_config || return 1
+
+	procd_open_instance
+	# 不用 --daemon 的默认参数，显式给路径，避免 /etc 被改后悄悄用了旧配置
+	procd_set_param command /usr/bin/cnkrouter --daemon --config=$CONF_FILE
+	# respawn：阈值 3600 秒内最多重启 5 次，间隔 5 秒（一直重启会刷爆 logd）
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param limits nofile="1024 1024"
+	procd_close_instance
+}
+
+reload_service() {
+	# SIGHUP 让进程重读配置并重置退避状态；配置没变时等价于"立刻重试一次"
+	pidof cnkrouter >/dev/null 2>&1 && kill -HUP $(pidof cnkrouter)
+}
+
+service_triggers() {
+	procd_add_reload_trigger "cnkrouter"
+}
+
+stop_service() {
+	rm -f $CONF_FILE
+}
