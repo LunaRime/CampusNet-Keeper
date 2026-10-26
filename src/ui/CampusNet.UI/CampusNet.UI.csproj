@@ -41,6 +41,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 窗口标题栏图标：ApplicationIcon 只作用于 exe（资源管理器/快捷方式），
+         Avalonia 的 Window.Icon 需要一份 avares 资源，两者是两码事。
+         缺了这条，窗口左上角就是系统默认图标（2026-10-26 用户反馈）。 -->
+    <AvaloniaResource Include="..\..\..\assets\app.ico" Link="Assets\app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- IPC 客户端与配置模型放在零依赖的核心库里，可独立构建与跨语言验证 -->
     <ProjectReference Include="..\CampusNet.UI.Core\CampusNet.UI.Core.csproj" />
   </ItemGroup>

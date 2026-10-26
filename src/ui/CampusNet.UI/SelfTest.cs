@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
+using Avalonia.Platform;
 using Avalonia.Styling;
 
 namespace CampusNet.UI;
@@ -74,6 +75,10 @@ internal static class SelfTest
         // 字体栈：必须是 DESIGN.md 的栈 + 中文回退
         CheckFont(app, "CnkFontSans", "Microsoft YaHei UI", ref failed);
         CheckFont(app, "CnkFontMono", "Consolas", ref failed);
+
+        // 窗口图标：ApplicationIcon 只作用于 exe，Window.Icon 走的是 avares 资源。
+        // 少了 csproj 的 AvaloniaResource，标题栏左上角就退回系统默认图标。
+        CheckWindowIcon(ref failed);
 
         Console.WriteLine(failed == 0
             ? $"  [PASS] {ExpectedBrushes.Length} 个颜色键 × 明暗 + 圆角/字号/字体全部符合 DESIGN.md"
@@ -156,6 +161,34 @@ internal static class SelfTest
         if (family.ToString().IndexOf(mustContain, StringComparison.OrdinalIgnoreCase) < 0)
         {
             Console.WriteLine($"  [FAIL] {key} = {family}，其中不含 {mustContain}（中文回退缺失）");
+            failed++;
+        }
+    }
+
+    /// <summary>
+    /// 窗口图标：<c>ApplicationIcon</c> 只影响 exe 在资源管理器里的样子，
+    /// 标题栏左上角走的是 <c>Window.Icon</c>，需要 ico 以 AvaloniaResource 编进程序集。
+    /// 这里验「资源在 + 能解码成 WindowIcon」两件事——少了 csproj 那条就退回系统默认图标。
+    /// </summary>
+    private static void CheckWindowIcon(ref int failed)
+    {
+        var uri = new Uri("avares://CampusNet.UI/Assets/app.ico");
+        try
+        {
+            if (!AssetLoader.Exists(uri))
+            {
+                Console.WriteLine($"  [FAIL] 缺窗口图标资源 {uri}（检查 csproj 的 AvaloniaResource）");
+                failed++;
+                return;
+            }
+            using var stream = AssetLoader.Open(uri);
+            // 解码一次：文件损坏/不是 ico 时这里会抛，而不是等窗口画出来才发现
+            _ = new WindowIcon(stream);
+            Console.WriteLine("  [PASS] 窗口图标资源可加载（avares Assets/app.ico）");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [FAIL] 窗口图标加载失败：{ex.Message}");
             failed++;
         }
     }
