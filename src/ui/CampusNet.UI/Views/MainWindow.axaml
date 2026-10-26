@@ -7,6 +7,7 @@
         x:DataType="vm:MainViewModel"
         Title="校园网助手 — 设置"
         Width="920" Height="812" MinWidth="760" MinHeight="560"
+        WindowStartupLocation="CenterScreen"
         Background="{DynamicResource CnkBg}"
         FontFamily="{DynamicResource CnkFontSans}">
 
@@ -35,6 +36,15 @@
       <Setter Property="BorderBrush" Value="{DynamicResource CnkInputBorder}"/>
       <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
       <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+
+    <!-- 按钮文字必须显式居中：ContentControl 的默认对齐是左对齐，而下面三个类只覆盖了
+         Padding/背景，于是短标签（刷新、保存）会贴着左边、右侧留一大块空白。
+         统一在这里钉住，不依赖主题默认值。（2026-10-26 用户反馈"文字不居中"） -->
+    <Style Selector="Button">
+      <Setter Property="HorizontalContentAlignment" Value="Center"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="MinWidth" Value="72"/>
     </Style>
 
     <!-- 按钮：主操作=近黑实心；次操作=面色阶；描边=白底+发丝线 -->
@@ -154,19 +164,25 @@
     <!-- ================= 右：状态条 + 表单 + 操作 ================= -->
     <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" Margin="20">
 
-      <!-- 顶部状态条 -->
+      <!-- 顶部状态条：
+           状态文字必须放在「星号列」里——放 Auto 列时，长错误文案会把列撑到无限宽，
+           把右侧的「立即重连」顶出窗口（2026-10-26 用户反馈）。
+           星号列 + TextTrimming 让文字自己截断，按钮永远留在右边。 -->
       <Border Grid.Row="0" Classes="card">
-        <Grid ColumnDefinitions="Auto,*,Auto">
-          <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-            <Border Classes="dot"
-                    Classes.online="{Binding IsOnline}"
-                    Classes.busy="{Binding IsBusy}"
-                    Classes.failed="{Binding IsFailed}"/>
-            <TextBlock Text="{Binding StatusText}" FontWeight="Medium"
-                       Foreground="{DynamicResource CnkText}" VerticalAlignment="Center"/>
-          </StackPanel>
+        <Grid ColumnDefinitions="Auto,*,Auto,Auto">
+          <Border Grid.Column="0" Classes="dot"
+                  Classes.online="{Binding IsOnline}"
+                  Classes.busy="{Binding IsBusy}"
+                  Classes.failed="{Binding IsFailed}"
+                  VerticalAlignment="Center"/>
 
-          <StackPanel Grid.Column="1" Margin="24,0" VerticalAlignment="Center">
+          <TextBlock Grid.Column="1" Text="{Binding StatusText}" FontWeight="Medium"
+                     Foreground="{DynamicResource CnkText}" VerticalAlignment="Center"
+                     Margin="10,0,12,0"
+                     TextTrimming="CharacterEllipsis"
+                     ToolTip.Tip="{Binding StatusText}"/>
+
+          <StackPanel Grid.Column="2" Margin="0,0,16,0" VerticalAlignment="Center">
             <TextBlock Classes="caption">
               <Run Text="本机 IP："/><Run Text="{Binding LocalIp}"/>
             </TextBlock>
@@ -175,7 +191,7 @@
             </TextBlock>
           </StackPanel>
 
-          <Button Grid.Column="2" Classes="secondary" Content="立即重连"
+          <Button Grid.Column="3" Classes="secondary" Content="立即重连"
                   Command="{Binding ReconnectNowCommand}"/>
         </Grid>
       </Border>
@@ -292,10 +308,13 @@
         </StackPanel>
       </ScrollViewer>
 
-      <!-- 底部操作 -->
+      <!-- 底部操作：错误文案同样放星号列并截断，避免长文案挤压右侧按钮 -->
       <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,16,0,0">
         <TextBlock Grid.Column="0" Classes="error" VerticalAlignment="Center"
-                   Text="{Binding LastError}"/>
+                   Margin="0,0,12,0"
+                   Text="{Binding LastError}"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTip.Tip="{Binding LastError}"/>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
           <Button Classes="outline" Content="测试登录"
                   Command="{Binding TestProfileCommand}"/>
