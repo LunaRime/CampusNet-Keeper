@@ -1,6 +1,7 @@
 #include "core/Scheduler.h"
 #include "core/Log.h"
 #include "core/Encoding.h"
+#include "core/LocalIp.h"
 #include "core/PortalPage.h"
 #include "core/ProbeTarget.h"
 #include "auth/AuthFactory.h"
@@ -134,8 +135,13 @@ void Scheduler::Impl::DoProbe() {
     // 中间 8 分钟既没网也连不上门户，事后完全看不出当时探测到的是什么。
     if ((int)pr.state != last_logged_probe_state) {
         last_logged_probe_state = (int)pr.state;
+        // 顺带记下「到门户时本机长什么样」：没有地址 / 链路本地 / 有地址但网关不通，
+        // 这三种在日志里必须能区分开，否则"连不上"仍然是个黑盒。
+        const Profile* active = ActiveProfile(cfg);
+        const std::string portal_url =
+            (active && !active->auth_url.empty()) ? active->auth_url : cfg.settings.probe_url;
         LogInfo(std::string("探测结果：") + NetStateName(pr.state) + "（" +
-                RedactSecrets(pr.message) + "）");
+                RedactSecrets(pr.message) + "）｜" + DescribeRoute(RouteForUrl(portal_url)));
     }
 
     if (pr.state == NetState::Online) {

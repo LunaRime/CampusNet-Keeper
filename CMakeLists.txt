@@ -101,6 +101,7 @@ add_executable(cnk_tests
   tests/srun_auth_test.cpp
   tests/generic_form_test.cpp
   tests/local_ip_test.cpp
+  tests/localip_route_test.cpp
   tests/custom_auth_test.cpp
   tests/probe_test.cpp
   tests/portal_page_test.cpp

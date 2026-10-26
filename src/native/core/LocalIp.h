@@ -24,4 +24,18 @@ std::string LocalIpForUrl(const std::string& url);
 // 若直接取空值，锐捷/深澜会提交 0.0.0.0 而被服务器拒绝。
 std::string ResolveClientIp(const std::string& ctx_local_ip, const std::string& auth_url);
 
+// 「到某个目标时本机长什么样」——把"连不上"细分成可判读的几种原因。
+// 2026-10-26 的真实现场：程序与浏览器都打不开门户，日志只有一句超时（12002），
+// 事后无法区分"压根没拿到地址"和"有地址但网关不通"。本结构就是为这个区分而存在。
+struct LocalRoute {
+    std::string ip;       // 本机会用的源地址；空 = 没有到该目标的路由
+    std::string gateway;  // 下一跳；空 = 直连（或没有默认路由）
+};
+
+// 按认证网址（或任意 http(s) 地址）取上面两个字段；解析失败时字段为空。
+LocalRoute RouteForUrl(const std::string& url);
+
+// 一行诊断文案，含 169.254 链路本地 / 缺地址的判读，直接进日志。
+std::string DescribeRoute(const LocalRoute& r);
+
 }  // namespace cnk

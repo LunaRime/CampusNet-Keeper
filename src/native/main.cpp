@@ -9,6 +9,7 @@
 #include "core/Cli.h"
 #include "core/Encoding.h"
 #include "core/Integrity.h"
+#include "core/LocalIp.h"
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/Probe.h"
@@ -72,6 +73,15 @@ constexpr int kDecideDelayMs = 1500;
 int RunProbeNow(cnk::AppConfig& cfg) {
     PrintLine("== 探测 ==");
     PrintLine("探测地址: " + cfg.settings.probe_url);
+    // 先报「本机到门户是什么样子」：没有地址 / 链路本地 / 有地址但网关不通，
+    // 这三种在"连不上"时结论完全不同，必须一眼看见（2026-10-26 事故的教训）
+    {
+        const cnk::Profile* active = cnk::ActiveProfile(cfg);
+        const std::string portal_url =
+            (active && !active->auth_url.empty()) ? active->auth_url : cfg.settings.probe_url;
+        PrintLine("本机: " + cnk::DescribeRoute(cnk::RouteForUrl(portal_url)) +
+                  "（目标 " + portal_url + "）");
+    }
     // 离线可能是单次超时（实测），故策略定为「确定结论即停、离线才重试」
     int tries = 0;
     auto r = cnk::ProbeUntilDecided(
