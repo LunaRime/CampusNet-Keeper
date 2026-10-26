@@ -2,6 +2,6 @@
 
 namespace cnk {
 
-inline const char* VersionString() { return "0.1.3"; }
+inline const char* VersionString() { return "0.1.4"; }
 
 }  // namespace cnk
