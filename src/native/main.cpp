@@ -11,6 +11,7 @@
 #include "core/Cli.h"
 #include "core/Encoding.h"
 #include "core/Integrity.h"
+#include "core/LastExit.h"
 #include "core/LocalIp.h"
 #include "core/Log.h"
 #include "core/Paths.h"
@@ -50,6 +51,48 @@ std::vector<std::string> WideArgsToUtf8() {
 
 void PrintLine(const std::string& s) {
     std::printf("%s\n", s.c_str());
+}
+
+bool FileExists(const std::string& utf8_path) {
+    if (utf8_path.empty()) return false;
+    const std::wstring w = cnk::Utf8ToWide(utf8_path);
+    return GetFileAttributesW(w.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+// 控制台控制事件（Ctrl+C / 关终端 / 注销 / 关机）。此前这些路径**什么都不记**，
+// 于是"守护进程怎么没的"永远查不出来。这里只留痕迹，处理仍交回默认行为（终止进程）。
+BOOL WINAPI OnConsoleCtrl(DWORD type) {
+    const char* name = "未知";
+    switch (type) {
+        case CTRL_C_EVENT:        name = "Ctrl+C"; break;
+        case CTRL_BREAK_EVENT:    name = "Ctrl+Break"; break;
+        case CTRL_CLOSE_EVENT:    name = "关闭控制台窗口"; break;
+        case CTRL_LOGOFF_EVENT:   name = "用户注销"; break;
+        case CTRL_SHUTDOWN_EVENT: name = "系统关机"; break;
+        default: break;
+    }
+    // LogWrite 每行都 flush，所以这里写完就已落盘，随后被默认处理终止也不会丢
+    cnk::LogInfo(std::string("收到控制台控制事件：") + name + "（进程即将结束）");
+    cnk::RecordExit(std::string("控制台事件：") + name);
+    return FALSE;   // FALSE = 继续默认处理（Ctrl+C/CLOSE 即终止进程）
+}
+
+// 守护形态**启动时**核对上一次运行的退出画像：
+//   读到标记 → 上次是正常退出的，把来源与时间补进日志；
+//   读不到 → 上次不是正常退出（被强制结束 / 崩溃 / 掉电），明确记一条警告，
+//            否则"日志里什么都没有"会让人以为程序从没跑过。
+// 只在**非首次运行**时报警（判据：keeper.log 是否已存在），免得第一次安装就误报。
+void AuditLastExit(const std::string& log_dir) {
+    const bool first_run = !FileExists(log_dir + "\\keeper.log");
+    const cnk::LastExit le = cnk::TakeLastExit();
+    if (le.recorded) {
+        cnk::LogInfo("上次运行正常退出（来源=" + le.reason + "，于 " + le.at + "）");
+    } else if (!first_run) {
+        cnk::LogWarn("上次运行没有留下正常退出记录：可能在退出前被强制结束、异常终止或掉电"
+                     "（日志里不会有痕迹，只能从这条推断）");
+    } else {
+        cnk::LogInfo("首次运行（无上次退出记录）");
+    }
 }
 
 // ---------------------------------------------------------------- stdio 绑定
@@ -689,6 +732,15 @@ int WinMainEntry() {
             return 0;
         }
         cnk::LogWarn("分离到无控制台进程失败，退化为隐藏控制台窗口");
+    }
+
+    // 守护形态：① 给控制台控制事件留痕（Ctrl+C / 关终端 / 注销 / 关机此前全是静默的）；
+    // ② 核对上一次运行的退出画像。
+    // ⚠ 顺序必须在"分离重启"**之后**：只有真正跑守护循环的那个进程才有权取走退出标记，
+    //   否则父进程取走后子进程一启动就会误报"上次未正常退出"。
+    if (opts.mode == cnk::CliMode::Daemon) {
+        SetConsoleCtrlHandler(OnConsoleCtrl, TRUE);
+        AuditLastExit(log_dir);
     }
 
     // 任务 26：UI 形态与载荷自检都不需要配置、模拟会话与单实例，提前分流。

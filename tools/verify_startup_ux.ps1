@@ -172,7 +172,15 @@ Check (@(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue).Cou
 
 # ---------------------------------------------------------------- 2) 自启形态
 Title '2) 开机自启形态（--autostart）：守护启动但**不**弹界面、也不留终端'
+# 退出必须留痕：否则"守护进程怎么没的"永远查不出来
+#（2026-10-27 真机上出现过一次无声消失，日志里什么都留不下）
+$exitBase = Read-LogText
 Check (Stop-DaemonCleanly) '守护进程已干净退出（为下一步腾出单实例）'
+$exitTail = Wait-LogMatch '守护循环退出，来源=' $exitBase 10
+Check ($null -ne $exitTail) '退出时在日志里留下了退出来历'
+if ($exitTail) {
+    Check ($exitTail -notmatch '未记录（退出路径未识别）') '退出来历不是「未记录」（退出路径被正确识别）'
+}
 $baseline = Read-LogText
 $auto = Start-Process -FilePath $Exe -ArgumentList '--autostart' -PassThru
 Info "启动 PID=$($auto.Id)（--autostart；GUI 子系统，无控制台）"
@@ -198,7 +206,9 @@ Check (-not ($autoTail -match '启动意图=双击')) '本次自启没有被误�
 
 # ---------------------------------------------------------------- 收尾
 Title '3) 收尾'
+$exitBase2 = Read-LogText
 Check (Stop-DaemonCleanly) '守护进程已干净退出'
+Check ($null -ne (Wait-LogMatch '守护循环退出，来源=' $exitBase2 10)) '退出时在日志里留下了退出来历'
 $left = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue)
 Check ($left.Count -eq 0) '无残留进程'
 

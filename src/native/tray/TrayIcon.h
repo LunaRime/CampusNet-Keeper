@@ -25,6 +25,13 @@ public:
                       std::function<void()> on_open_log,
                       std::function<void()> on_quit);
 
+    // 退出来历：**谁**让守护进程结束的（托盘菜单 / 外部 WM_CLOSE / 系统关机…）。
+    // 为什么要记：守护进程"莫名其妙不在了"是最难查的故障——日志里既没有崩溃也没有
+    // 退出记录时，事后无从判断是自己退的还是被杀的（2026-10-27 真机上就这么消失过一次）。
+    // 由 WndProc 与托盘「退出」回调写入，守护循环退出时统一落进日志与退出标记。
+    void SetQuitReason(const std::string& r);
+    const std::string& QuitReason() const { return quit_reason_; }
+
 private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -38,6 +45,7 @@ private:
     std::function<void()> on_reconnect_;
     std::function<void()> on_open_log_;
     std::function<void()> on_quit_;
+    std::string quit_reason_;   // 退出来历（见 SetQuitReason）
 
     void OnTrayMessage(LPARAM lparam);
     void ShowContextMenu();

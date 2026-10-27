@@ -15,6 +15,7 @@ add_library(cnk_core STATIC
   src/native/core/Version.cpp
   src/native/core/Paths.cpp
   src/native/core/Log.cpp
+  src/native/core/LastExit.cpp
   src/native/core/Http.cpp
   src/native/core/Encoding.cpp
   src/native/core/Url.cpp
@@ -56,9 +57,9 @@ target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
   winhttp crypt32 bcrypt shell32 advapi32 ole32 user32 ws2_32 iphlpapi)
 
-# 控制台子系统：CLI 输出（cmd/管道/重定向）在任何环境下原生可靠。
-# 守护形态不依赖子系统差异——由程序自身在"独占控制台"时隐藏窗口
-#（见 main.cpp 的 HideConsoleIfStandalone），兼顾无黑窗与输出可靠性。
+# 主程序是 GUI 子系统（见下面的 WIN32_EXECUTABLE）：CLI 输出由 main.cpp 的
+# BindStandardStreams 自己接上（cmd/管道/重定向三种场景都覆盖），
+# 守护形态则不申请控制台——双击与开机自启都不会闪黑窗。
 add_executable(CampusNet-Keeper src/native/main.cpp src/native/app.rc)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
 
@@ -108,6 +109,7 @@ add_executable(cnk_tests
   tests/generic_form_test.cpp
   tests/local_ip_test.cpp
   tests/localip_route_test.cpp
+  tests/last_exit_test.cpp
   tests/custom_auth_test.cpp
   tests/probe_test.cpp
   tests/portal_page_test.cpp

@@ -1,6 +1,7 @@
 #include "tray/TrayIcon.h"
 #include "sys/SingleInstance.h"
 #include "core/Log.h"
+#include "core/LastExit.h"
 #include "core/Paths.h"
 #include "core/NetworkChange.h"
 #include "ipc/DaemonCommands.h"
@@ -194,11 +195,34 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case kMenuQuit:      if (self->on_quit_) self->on_quit_(); break;
             }
             return 0;
+        // 退出来历：这三条路径此前都静默地走到 WM_DESTROY，事后完全分不清是谁关的。
+        // 先**只记来源**，再让窗口照常销毁（WM_DESTROY → PostQuitMessage）。
+        case WM_CLOSE:
+            self->SetQuitReason("外部 WM_CLOSE（脚本或其它程序请求关闭窗口）");
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_QUERYENDSESSION:
+            self->SetQuitReason("系统会话结束：注销或关机（WM_QUERYENDSESSION）");
+            return TRUE;
+        case WM_ENDSESSION:
+            self->SetQuitReason(wp ? "系统会话结束：注销或关机（WM_ENDSESSION）"
+                                   : "系统会话结束被取消（WM_ENDSESSION=FALSE）");
+            return 0;
         case WM_DESTROY:
+            // 走到这里却没有来源 = 既不是托盘菜单、也不是 WM_CLOSE/关机，
+            // 如实记录为"来源不明"，绝不留空白（空白正是以前查不出原因的根源）
+            if (self->quit_reason_.empty())
+                self->SetQuitReason("窗口销毁（WM_DESTROY，来源不明）");
+            LogInfo("退出请求来源：" + self->quit_reason_);
             PostQuitMessage(0);
             return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+void TrayIcon::SetQuitReason(const std::string& r) {
+    // 只认第一次：托盘菜单已设了来源后，随后的 WM_DESTROY 不能把它覆盖掉
+    if (quit_reason_.empty() && !r.empty()) quit_reason_ = r;
 }
 
 bool TrayIcon::Create(HINSTANCE hinst, const char* tooltip) {
@@ -371,7 +395,12 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
             std::string dir = AppDataDir();
             OpenPathInExplorer(dir);
         },
-        [&tray]() { tray.Destroy(); PostQuitMessage(0); });
+        [&tray]() {
+            LogInfo("用户通过托盘菜单「退出」");
+            tray.SetQuitReason("托盘菜单「退出」");
+            tray.Destroy();
+            PostQuitMessage(0);
+        });
 
     if (!SetTimer(tray.Hwnd(), kTimerId, kTimerIntervalMs, nullptr)) {
         LogError("定时器创建失败，守护循环无法驱动探测");
@@ -415,7 +444,13 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
                 KillTimer(tray.Hwnd(), kTimerId);
                 netwatch.Stop();
                 tray.Destroy();
-                LogInfo("守护循环退出");
+                // 落后一行也不留空白：来源为空说明退出路径没被识别到，
+                // 这本身就是需要修的信号（"守护进程为什么没了"全靠这一行回答）
+                const std::string why =
+                    tray.QuitReason().empty() ? std::string("未记录（退出路径未识别）")
+                                              : tray.QuitReason();
+                LogInfo("守护循环退出，来源=" + why);
+                cnk::RecordExit(why);
                 return true;
             }
             if (msg.message == WM_TIMER && msg.wParam == kTimerId) {
