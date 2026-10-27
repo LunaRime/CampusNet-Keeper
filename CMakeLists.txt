@@ -62,6 +62,12 @@ target_link_libraries(cnk_core PUBLIC
 add_executable(CampusNet-Keeper src/native/main.cpp src/native/app.rc)
 target_link_libraries(CampusNet-Keeper PRIVATE cnk_core)
 
+# GUI 子系统：程序自己决定要不要控制台（main.cpp 的 BindStandardStreams）。
+# 为什么不是控制台子系统：被启动项/双击拉起时 Windows 会先分配一个控制台，Win11 默认
+# 终端是 Windows Terminal，那就是开机闪一下黑窗；改成 GUI 子系统后默认没有控制台，
+# 需要输出时再 attach 父控制台或绑继承句柄（管道），三种场景都能工作。
+set_target_properties(CampusNet-Keeper PROPERTIES WIN32_EXECUTABLE TRUE)
+
 # 任务 26：UI 载荷资源（scripts/embed_ui.ps1 生成的 .rc）存在就编进 exe → 单 exe 双形态。
 # 用 file(GLOB CONFIGURE_DEPENDS) 而不是 EXISTS：载荷的「出现/消失」都必须触发重新配置，
 # 否则在已有构建树里会静默地不嵌（或残留上一版的旧载荷）——这正是本项目最怕的

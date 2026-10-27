@@ -70,6 +70,9 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }
 
 $root = $PSScriptRoot
+# 主程序是 GUI 子系统（开机不闪窗、启动项显示自身），PowerShell 直接调用它拿不到输出、
+# 也不等它结束 → 所有对本 exe 的"跑一下看结果"都必须走这个统一的重定向捕获。
+. (Join-Path $root 'scripts\invoke_cli.ps1')
 $devBuild = Join-Path $root 'build-m1'      # 开发/沙箱友好的构建树（见 .gitignore）
 $outDir = Join-Path $root 'build\Release'   # **用户实际运行**的目录：必须每次同步
 $payloadDir = Join-Path $root 'build\generated'
@@ -247,9 +250,10 @@ if ($h1 -ne $h2) { Die '安装后的主程序与刚构建的哈希不一致（�
 Ok "哈希一致：$($h2.Substring(0, 16))…"
 
 # 任务 26：形态自检——真的去读 exe 资源 / 机器上的 .NET，而不是只看文件大小
-$uiInfo = & $exe --ui-info 2>&1
+$cli = Invoke-CnkCli -Exe $exe -CliArgs @('--ui-info')
+$uiInfo = $cli.Lines
 $uiInfo | ForEach-Object { '  ' + $_ }
-$uiRc = $LASTEXITCODE
+$uiRc = $cli.ExitCode
 if ($SingleExe) {
     if ($uiRc -ne 0) {
         Die "--ui-info 退出码 $uiRc（完整版应为 0：载荷结构/CRC 可解析且找到 .NET 运行时）。若只是本机没装 .NET，请先装 .NET 10 运行时"

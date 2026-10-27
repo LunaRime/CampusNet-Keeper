@@ -44,6 +44,8 @@ if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
 $root = Split-Path -Parent $PSScriptRoot          # scripts\ 的上一级 = 仓库根
+# 主程序是 GUI 子系统：PowerShell 直接调用拿不到输出也不等它结束，必须走重定向捕获
+. (Join-Path $PSScriptRoot 'invoke_cli.ps1')
 $dist = Join-Path $root 'dist'
 $checkRoot = Join-Path $root 'build\pkg-check'
 
@@ -129,20 +131,17 @@ function Build-Package([string]$flavor) {
     $packedExe = Join-Path $checkDir 'CampusNet-Keeper.exe'
     if (-not (Test-Path $packedExe)) { Die "$zipName 里没有 CampusNet-Keeper.exe" }
 
-    # 原生 exe 输出中文：先把控制台编码钉成 UTF-8，免得下面的中文断言因解码口径不同而误报
-    $oldEncoding = [Console]::OutputEncoding
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    try {
-        $verOut = @(& $packedExe --version 2>&1)
-        $verRc = $LASTEXITCODE
-        if ($verRc -ne 0 -or (($verOut -join "`n") -notmatch [regex]::Escape($codeVersion))) {
-            Die "解包后的 exe --version 异常（退出码 $verRc，输出：$($verOut -join ' / ')）"
-        }
-        $infoOut = @(& $packedExe --ui-info 2>&1)
-        $infoRc = $LASTEXITCODE
-    } finally {
-        [Console]::OutputEncoding = $oldEncoding
+    # 原生 exe 输出中文：读文件时按 UTF-8 解码（见 invoke_cli.ps1 的说明），
+    # 免得下面的中文断言因解码口径不同而误报
+    $verCli = Invoke-CnkCli -Exe $packedExe -CliArgs @('--version')
+    $verOut = $verCli.Lines
+    $verRc = $verCli.ExitCode
+    if ($verRc -ne 0 -or (($verOut -join "`n") -notmatch [regex]::Escape($codeVersion))) {
+        Die "解包后的 exe --version 异常（退出码 $verRc，输出：$($verOut -join ' / ')）"
     }
+    $infoCli = Invoke-CnkCli -Exe $packedExe -CliArgs @('--ui-info')
+    $infoOut = $infoCli.Lines
+    $infoRc = $infoCli.ExitCode
     $wantRc = if ($isFull) { 0 } else { 3 }
     if ($infoRc -ne $wantRc) {
         Die ("解包后的 exe 形态不符：--ui-info 退出码 $infoRc，期望 $wantRc" +

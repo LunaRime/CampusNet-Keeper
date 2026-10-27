@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <fcntl.h>
+#include <io.h>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -48,6 +50,44 @@ std::vector<std::string> WideArgsToUtf8() {
 
 void PrintLine(const std::string& s) {
     std::printf("%s\n", s.c_str());
+}
+
+// ---------------------------------------------------------------- stdio 绑定
+
+// 把 CRT 的某个标准流接到给定句柄上（句柄所有权转交给 CRT）。
+bool BindStream(HANDLE h, int fd) {
+    if (!h || h == INVALID_HANDLE_VALUE) return false;
+    const int os = _open_osfhandle(reinterpret_cast<intptr_t>(h), _O_TEXT);
+    if (os == -1) return false;
+    _dup2(os, fd);
+    return true;
+}
+
+HANDLE OpenConsoleDevice(const wchar_t* name, DWORD access) {
+    return CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                       OPEN_EXISTING, 0, nullptr);
+}
+
+// GUI 子系统没有控制台，CLI 输出要靠这里显式接上（见 wWinMain 的注释）。
+// 顺序很重要：先认继承来的句柄（管道/重定向），**只有在完全没有输出通道时**才 attach 父控制台。
+//
+// 为什么不能"stdin 没绑上就 attach"：AttachConsole 会把进程的标准句柄重置成新控制台的，
+// PowerShell 只重定向 stdout/stderr、不重定向 stdin，于是刚绑好的管道被它冲掉，
+// 表现就是"PowerShell 里捕获不到任何输出，bash 里却正常"（2026-10-27 实测踩到）。
+void BindStandardStreams() {
+    const bool out = BindStream(GetStdHandle(STD_OUTPUT_HANDLE), 1);
+    const bool err = BindStream(GetStdHandle(STD_ERROR_HANDLE), 2);
+    const bool in = BindStream(GetStdHandle(STD_INPUT_HANDLE), 0);
+
+    // 已有输出通道（脚本管道 / 文件重定向）→ 保持原样，绝不能碰控制台
+    if (out || err) return;
+
+    // 完全没有输出通道：父进程若有控制台（cmd / PowerShell 直接运行），接上去，
+    // 输出就落在用户眼前那个窗口里，Ctrl+C 也照常有效。
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    BindStream(OpenConsoleDevice(L"CONOUT$", GENERIC_READ | GENERIC_WRITE), 1);
+    BindStream(OpenConsoleDevice(L"CONOUT$", GENERIC_READ | GENERIC_WRITE), 2);
+    if (!in) BindStream(OpenConsoleDevice(L"CONIN$", GENERIC_READ | GENERIC_WRITE), 0);
 }
 
 // 网络状态的中文名（探测输出与日志共用）
@@ -596,9 +636,8 @@ bool SetupSimulation(const cnk::CliOptions& opts, cnk::AppConfig& cfg,
 
 }  // namespace
 
-int wmain(int, wchar_t**) {
-    SetConsoleOutputCP(CP_UTF8);
-
+// 入口主体：与子系统无关（GUI 子系统下由 wWinMain 调用，先完成 stdio 绑定）。
+int WinMainEntry() {
     auto args = WideArgsToUtf8();
     auto opts = cnk::ParseCli(args);
 
@@ -638,6 +677,10 @@ int wmain(int, wchar_t**) {
     // 用户看不到终端，关掉任何窗口都不影响守护进程。从 cmd/pwsh 启动时控制台是共享的，
     // 保持原样（用户要看输出、也能用 Ctrl+C 退出）。
     // --detached 的实例不再走这里（避免无限重启）。
+    //
+    // 2026-10-27：主程序改成 **GUI 子系统**（见 wWinMain）后，双击/自启时压根没有控制台
+    // （GetConsoleProcessList 返回 0），从 cmd/pwsh 启动则是 attach 到共享控制台（≥2），
+    // 所以这段在正常路径下**不会触发**，只作为"万一拿到了独占控制台"的兜底保留。
     if (opts.mode == cnk::CliMode::Daemon && !opts.detached && OwnsConsole()) {
         const bool want_ui = args.empty() && !opts.autostart_launch;
         if (SpawnDetachedCopy(args, want_ui)) {
@@ -723,4 +766,18 @@ int wmain(int, wchar_t**) {
     if (sim.active) sim.server.Stop();
     cnk::LogShutdown();
     return rc;
+}
+
+// ------------------------------------------------------------------ 入口
+
+// GUI 子系统的入口。**先绑 stdio 再做任何事**——否则 CLI 模式下 printf 会落进虚空。
+// 三种启动场景都靠它统一：
+//   ① 从 cmd / PowerShell 直接运行（继承的句柄是控制台）→ 输出进同一个窗口，Ctrl+C 可用；
+//   ② 被脚本捕获（管道 / 文件重定向）→ 直接绑继承来的句柄，不能去 attach 控制台，
+//      否则会把重定向冲掉（build.ps1 靠管道解析 --version / --ui-info）；
+//   ③ 双击 / 开机自启（没有任何句柄，也没有父控制台）→ 保持无控制台，不弹窗、不闪窗。
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    BindStandardStreams();
+    SetConsoleOutputCP(CP_UTF8);  // 有控制台时统一 UTF-8；无控制台则是无害的空操作
+    return WinMainEntry();
 }

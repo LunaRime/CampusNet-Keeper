@@ -35,6 +35,8 @@ if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
     $PSNativeCommandUseErrorActionPreference = $false
 }
 $root = Split-Path -Parent $PSScriptRoot
+# 主程序是 GUI 子系统：PowerShell 直接调用拿不到输出也不等它结束，必须走重定向捕获
+. (Join-Path $root 'scripts\invoke_cli.ps1')
 if (-not [System.IO.Path]::IsPathRooted($Exe)) { $Exe = Join-Path $root $Exe }
 
 $script:failed = 0
@@ -92,9 +94,10 @@ function Get-UiWindows {
 
 # ---------------------------------------------------------------- 1) 前置自检
 Title '1) --ui-info：载荷与 hostfxr 就绪'
-$infoOut = & $Exe --ui-info 2>&1
+$cli = Invoke-CnkCli -Exe $Exe -CliArgs @('--ui-info')
+$infoOut = $cli.Lines
 $infoOut | ForEach-Object { Info $_ }
-$infoRc = $LASTEXITCODE
+$infoRc = $cli.ExitCode
 Check ($infoRc -eq 0) "--ui-info 退出码 0（实际 $infoRc）"
 $payloadId = $null
 foreach ($line in $infoOut) {

@@ -48,15 +48,15 @@ jobs:
       - name: 精简版形态自检（无内嵌载荷 → 必须退出 3）
         shell: pwsh
         run: |
-          $out = & .\build-m1\Release\CampusNet-Keeper.exe --ui-info 2>&1
-          $out | ForEach-Object { $_ }
-          $rc = $LASTEXITCODE
-          if ($rc -ne 3) {
-            Write-Error "--ui-info 应返回 3（本构建没有 build/generated 载荷），实际 $rc"
+          # 主程序是 GUI 子系统（开机不闪控制台窗口）：PowerShell 直接调用既拿不到输出、
+          # 也不等它结束（$LASTEXITCODE 不可信），必须重定向捕获（见 scripts/invoke_cli.ps1）
+          . .\scripts\invoke_cli.ps1
+          $r = Invoke-CnkCli -Exe '.\build-m1\Release\CampusNet-Keeper.exe' -CliArgs @('--ui-info')
+          $r.Lines | ForEach-Object { $_ }
+          if ($r.ExitCode -ne 3) {
+            Write-Error "--ui-info 应返回 3（本构建没有 build/generated 载荷），实际 $($r.ExitCode)"
             exit 1
           }
-          # ⚠ 必须显式 exit 0：此刻 $LASTEXITCODE 还留着 3，不写这句 pwsh 进程会以 3 退出
-          #（2026-10-17 实测：这一步因此把整个 job 判成 failure）
           exit 0
 
       - name: 证据脱敏审计

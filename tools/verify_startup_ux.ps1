@@ -141,10 +141,9 @@ if ($running.Count -gt 0) {
 Title '1) 无参数启动（= 双击 exe）：应自动打开设置界面，且不留下终端窗口'
 $baseline = Read-LogText
 $daemon = Start-Process -FilePath $Exe -PassThru   # 默认 ShellExecute，最接近双击
-Info "启动 PID=$($daemon.Id)（无参数；该进程会被分离重启后立即退出）"
+Info "启动 PID=$($daemon.Id)（无参数；GUI 子系统，本进程直接带界面）"
 
-# 双击 → 拥有独立控制台 → 父进程分离到无控制台子进程后退出
-Check ($null -ne (Wait-LogMatch '已分离到无控制台进程' $baseline 30)) '双击启动时已分离到无控制台进程（父进程退出）'
+# GUI 子系统：没有被分配控制台，因此不存在"分离重启"这一步，也不会留下终端窗口
 Check ($null -ne (Wait-LogMatch '启动后自动打开设置界面（双击意图）' $baseline 30)) '守护进程日志确认「启动后自动打开设置界面」'
 # 托盘图标：应用图标加载成功时守护进程会记一行（Win11 会把新图标收进溢出区，截图不可靠）
 Check ($null -ne (Wait-LogMatch '托盘图标：应用图标' $baseline 20)) '托盘图标使用应用图标（日志确认 IDI_APPICON 已加载）'
@@ -176,9 +175,11 @@ Title '2) 开机自启形态（--autostart）：守护启动但**不**弹界面�
 Check (Stop-DaemonCleanly) '守护进程已干净退出（为下一步腾出单实例）'
 $baseline = Read-LogText
 $auto = Start-Process -FilePath $Exe -ArgumentList '--autostart' -PassThru
-Info "启动 PID=$($auto.Id)（--autostart；父进程分离后退出）"
-Check ($null -ne (Wait-LogMatch '已分离到无控制台进程' $baseline 30)) '自启形态同样分离到无控制台进程'
+Info "启动 PID=$($auto.Id)（--autostart；GUI 子系统，无控制台）"
 Check ($null -ne (Wait-LogMatch '进入托盘守护循环' $baseline 30)) '守护循环已启动'
+$winAuto = @(Get-Process -Name 'CampusNet-Keeper' -ErrorAction SilentlyContinue |
+             Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
+Check ($winAuto.Count -eq 0) '自启形态没有可见窗口（不闪终端）'
 $ui2 = $null
 $deadline = (Get-Date).AddSeconds(10)
 while ((Get-Date) -lt $deadline) {

@@ -3,6 +3,7 @@
 
 #include <windows.h>
 
+#include <cwctype>
 #include <string>
 #include <vector>
 
@@ -12,7 +13,8 @@ namespace {
 
 constexpr const wchar_t* kRunKey = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr const wchar_t* kValueName = L"CampusNetKeeper";
-constexpr const wchar_t* kLauncherName = L"autostart.vbs";
+// 2026-10-27 曾用"脚本启动器"避免开机闪窗；改 GUI 子系统后不再需要，仅作迁移清理。
+constexpr const wchar_t* kLegacyLauncherName = L"autostart.vbs";
 
 std::wstring ToWide(const std::string& u8) {
     if (u8.empty()) return {};
@@ -34,71 +36,19 @@ std::wstring SelfPath() {
     return std::wstring(buf.data());
 }
 
-// %LOCALAPPDATA%\CampusNet-Keeper\autostart.vbs（目录由 LocalAppDataDir 确保存在）
-std::wstring LauncherPath() {
+std::wstring LegacyLauncherPath() {
     const std::string dir = LocalAppDataDir();
     if (dir.empty()) return {};
     const std::wstring wdir = ToWide(dir);
     if (wdir.empty()) return {};
-    return wdir + L"\\" + kLauncherName;
+    return wdir + L"\\" + kLegacyLauncherName;
 }
 
-std::wstring WscriptPath() {
-    wchar_t root[MAX_PATH] = {};
-    DWORD n = GetEnvironmentVariableW(L"SystemRoot", root, MAX_PATH);
-    if (n > 0 && n < MAX_PATH) {
-        std::wstring p(root);
-        p += L"\\System32\\wscript.exe";
-        // 只认存在的文件：某些企业/教育版镜像把 WSH 精简掉了，这时必须退回老写法，
-        // 否则会写进一条永远拉不起来的自启项（比闪一下黑窗糟得多）。
-        if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) return p;
-    }
-    return {};
+void RemoveLegacyLauncher() {
+    const std::wstring p = LegacyLauncherPath();
+    if (!p.empty()) DeleteFileW(p.c_str());
 }
 
-// 写启动器脚本（UTF-16LE + BOM，路径含中文也能被 WSH 正确解析）。
-//
-// 为什么要有启动器：本程序是**控制台子系统**，被启动项直接拉起时 Windows 一定会先
-// 分配一个控制台；Win11 默认终端是 Windows Terminal，那一下就是肉眼可见的黑窗闪现
-// （2026-10-27 用户反馈"每次开机闪一下终端"）。wscript 是 GUI 子系统，由它用窗口样式 0
-// 拉起本程序，全程不创建可见控制台，也就不闪。
-//
-// 用 `--detached` 是因为此时控制台是**隐藏**的而非不存在：带上它就不会再触发
-// 「分离重启」（那会白起一个进程）。--autostart 保证静默、不弹设置界面。
-bool WriteLauncher(const std::wstring& exe, const std::wstring& launcher) {
-    if (exe.empty() || launcher.empty()) return false;
-
-    std::wstring body;
-    body += L'\uFEFF';  // UTF-16LE BOM
-    body += L"' CampusNet-Keeper 开机自启启动器：由程序生成，删除后下次启动会重建\r\n";
-    body += L"Set sh = CreateObject(\"WScript.Shell\")\r\n";
-    body += L"sh.Run Chr(34) & \"" + exe +
-            L"\" & Chr(34) & \" --autostart --detached\", 0, False\r\n";
-
-    HANDLE h = CreateFileW(launcher.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-
-    DWORD written = 0;
-    const DWORD bytes = (DWORD)(body.size() * sizeof(wchar_t));
-    const BOOL ok = WriteFile(h, body.data(), bytes, &written, nullptr);
-    CloseHandle(h);
-    return ok && written == bytes;
-}
-
-std::wstring LauncherCommand() {
-    const std::wstring host = WscriptPath();
-    const std::wstring launcher = LauncherPath();
-    if (host.empty() || launcher.empty()) return {};
-    return L"\"" + host + L"\" //B //Nologo \"" + launcher + L"\"";
-}
-
-bool SameCommand(const std::wstring& a, const std::wstring& b) {
-    if (a.empty() || b.empty()) return false;
-    return _wcsicmp(a.c_str(), b.c_str()) == 0;
-}
-
-// 读当前 Run 键值（不存在返回 false）
 bool ReadRunValue(std::wstring& out) {
     out.clear();
     HKEY key = nullptr;
@@ -117,6 +67,25 @@ bool ReadRunValue(std::wstring& out) {
     while (!buf.empty() && buf.back() == L'\0') buf.pop_back();
     out = buf;
     return true;
+}
+
+// 期望值：`"<exe>" --autostart`（--autostart 表示静默启动、不弹设置界面）
+std::wstring DesiredValue() {
+    const std::wstring self = SelfPath();
+    if (self.empty()) return {};
+    return L"\"" + self + L"\" --autostart";
+}
+
+// 旧形态：`"<系统盘>\...\wscript.exe" //B //Nologo "...\autostart.vbs"`。
+// 只用于迁移判断——命中就重写成直接指向 exe，并删掉脚本。
+bool LooksLikeLegacyLauncher(const std::wstring& v) {
+    const std::wstring p = LegacyLauncherPath();
+    if (p.empty()) return false;
+    // 不区分大小写地找脚本路径
+    std::wstring lower_v = v, lower_p = p;
+    for (auto& c : lower_v) c = (wchar_t)towlower(c);
+    for (auto& c : lower_p) c = (wchar_t)towlower(c);
+    return lower_v.find(lower_p) != std::wstring::npos;
 }
 
 }  // namespace
@@ -142,28 +111,19 @@ bool SetAutostart(bool enable, std::string& error) {
     }
 
     if (enable) {
-        const std::wstring self = SelfPath();
-        if (self.empty()) {
+        const std::wstring value = DesiredValue();
+        if (value.empty()) {
             RegCloseKey(key);
             error = "无法取得自身路径";
             return false;
         }
-
-        // 优先用 wscript 启动器（开机不闪终端）；写不出来就退回"直接指向 exe"的老写法，
-        // 宁可闪一下也不让自启失效。
-        std::wstring value = LauncherCommand();
-        const std::wstring launcher = LauncherPath();
-        if (value.empty() || !WriteLauncher(self, launcher)) {
-            value = L"\"" + self + L"\" --autostart";
-        }
-
         rc = RegSetValueExW(key, kValueName, 0, REG_SZ, (const BYTE*)value.c_str(),
                             (DWORD)((value.size() + 1) * sizeof(wchar_t)));
+        RemoveLegacyLauncher();
     } else {
         rc = RegDeleteValueW(key, kValueName);
         if (rc == ERROR_FILE_NOT_FOUND) rc = ERROR_SUCCESS;
-        const std::wstring launcher = LauncherPath();
-        if (!launcher.empty()) DeleteFileW(launcher.c_str());  // 失败无妨，下次启动会重建
+        RemoveLegacyLauncher();
     }
     RegCloseKey(key);
 
@@ -177,16 +137,10 @@ bool SetAutostart(bool enable, std::string& error) {
 bool SyncAutostart(bool desired, std::string& error) {
     error.clear();
     if (desired) {
-        // 已经是"启动器形态"且脚本还在 → 不动注册表（避免打乱 StartUpApproved 的排序偏好）。
-        // 旧形态（直接指向 exe，会闪黑窗）与"脚本被删掉"都要重写一次。
+        // 已经是期望形态就不动注册表：避免每次启动都写（也会打乱 StartUpApproved 的排序偏好）。
+        // 旧形态（脚本启动器）需要迁移；指向别的 exe 的残留条目也要覆盖。
         std::wstring value;
-        if (ReadRunValue(value) && SameCommand(value, LauncherCommand())) {
-            const std::wstring launcher = LauncherPath();
-            if (!launcher.empty() &&
-                GetFileAttributesW(launcher.c_str()) != INVALID_FILE_ATTRIBUTES) {
-                return true;
-            }
-        }
+        if (ReadRunValue(value) && value == DesiredValue()) return true;
         return SetAutostart(true, error);
     }
     // 关闭：不管之前指向谁，都删掉本程序的自启值（避免残留指向旧路径的死条目）
@@ -197,10 +151,14 @@ bool IsAutostartEnabled() {
     std::wstring value;
     if (!ReadRunValue(value)) return false;
 
-    // 新形态：wscript 启动器
-    if (SameCommand(value, LauncherCommand())) return true;
+    // 期望形态
+    const std::wstring want = DesiredValue();
+    if (!want.empty() && value == want) return true;
 
-    // 旧形态：直接指向本 exe（升级前的安装留下的，仍算"已启用"）
+    // 旧形态（脚本启动器）：仍算"已启用"，下次启动会被迁移成直接指向 exe
+    if (LooksLikeLegacyLauncher(value)) return true;
+
+    // 更早的形态：直接指向本 exe 但没有 --autostart 参数
     const std::wstring self = SelfPath();
     if (self.empty()) return false;
     const std::wstring prefix = L"\"" + self + L"\"";
