@@ -199,10 +199,13 @@ try {
     Check (Wait-LogMatch '进入托盘守护循环' $base $TimeoutSec) '守护已就绪'
     Start-Sleep -Milliseconds 500   # 注册表同步与托盘就绪同批发生，留一点余量
 
-    $expected = "`"$Exe`" --autostart"
+    # 自启改由启动器脚本拉起（GUI 子系统宿主，开机不闪终端；见 Autostart.cpp 注释）
+    $host_exe = Join-Path $env:SystemRoot 'System32\wscript.exe'
+    $vbs = Join-Path $env:LOCALAPPDATA 'CampusNet-Keeper\autostart.vbs'
+    $expected = "`"$host_exe`" //B //Nologo `"$vbs`""
     $value = Get-AutostartValue
     Info "Run 键值：" + $(if ($null -eq $value) { '（不存在）' } else { $value })
-    Check ($value -eq $expected) "登录自启项已写入，值为 `"<exe>`" --autostart"
+    Check ($value -eq $expected) "登录自启项已写入，值为 启动器 + autostart.vbs"
     if ($value -ne $expected) { Info "期望值：$expected" }
     Check (-not $null -eq (Wait-LogMatch '开机自启' $base 5)) '守护日志记录了开机自启同步结果'
     Stop-Daemons
