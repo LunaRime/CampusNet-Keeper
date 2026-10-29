@@ -154,9 +154,65 @@ cnkrouter --selftest                                  # 不联网，验 AES/Base
 /etc/storage/cnkrouter --daemon --config=/etc/storage/cnkrouter.conf &
 ```
 
+---
+
+## 五、真机实录（2026-10-29，京东云亚瑟 AX1800 Pro）
+
+固件 **Kwrt 24.10.4**（OpenWrt 系）、`aarch64`、target `qualcommax/ipq60xx`、
+RAM 414 MB、overlay 1.9 G。WAN 为 DHCP（校园网下发 `10.16.x.x/17`），LAN `192.168.100.1`。
+
+### 交叉编译（本机无 gcc，走 CI）
+
+`.github/workflows/ci.yml` 的 `router` job 会自动产出 **aarch64-musl 纯静态**二进制
+（`733 KB`，`readelf -d` 无 NEEDED）。工具链来自 **OpenWrt 官方 SDK**：
+
+```sh
+# musl.cc 从 GitHub runner 连不上（curl 28 超时），zig 的 Releases 只有源码包，
+# 所以用官方 SDK 里的 aarch64-musl 工具链（与路由器 libc 同源）
+URL=https://downloads.openwrt.org/releases/24.10.4/targets/qualcommax/ipq807x/openwrt-sdk-24.10.4-qualcommax-ipq807x_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+curl -fsSL -o /tmp/sdk.tar.zst "$URL" && sudo tar --zstd -xf /tmp/sdk.tar.zst -C /opt/sdk --strip-components=1
+GCC=$(ls /opt/sdk/staging_dir/toolchain-*/bin/aarch64-*-gcc | head -1)
+make OUT=build-aarch64 CC="$GCC" STATIC=1
+```
+
+### 安装（手工推，路由器无 sftp-server）
+
+```sh
+# 二进制与脚本（脚本必须是 LF 行尾！见下）
+scp 不适用时用 exec + base64 分块：见仓库 build/.rput.py（本地工具，不入库）
+/usr/bin/cnkrouter            755
+/etc/init.d/cnkrouter         755
+/etc/hotplug.d/iface/90-cnkrouter 755
+/etc/config/cnkrouter         600   ← 含明文密码，必须 600
+/etc/init.d/cnkrouter enable && /etc/init.d/cnkrouter start
+```
+
+### 实测结果
+
+| 项 | 结果 |
+|---|---|
+| `--selftest`（不联网） | AES FIPS-197 / Base64 / URL 全过 |
+| `--probe` | `online 正文匹配预期标识`，退出码 0 |
+| 常驻内存 | **VSZ 284 KB**（ps 的 VSZ 列；RSS 更低） |
+| 启动到稳定 | 秒级；日志只有两行（启动参数 + 网络在线） |
+| 在线时行为 | **只巡检、不登录**（60 s 一次），对现有会话零干扰 |
+| 断网恢复 | 由 `hotplug` 在 `wan ifup` 后 restart，恢复时间从"最多 5 分钟"压到秒级 |
+
+### 三个真机才暴露的坑
+
+1. **CRLF 会让 init 脚本彻底失效**：`/etc/init.d/cnkrouter` 若带 `\r`，报
+   `can't open '/etc/rc.common'`（路径末尾多了 `\r`）和 `line 7: \: not found`。
+   仓库已加 `.gitattributes` 钉死 `router/**` 为 LF、`*.bat` 为 CRLF。
+2. **`captive.apple.com` 在本网被 DNS 劫持**（解析到 `*.download.ks-cdn.com`），
+   它的 200 + `Success` 不能单独当"已认证"的证据；验证真出网要用 TLS
+   （如 `https://api.github.com/zen` 返回真实内容）。
+3. **交接顺序**：如果电脑上还跑着 Windows 版守护进程，它经 NAT 出去的源 IP 就是路由器
+   WAN IP —— 它才是"当前认证者"。正确顺序是**先启路由器客户端（在线时不登录）→ 观察
+   → 再停电脑端**，两头不会抢会话。
+
 只需要保证开机时 WAN 已就绪，或加一个 `sleep 10` 之类的等待。
 
-## 五、防检测（可选，按需升级）
+## 六、防检测（可选，按需升级）
 
 > 先摆正位置：本客户端 + NAT 已经解决了最主要的检测手段——**账号在线会话数**。
 > AC 那边只有一个 IP / 一个 MAC。下面这些是"别让它通过指纹算出后面有几台设备"的加固，
@@ -260,7 +316,7 @@ UA3F 能改 HTTPS，靠的是**自己做 MITM**：生成一张 CA，**每台设�
 
 ---
 
-## 六、已知限制
+## 七、已知限制
 
 | 限制 | 说明 |
 |---|---|
@@ -272,7 +328,7 @@ UA3F 能改 HTTPS，靠的是**自己做 MITM**：生成一张 CA，**每台设�
 
 ---
 
-## 七、目录
+## 八、目录
 
 ```
 router/
