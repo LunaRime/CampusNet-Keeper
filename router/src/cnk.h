@@ -151,7 +151,8 @@ LoginResult portal_login(const Config *c);
 /* ---------------- 运行 ---------------- */
 long long now_ms(void);
 void      sleep_ms(int ms);
-int       run_once(Config *c);      /* 探测+必要时登录，0=最终在线 */
-int       run_daemon(Config *c);
+/* run_once / run_daemon 是 main.c 的内部实现（static），**不要**在这里声明：
+ * gcc 不允许「先非 static 声明、后 static 定义」（error: static declaration follows
+ * non-static declaration），MSVC/mingw 容忍这种写法 —— 又一处只有 Linux 才会暴露的差异。 */
 
 #endif /* CNK_ROUTER_H */
