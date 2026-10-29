@@ -1,0 +1,21 @@
+# 行尾策略（2026-10-29 加）
+#
+# 为什么必须有这个文件：Windows 上 checkout 默认会把文本转成 CRLF，而这些脚本要在
+# Linux/OpenWrt 上执行 —— shebang 和命令尾部带 \r 会直接失效。实证：CRLF 的
+# /etc/init.d/cnkrouter 报 `can't open '/etc/rc.common'`（路径多了一个 \r），
+# 以及 `line 7: \: not found`。这类错误极难从现象反推，必须从仓库层面钉死。
+#
+# 注意 batch 正好相反：cmd.exe 对 LF 的 goto/label 解析会出错，.bat 必须 CRLF。
+
+*.sh     text eol=lf
+*.c      text eol=lf
+*.h      text eol=lf
+*.py     text eol=lf
+Makefile text eol=lf
+
+# 路由器端的 OpenWrt 打包文件：init.d / hotplug / UCI 配置都没有扩展名
+router/packaging/** text eol=lf
+router/scripts/**   text eol=lf
+
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
