@@ -16,6 +16,20 @@
 #ifndef CNK_ROUTER_H
 #define CNK_ROUTER_H
 
+/* Linux / musl 上必须**显式声明 POSIX 特性宏**：`-std=c99 -pedantic` 会隐藏
+ * clock_gettime / CLOCK_MONOTONIC / struct addrinfo / strdup / usleep 等接口，
+ * 症状是 "storage size of 'ts' isn't known" 这类看不出根因的编译错误。
+ * 必须放在任何系统头之前 —— 本文件是所有 .c 的第一个 include，放这里最稳。
+ * （2026-10-29 由 CI 首次在 Linux 上编译时暴露；Windows/mingw 下无此问题。） */
+#if !defined(_WIN32)
+#  ifndef _POSIX_C_SOURCE
+#    define _POSIX_C_SOURCE 200809L
+#  endif
+#  ifndef _DEFAULT_SOURCE
+#    define _DEFAULT_SOURCE 1
+#  endif
+#endif
+
 #if defined(_MSC_VER)
 #define _CRT_SECURE_NO_WARNINGS 1
 #endif
