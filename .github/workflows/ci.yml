@@ -127,27 +127,35 @@ jobs:
           ./build-ci/cnkrouter --selftest
           python3 tests/e2e_test.py ./build-ci/cnkrouter
 
-      - name: 安装 zig（自带 musl libc，可交叉到 aarch64-musl）
+      - name: 下载 OpenWrt SDK（取 aarch64-musl 工具链）
         run: |
-          # 为什么不用 musl.cc：GitHub runner 连不上它（curl: (28) 连 443 超时 135s，2026-10-29 实测）。
-          # zig 自带 musl 的 libc 源码，`zig cc -target aarch64-linux-musl` 直接产出纯静态
-          # musl 二进制；且它是从 GitHub Releases 下载的，runner 一定通。
-          curl -fsSL -o /tmp/zig.tar.xz \
-            https://github.com/ziglang/zig/releases/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
-          sudo mkdir -p /opt/zig
-          sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
-          sudo ln -sf /opt/zig/zig /usr/local/bin/zig
-          zig version
+          # 为什么是 SDK：
+          #  - musl.cc 从 runner 连不上（curl: (28) 443 超时 135s，2026-10-29 实测）
+          #  - zig 的 GitHub Releases 只有源码包（预编译包在 ziglang.org，不稳）
+          #  - OpenWrt SDK 是官方源，自带 aarch64 musl 工具链 + sysroot，
+          #    与路由器上的 libc 同源，最不容易出"库里那点差异"的怪问题。
+          # target 用 ipq807x 只是"最近的 aarch64 官方 target"：我们的产物是**纯静态**
+          # 二进制，不挑 subtarget（真机是 Kwrt 24.10.4 / qualcommax / ipq60xx）。
+          sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          URL=https://downloads.openwrt.org/releases/24.10.4/targets/qualcommax/ipq807x/openwrt-sdk-24.10.4-qualcommax-ipq807x_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+          curl -fsSL -o /tmp/sdk.tar.zst "$URL"
+          sudo mkdir -p /opt/sdk
+          sudo tar --zstd -xf /tmp/sdk.tar.zst -C /opt/sdk --strip-components=1
+          ls /opt/sdk/staging_dir/
 
       - name: 交叉编译（静态，不依赖路由器 libc）
         run: |
           cd router
-          # OUT 用独立目录：不去动仓库里的 build/（那里有本地 Windows 产物）
-          make OUT=build-aarch64 CC="zig cc -target aarch64-linux-musl" STATIC=1
+          GCC=$(ls /opt/sdk/staging_dir/toolchain-*/bin/aarch64-*-gcc | head -1)
+          echo "工具链: $GCC"
+          make OUT=build-aarch64 CC="$GCC" STATIC=1
           file build-aarch64/cnkrouter
           ls -l build-aarch64/cnkrouter
-          # 静态链接的证据：不能有任何 NEEDED 条目（否则路由器上会缺库）
-          readelf -d build-aarch64/cnkrouter | grep -c NEEDED || echo "NEEDED=0（静态）"
+          # 静态是可验证的事实：不能有任何 NEEDED（否则路由器上会缺库直接跑不起来）
+          if readelf -d build-aarch64/cnkrouter | grep -q NEEDED; then
+            echo "!! 二进制有动态依赖，不是静态链接"; readelf -d build-aarch64/cnkrouter | head -10; exit 1
+          fi
+          echo "NEEDED=0（纯静态）"
 
       - name: 上传 aarch64 产物
         uses: actions/upload-artifact@v4
