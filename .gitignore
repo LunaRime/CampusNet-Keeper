@@ -12,3 +12,6 @@ build-ui/
 # dotnet 的默认产物位置（万一某处没走 Directory.Build.props）
 [Bb]in/
 [Oo]bj/
+
+# 路由器端 CI 交叉编译的输出目录（不随仓库走）
+router/build-*/
