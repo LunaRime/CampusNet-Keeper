@@ -127,20 +127,27 @@ jobs:
           ./build-ci/cnkrouter --selftest
           python3 tests/e2e_test.py ./build-ci/cnkrouter
 
-      - name: 安装 aarch64-musl 交叉工具链
+      - name: 安装 zig（自带 musl libc，可交叉到 aarch64-musl）
         run: |
-          curl -fsSL -o /tmp/tc.tgz https://musl.cc/aarch64-linux-musl-cross.tgz
-          sudo tar -xzf /tmp/tc.tgz -C /opt
-          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
-          /opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc --version | head -1
+          # 为什么不用 musl.cc：GitHub runner 连不上它（curl: (28) 连 443 超时 135s，2026-10-29 实测）。
+          # zig 自带 musl 的 libc 源码，`zig cc -target aarch64-linux-musl` 直接产出纯静态
+          # musl 二进制；且它是从 GitHub Releases 下载的，runner 一定通。
+          curl -fsSL -o /tmp/zig.tar.xz \
+            https://github.com/ziglang/zig/releases/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+          sudo mkdir -p /opt/zig
+          sudo tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
+          sudo ln -sf /opt/zig/zig /usr/local/bin/zig
+          zig version
 
       - name: 交叉编译（静态，不依赖路由器 libc）
         run: |
           cd router
           # OUT 用独立目录：不去动仓库里的 build/（那里有本地 Windows 产物）
-          make OUT=build-aarch64 CROSS=aarch64-linux-musl- CC=gcc STATIC=1
+          make OUT=build-aarch64 CC="zig cc -target aarch64-linux-musl" STATIC=1
           file build-aarch64/cnkrouter
           ls -l build-aarch64/cnkrouter
+          # 静态链接的证据：不能有任何 NEEDED 条目（否则路由器上会缺库）
+          readelf -d build-aarch64/cnkrouter | grep -c NEEDED || echo "NEEDED=0（静态）"
 
       - name: 上传 aarch64 产物
         uses: actions/upload-artifact@v4
