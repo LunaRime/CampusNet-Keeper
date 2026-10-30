@@ -8,8 +8,12 @@
 #include "core/Log.h"
 #include "core/Probe.h"
 #include "store/Config.h"
+#include "store/PortableSecret.h"
 #include "sys/Autostart.h"
 #include "json.hpp"
+
+#include <filesystem>
+#include <fstream>
 
 namespace cnk {
 
@@ -29,6 +33,16 @@ IpcResponse Ok(const IpcRequest& req, const std::string& data_json) {
     r.ok = true;
     r.data_json = data_json;
     return r;
+}
+
+// 取字符串参数：缺键/类型不符都返回空串。
+// 不用 nlohmann 的 value()——它在类型不匹配时**抛异常**，而这里是服务线程，
+// 异常逃出去就是进程静默死亡（曾被数值型 id 坑过一次）。
+std::string StrArg(const nlohmann::json& j, const char* key) {
+    if (!j.is_object() || !j.contains(key)) return {};
+    const auto& v = j[key];
+    if (!v.is_string()) return {};
+    return v.get<std::string>();
 }
 
 }  // namespace
@@ -137,7 +151,9 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
         if (target == nullptr && !cfg.profiles.empty()) target = &cfg.profiles.front();
         if (target == nullptr) return Fail(req, "没有可用的配置档案");
         if (target->password.empty())
-            return Fail(req, "该档案没有可用密码（请先在设置界面输入并保存）");
+            return Fail(req, target->password_foreign
+                                 ? "该档案的密码来自其他电脑/账号，本机解不开：请重新输入，或用「密码迁移」导出导入"
+                                 : "该档案没有可用密码（请先在设置界面输入并保存）");
 
         const ProbeResult pr = ProbeOnce(cfg.settings);
         const Vendor vendor = DetectVendor(pr.response);
@@ -181,6 +197,98 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
             }
         }
         return Ok(req, d.dump());
+    }
+
+    if (req.cmd == "export_secret" || req.cmd == "import_secret") {
+        // 整段包住：路径可能含非法 UTF-8（fs::u8path 会抛），文件 IO 也可能抛。
+        // 服务线程里异常逃出去 = 进程静默死亡（铁律）。
+        try {
+            // 密码迁移的两个动作都由守护进程做：明文只在守护进程里出现，
+            // 界面只负责选路径、收口令（与 password_plain 同一条安全边界）。
+            const nlohmann::json args = nlohmann::json::parse(req.args_json, nullptr, false);
+            if (args.is_discarded() || !args.is_object())
+                return Fail(req, "参数不是合法 JSON 对象");
+            const std::string path = StrArg(args, "path");
+            const std::string passphrase = StrArg(args, "passphrase");
+            const std::string want = StrArg(args, "profile");
+            if (path.empty()) return Fail(req, "缺少文件路径");
+            if (passphrase.empty()) return Fail(req, "口令不能为空（至少 6 位）");
+
+            if (req.cmd == "export_secret") {
+                AppConfig cfg;
+                std::string err;
+                if (!ConfigLoad(cfg, err)) return Fail(req, "读取配置失败：" + err);
+
+                const Profile* target = nullptr;
+                for (const auto& p : cfg.profiles)
+                    if (p.name == want || p.username == want) { target = &p; break; }
+                if (target == nullptr) target = ActiveProfile(cfg);
+                if (target == nullptr) return Fail(req, "没有可导出的档案");
+                if (!target->has_password || target->password.empty())
+                    return Fail(req, target->password_foreign
+                                         ? "该档案的密码来自其他电脑/账号，本机解不开，无法导出"
+                                         : "该档案还没有密码，无法导出");
+
+                PortableSecret s;
+                s.profile = target->name;
+                s.username = target->username;
+                s.password = target->password;
+
+                std::string json, xerr;
+                if (!ExportPortableSecret(s, passphrase, json, xerr))
+                    return Fail(req, "导出失败：" + xerr);
+
+                std::error_code ec;
+                const std::filesystem::path p = std::filesystem::u8path(path);
+                if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
+                std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
+                if (!ofs) return Fail(req, "无法写入该路径：" + path);
+                ofs << json;
+                ofs.flush();
+                if (!ofs) return Fail(req, "写入失败：" + path);
+
+                nlohmann::json d;
+                d["path"] = path;
+                d["profile"] = s.profile;
+                d["username"] = s.username;
+                LogInfo("界面导出了密码（档案=" + s.profile + "，文件=" + path + "）");
+                return Ok(req, d.dump());
+            }
+
+            // import_secret
+            std::ifstream ifs(std::filesystem::u8path(path), std::ios::binary);
+            if (!ifs) return Fail(req, "无法读取该文件：" + path);
+            const std::string text((std::istreambuf_iterator<char>(ifs)),
+                                   std::istreambuf_iterator<char>());
+
+            PortableSecret s;
+            std::string xerr;
+            if (!ImportPortableSecret(text, passphrase, s, xerr))
+                return Fail(req, "导入失败：" + xerr);
+
+            AppConfig existing;
+            std::string lerr;
+            const bool have_existing = ConfigLoad(existing, lerr);
+            AppConfig cfg = have_existing ? existing : AppConfig{};
+
+            const std::string target_user = want.empty() ? s.username : want;
+            if (target_user.empty()) return Fail(req, "文件里没有账号信息，请指定目标档案");
+            const size_t before = cfg.profiles.size();
+            if (!SetProfilePassword(cfg, target_user, s.password, xerr))
+                return Fail(req, "写入密码失败：" + xerr);
+
+            std::string serr;
+            if (!ConfigSave(cfg, serr)) return Fail(req, "保存失败：" + serr);
+            sch.SetConfig(cfg);
+
+            nlohmann::json d;
+            d["username"] = target_user;
+            d["created_new_profile"] = cfg.profiles.size() > before;
+            LogInfo("界面导入了密码（档案=" + target_user + "）");
+            return Ok(req, d.dump());
+        } catch (const std::exception& e) {
+            return Fail(req, std::string("密码迁移失败：") + e.what());
+        }
     }
 
     return Fail(req, "未知命令: " + req.cmd);

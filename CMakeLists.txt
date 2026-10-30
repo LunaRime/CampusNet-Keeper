@@ -21,6 +21,8 @@ add_library(cnk_core STATIC
   src/native/core/Url.cpp
   src/native/core/Integrity.cpp
   src/native/store/Dpapi.cpp
+  src/native/store/Secret.cpp
+  src/native/store/PortableSecret.cpp
   src/native/store/Config.cpp
   src/native/auth/Detector.cpp
   src/native/auth/Carrier.cpp
@@ -120,6 +122,7 @@ add_executable(cnk_tests
   tests/integrity_test.cpp
   tests/ipc_test.cpp
   tests/config_for_ui_test.cpp
+  tests/secret_store_test.cpp
   tests/payload_extract_test.cpp
 )
 target_link_libraries(cnk_tests PRIVATE cnk_core)

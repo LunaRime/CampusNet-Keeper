@@ -12,11 +12,17 @@ std::string ConfigForUiJson(const AppConfig& cfg) {
     if (j.is_discarded() || !j.is_object()) return "{}";
 
     if (j.contains("profiles") && j["profiles"].is_array()) {
-        for (auto& p : j["profiles"]) {
+        for (size_t i = 0; i < j["profiles"].size(); ++i) {
+            auto& p = j["profiles"][i];
             if (!p.is_object()) continue;
-            const bool has = !p.value("password_enc", std::string{}).empty();
+            // password_state 三态：none / ok / foreign。
+            // foreign = 密文存在但本机解不开（换机器、换 Windows 账号），
+            // 界面要明说「来自其他电脑，需在本机重新输入」，而不是显示成「没设过」。
+            const bool ok = i < cfg.profiles.size() && cfg.profiles[i].has_password;
+            const bool foreign = i < cfg.profiles.size() && cfg.profiles[i].password_foreign;
             p.erase("password_enc");   // ← 安全红线：密文绝不外传
-            p["has_password"] = has;
+            p["has_password"] = ok;
+            p["password_state"] = ok ? "ok" : (foreign ? "foreign" : "none");
         }
     }
     return j.dump();
@@ -59,6 +65,10 @@ bool MergeUiConfig(const std::string& ui_json, const AppConfig& existing, AppCon
             if (old.name == out.profiles[i].name) {
                 out.profiles[i].password = old.password;
                 out.profiles[i].has_password = old.has_password;
+                // ⚠ 外来密文必须一起继承：界面根本看不到它（ConfigForUiJson 剥掉了），
+                // 不继承就等于「界面点一次保存 → 把别的机器上的密码抹掉」。
+                out.profiles[i].password_foreign = old.password_foreign;
+                out.profiles[i].password_enc_raw = old.password_enc_raw;
                 break;
             }
         }

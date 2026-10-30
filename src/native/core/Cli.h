@@ -4,7 +4,8 @@
 
 namespace cnk {
 
-enum class CliMode { Daemon, ProbeNow, TestLogin, Detect, SetPassword, Version, Help, Ui, UiInfo };
+enum class CliMode { Daemon, ProbeNow, TestLogin, Detect, SetPassword,
+                     ExportSecret, ImportSecret, Version, Help, Ui, UiInfo };
 
 struct CliOptions {
     CliMode mode = CliMode::Daemon;
@@ -13,7 +14,8 @@ struct CliOptions {
     std::string simulate_user;
     std::string simulate_pass;
     std::string simulate_fail;   // "" | "badcred" | "timeout"
-    std::string user;            // --set-password 的目标账号
+    std::string user;            // --set-password / --export-secret / --import-secret 的目标账号
+    std::string secret_path;     // --export-secret / --import-secret 的文件路径
     // 开机自启启动（静默）：不弹设置界面。普通双击（无任何参数）会打开界面。
     bool autostart_launch = false;
     // 内部标志：本进程是"分离重启"后的无控制台实例（见 main.cpp 的 SpawnDetachedCopy），

@@ -149,4 +149,115 @@ bool AesEcbPkcs7DecryptB64(const std::string& key, const std::string& b64,
     return true;
 }
 
+// ---------------------------------------------------------------- 便携密码导出
+
+namespace {
+
+// AES-GCM 的一次性加/解密。encrypt=false 时 tag 作为入参校验（不匹配即失败）。
+bool AesGcmRaw(bool encrypt, const std::string& key, const std::string& nonce,
+               const std::string& aad, const std::string& in,
+               std::string& out, std::string& tag) {
+    out.clear();
+    if (key.size() != 32 || nonce.size() != 12 || tag.size() != 16) return false;
+    if (in.size() > 0x7FFFFFFF) return false;
+
+    AlgHandle alg;
+    if (BCryptOpenAlgorithmProvider(&alg.h, BCRYPT_AES_ALGORITHM, nullptr, 0) != 0)
+        return false;
+    if (BCryptSetProperty(alg.h, BCRYPT_CHAINING_MODE,
+                          (PUCHAR)BCRYPT_CHAIN_MODE_GCM,
+                          sizeof(BCRYPT_CHAIN_MODE_GCM), 0) != 0)
+        return false;
+
+    DWORD obj_len = 0, cb = 0;
+    if (BCryptGetProperty(alg.h, BCRYPT_OBJECT_LENGTH, (PUCHAR)&obj_len,
+                          sizeof(obj_len), &cb, 0) != 0)
+        return false;
+
+    std::vector<unsigned char> key_obj(obj_len);
+    KeyHandle key_h;
+    if (BCryptGenerateSymmetricKey(alg.h, &key_h.h, key_obj.data(), obj_len,
+                                   (PUCHAR)key.data(), (DWORD)key.size(), 0) != 0)
+        return false;
+
+    std::vector<unsigned char> nonce_buf(nonce.begin(), nonce.end());
+    std::vector<unsigned char> aad_buf(aad.begin(), aad.end());
+    std::vector<unsigned char> tag_buf(tag.begin(), tag.end());
+
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+    BCRYPT_INIT_AUTH_MODE_INFO(info);
+    info.pbNonce = nonce_buf.data();
+    info.cbNonce = (ULONG)nonce_buf.size();
+    info.pbAuthData = aad_buf.empty() ? nullptr : aad_buf.data();
+    info.cbAuthData = (ULONG)aad_buf.size();
+    info.pbTag = tag_buf.data();
+    info.cbTag = (ULONG)tag_buf.size();
+
+    std::string buf(in.size(), '\0');
+    DWORD written = 0;
+    const NTSTATUS st =
+        encrypt ? BCryptEncrypt(key_h.h, (PUCHAR)in.data(), (DWORD)in.size(), &info,
+                                nullptr, 0, (PUCHAR)buf.data(), (DWORD)buf.size(),
+                                &written, 0)
+                : BCryptDecrypt(key_h.h, (PUCHAR)in.data(), (DWORD)in.size(), &info,
+                                nullptr, 0, (PUCHAR)buf.data(), (DWORD)buf.size(),
+                                &written, 0);
+    if (st != 0 || written != in.size()) return false;
+
+    out.assign(buf.data(), written);
+    if (encrypt) tag.assign((char*)tag_buf.data(), tag_buf.size());
+    return true;
+}
+
+}  // namespace
+
+std::string RandomBytes(size_t n) {
+    if (n == 0) return {};
+    std::string out(n, '\0');
+    if (BCryptGenRandom(nullptr, (PUCHAR)out.data(), (ULONG)n,
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+        return {};
+    return out;
+}
+
+bool Pbkdf2Sha256(const std::string& passphrase, const std::string& salt, int iters,
+                  size_t dkLen, std::string& out) {
+    out.clear();
+    // 空口令直接拒绝：导出文件的全部安全性都压在口令上，不许"空口令也能用"
+    if (passphrase.empty() || salt.empty() || iters <= 0 || dkLen == 0) return false;
+
+    AlgHandle alg;
+    if (BCryptOpenAlgorithmProvider(&alg.h, BCRYPT_SHA256_ALGORITHM, nullptr,
+                                    BCRYPT_ALG_HANDLE_HMAC_FLAG) != 0)
+        return false;
+
+    std::string dk(dkLen, '\0');
+    if (BCryptDeriveKeyPBKDF2(alg.h, (PUCHAR)passphrase.data(),
+                              (DWORD)passphrase.size(), (PUCHAR)salt.data(),
+                              (DWORD)salt.size(), (ULONGLONG)iters,
+                              (PUCHAR)dk.data(), (DWORD)dk.size(), 0) != 0)
+        return false;
+    out = std::move(dk);
+    return true;
+}
+
+bool AesGcmEncrypt(const std::string& key, const std::string& nonce,
+                   const std::string& aad, const std::string& plain,
+                   std::string& cipher, std::string& tag) {
+    tag.assign(16, '\0');
+    return AesGcmRaw(true, key, nonce, aad, plain, cipher, tag);
+}
+
+bool AesGcmDecrypt(const std::string& key, const std::string& nonce,
+                   const std::string& aad, const std::string& cipher,
+                   const std::string& tag, std::string& plain) {
+    plain.clear();
+    if (tag.size() != 16) return false;
+    std::string in_tag = tag;
+    std::string out;
+    if (!AesGcmRaw(false, key, nonce, aad, cipher, out, in_tag)) return false;
+    plain = std::move(out);
+    return true;
+}
+
 }  // namespace cnk

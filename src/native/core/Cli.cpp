@@ -54,6 +54,15 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
         if (TakePrefixed(args, i, "--simulate-fail", o.simulate_fail)) continue;
         if (TakePrefixed(args, i, "--simulate", o.simulate_vendor)) continue;
         if (TakePrefixed(args, i, "--config", o.config_path)) continue;
+        // 导出/导入是"模式 + 路径"合一，必须在 --user 之前处理
+        if (TakePrefixed(args, i, "--export-secret", o.secret_path)) {
+            o.mode = CliMode::ExportSecret;
+            continue;
+        }
+        if (TakePrefixed(args, i, "--import-secret", o.secret_path)) {
+            o.mode = CliMode::ImportSecret;
+            continue;
+        }
         if (TakePrefixed(args, i, "--user", o.user)) continue;
 
         o.unknown.push_back(a);
@@ -77,6 +86,9 @@ std::string CliHelpText() {
         "  --detect              只做厂商识别并输出结果\n"
         "  --set-password        为账号录入密码（环境变量 CNK_PASSWORD 或交互输入，\n"
         "                        DPAPI 加密保存；可配 --user=账号 指定目标）\n"
+        "  --export-secret=<文件>  把当前档案的密码导出成可携带文件（口令加密，\n"
+        "                        环境变量 CNK_PASSPHRASE 或交互输入；可配 --user=账号）\n"
+        "  --import-secret=<文件>  从导出文件恢复密码（口令解密后写入本机密码库）\n"
         "  --config=<路径>       使用指定的配置文件\n"
         "  --simulate=<厂商>     使用本地模拟 Portal 服务器（测试用）\n"
         "                        drcom 为完整实现；其余厂商待后续任务\n"
@@ -88,6 +100,7 @@ std::string CliHelpText() {
         "  --help                显示本帮助\n"
         "\n"
         "配置文件默认位于 %APPDATA%\\CampusNet-Keeper\\config.json\n"
+        "密码库位于 %LOCALAPPDATA%\\CampusNet-Keeper\\secret.json（本机专属，不随漫游）\n"
         "日志位于 %APPDATA%\\CampusNet-Keeper\\logs\\keeper.log\n";
 }
 

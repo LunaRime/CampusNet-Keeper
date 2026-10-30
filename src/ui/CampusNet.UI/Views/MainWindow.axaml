@@ -265,6 +265,30 @@
             </StackPanel>
           </Border>
 
+          <!-- 密码迁移：换电脑时把密码「带过去」，靠口令加密，不靠放宽 DPAPI -->
+          <Border Classes="card">
+            <StackPanel Spacing="10">
+              <TextBlock Classes="heading" Text="密码迁移（换电脑时用）"/>
+              <StackPanel>
+                <TextBlock Classes="label" Text="导出文件"/>
+                <TextBox Text="{Binding SecretPath}" Watermark="例如 D:\campusnet-secret.json"/>
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Classes="label" Text="口令"/>
+                <TextBox Text="{Binding SecretPassphrase}" PasswordChar="●"
+                         Watermark="至少 6 位；导出时自己设，导入时填同一个"/>
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Classes="outline" Content="导出密码"
+                        Command="{Binding ExportSecretCommand}"/>
+                <Button Classes="outline" Content="导入密码"
+                        Command="{Binding ImportSecretCommand}"/>
+              </StackPanel>
+              <TextBlock Classes="caption"
+                         Text="导出文件用口令加密，可以安全拷到另一台电脑再导入；口令请另走一个渠道告诉对方。"/>
+            </StackPanel>
+          </Border>
+
           <!-- 高级（可折叠） -->
           <Border Classes="card">
             <Expander IsExpanded="{Binding ShowAdvanced}" HorizontalAlignment="Stretch">

@@ -51,6 +51,34 @@ Check(pj.Contains("\"has_password\":true"), "has_password 回传（只读语义�
 p.PasswordPlain = "";
 Check(!p.ToJson().Contains("password_plain"), "未改密码时不发 password_plain");
 
+// ⚠ 真入口断言：保存走的是 AppConfig.ToJson()（整包配置），不是 Profile.ToJson()。
+// 只测 Profile.ToJson 会漏掉「明文密码根本没进报文」——那正是「界面显示已保存、
+// 自连却报密码为空」的根因（PasswordPlain 带 [JsonIgnore]，STJ 不认 ShouldSerializeXxx）。
+var sendCfg = new AppConfig { ActiveProfile = "默认" };
+var sendProfile = Profile.Create("默认", "http://10.0.0.1/", "202400000001", "auto", "campus", "");
+sendProfile.PasswordPlain = "界面输入的密码";
+sendCfg.Profiles.Add(sendProfile);
+var sendJson = sendCfg.ToJson();
+var sendNode = JsonNode.Parse(sendJson)!;
+Check(sendNode["profiles"]![0]!["password_plain"]?.GetValue<string>() == "界面输入的密码",
+      "整包配置（set_config 真报文）带上 password_plain");
+Check(!sendJson.Contains("password_enc"), "整包配置不含 password_enc");
+
+var plainCfg = new AppConfig();
+plainCfg.Profiles.Add(Profile.Create("默认", "http://10.0.0.1/", "202400000001", "auto", "campus", ""));
+var plainJson = plainCfg.ToJson();
+Check(!plainJson.Contains("password_plain"), "没输入新密码时整包配置不带 password_plain");
+Check(AppConfig.FromJson(sendJson).Profiles[0].Username == "202400000001",
+      "带 password_plain 的整包配置仍能往返（对端不认这个键也不该崩）");
+
+// 密码三态：foreign 表示密文在、但本机解不开（换机器/换账号），界面必须据此提示重输
+var foreign = AppConfig.FromJson(
+    """{"profiles":[{"name":"x","has_password":false,"password_state":"foreign"}]}""");
+Check(foreign.Profiles[0].PasswordState == "foreign", "读取 password_state=foreign");
+Check(!foreign.Profiles[0].HasPassword, "foreign 不算「有可用密码」");
+var noneState = AppConfig.FromJson("""{"profiles":[{"name":"y"}]}""");
+Check(noneState.Profiles[0].PasswordState == "none", "缺省 password_state=none");
+
 Console.WriteLine("== 运营商下拉合并规则（任务 24 的重点）==");
 var fallback = CarrierOptions.Merge(null, "campus");
 Check(fallback.Any(o => o.IsCustom), "始终保留「自定义…」项");
@@ -66,6 +94,15 @@ Check(merged[^1].IsCustom, "服务器列表下同样保留「自定义…」");
 
 var stale = CarrierOptions.Merge(fromServer, "telecom");
 Check(stale.Any(o => o.Value == "telecom"), "当前值不在服务器列表里也要能显示（避免下拉空白）");
+Check(stale.First(o => o.Value == "telecom").Label == "中国电信",
+      "补上的当前值用中文名，不是秃的 telecom");
+
+// 真机症状：某些部署只下发 id、name 为空 → 下拉里出现过一条「cmcc」
+var noName = JsonNode.Parse(
+    """{"options":[{"id":"cmcc","name":""},{"id":"unicom","name":"unicom"}]}""")!;
+var noNameList = CarrierOptions.Merge(noName, "cmcc");
+Check(noNameList.First(o => o.Value == "cmcc").Label == "中国移动", "服务器 name 为空时用内置中文名");
+Check(noNameList.First(o => o.Value == "unicom").Label == "中国联通", "服务器把 id 当 name 原样回显时也用中文名");
 
 // ================= 跨语言契约（需要探针服务端）=================
 

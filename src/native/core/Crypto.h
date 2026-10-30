@@ -17,4 +17,22 @@ bool AesEcbPkcs7DecryptB64(const std::string& key, const std::string& b64,
 std::string Base64Encode(const std::string& bytes);
 bool Base64Decode(const std::string& b64, std::string& out);
 
+// ---- 便携密码导出（任务 27：跨机迁移靠用户口令，不靠放宽 DPAPI）----
+
+// 密码学随机字节（BCryptGenRandom，系统首选 RNG）。失败返回空串。
+std::string RandomBytes(size_t n);
+
+// PBKDF2-HMAC-SHA256。passphrase 为空 / salt 为空 / iters<=0 / dkLen==0 一律失败。
+bool Pbkdf2Sha256(const std::string& passphrase, const std::string& salt, int iters,
+                  size_t dkLen, std::string& out);
+
+// AES-256-GCM（key 必须 32 字节、nonce 12 字节）。tag 固定 16 字节。
+// 解密时 tag 不匹配（口令错 / 文件被改）返回 false，plain 留空。
+bool AesGcmEncrypt(const std::string& key, const std::string& nonce,
+                   const std::string& aad, const std::string& plain,
+                   std::string& cipher, std::string& tag);
+bool AesGcmDecrypt(const std::string& key, const std::string& nonce,
+                   const std::string& aad, const std::string& cipher,
+                   const std::string& tag, std::string& plain);
+
 }  // namespace cnk

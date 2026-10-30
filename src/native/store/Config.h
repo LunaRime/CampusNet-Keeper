@@ -23,7 +23,12 @@ struct Profile {
     std::string auth_url;
     std::string username;
     std::string password;       // 内存中明文
-    bool has_password = false;  // 反序列化后表示 password_enc 非空且解密成功
+    bool has_password = false;  // 本机可解、已加载明文（== 有可用密码）
+    // 密文存在但本机解不开（换机器 / 换 Windows 账号）。此时 password 为空，
+    // 但 password_enc_raw 会**原样保留**，任何保存都要把它写回去——
+    // 否则「在另一台机器上点一次保存」就把原机器还能用的密码抹掉了。
+    bool password_foreign = false;
+    std::string password_enc_raw;  // 外来密文（base64），只在本机解不开时非空
     std::string vendor = "auto";  // auto|drcom|srun|eportal|generic|custom
     IspConfig isp;
     CustomTemplate custom_template;
@@ -56,7 +61,7 @@ struct AppConfig {
 
 std::string ConfigPath();
 
-// 序列化到 JSON 字符串；密码以 base64(DPAPI) 存入 password_enc 字段
+// 序列化到 JSON 字符串；密码以 base64(DPAPI) 存入 password_enc 字段（自包含形态）。
 bool ConfigToJson(const AppConfig& cfg, std::string& out_json);
 // 从 JSON 反序列化；解密 password_enc 到 password。
 // 任何格式/类型错误都返回 false 并填 error，不抛异常、不崩溃。
@@ -66,10 +71,21 @@ bool ConfigFromJson(const std::string& json, AppConfig& out, std::string& error)
 // 输出一致；非 UTF-8 路径会在 u8path 转换处抛 std::system_error）。
 // 失败时不抛异常。写入采用「先写 .tmp 再改名」的原子替换；替换失败时保留
 // 旧文件并清理 .tmp。读取遇损坏文件时备份为 <path>.bak 后返回失败并回落默认配置。
+//
+// 这两个是**自包含**形态：密文内联在 config.json 里（`--config` 与测试用）。
 bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error);
 bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& error);
 
-// 上述重载的薄封装，路径为 ConfigPath()（%APPDATA%\CampusNet-Keeper\config.json）
+// **拆分**形态（默认安装用它）：密文写 secret_path（%LOCALAPPDATA%，本机专属），
+// config.json 只保留外来密文（password_enc_raw）。这样配置可以随 Roaming 漫游，
+// 而密码不会被"搬"到别的机器上失效。
+bool ConfigLoadSplitFrom(const std::string& config_path, const std::string& secret_path,
+                         AppConfig& out, std::string& error);
+bool ConfigSaveSplitTo(const std::string& config_path, const std::string& secret_path,
+                       const AppConfig& cfg, std::string& error);
+
+// 上述重载的薄封装：配置 %APPDATA%\CampusNet-Keeper\config.json + 密码库
+// %LOCALAPPDATA%\CampusNet-Keeper\secret.json
 bool ConfigLoad(AppConfig& out, std::string& error);
 bool ConfigSave(const AppConfig& cfg, std::string& error);
 

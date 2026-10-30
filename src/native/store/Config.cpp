@@ -1,5 +1,7 @@
 #include "store/Config.h"
+#include "core/Crypto.h"
 #include "store/Dpapi.h"
+#include "store/Secret.h"
 #include "core/Paths.h"
 #include "core/Log.h"
 #include "core/Integrity.h"
@@ -16,49 +18,10 @@ namespace cnk {
 
 namespace {
 
-// base64 累积器用 unsigned：加密后的 blob 有数百字节，编码要累积 3 字节
-// 一组、解码累积 4 字符一组，若用 int，中间态会越过 2^31 触发有符号左移
-// 溢出（UB）。无符号回绕是良定义的，且低位语义不受影响。
-std::string Base64Encode(const std::string& in) {
-    static const char* tbl =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    unsigned int val = 0;
-    int bits = -6;
-    for (unsigned char c : in) {
-        val = (val << 8) + c;
-        bits += 8;
-        while (bits >= 0) {
-            out += tbl[(val >> bits) & 0x3F];
-            bits -= 6;
-        }
-    }
-    if (bits > -6) out += tbl[((val << 8) >> (bits + 8)) & 0x3F];
-    while (out.size() % 4) out += '=';
-    return out;
-}
-
-std::string Base64Decode(const std::string& in) {
-    static const std::string tbl =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::string out;
-    unsigned int val = 0;
-    int bits = -8;
-    for (unsigned char c : in) {
-        if (c == '=') break;
-        size_t pos = tbl.find((char)c);
-        if (pos == std::string::npos) continue;
-        val = (val << 6) + (unsigned int)pos;
-        bits += 6;
-        if (bits >= 0) {
-            out += (char)((val >> bits) & 0xFF);
-            bits -= 8;
-        }
-    }
-    return out;
-}
-
-bool ProfileToJson(const Profile& p, json& out) {
+// 把档案写成 JSON。密文不在这里写死：enc_b64 返回本次加密出的密文，
+// 由调用方决定放进 config.json（自包含）还是 secret.json（拆分）。
+bool ProfileToJson(const Profile& p, json& out, std::string& enc_b64) {
+    enc_b64.clear();
     json j;
     j["name"] = p.name;
     j["auth_url"] = p.auth_url;
@@ -70,9 +33,7 @@ bool ProfileToJson(const Profile& p, json& out) {
         std::string blob;
         // 加密失败必须显式失败：静默跳过会让「保存成功」变成密码丢失
         if (!DpapiProtect(p.password, blob)) return false;
-        j["password_enc"] = Base64Encode(blob);
-    } else {
-        j["password_enc"] = "";
+        enc_b64 = Base64Encode(blob);
     }
 
     j["custom_template"] = {
@@ -86,6 +47,9 @@ bool ProfileToJson(const Profile& p, json& out) {
     return true;
 }
 
+// 解析（不解密）：password_enc 原样收进 password_enc_raw，解密交给两步解析。
+// 不在这里解密的原因：同一份 JSON 有两种来源——自包含形态（密文就在 config.json，
+// 只有它能解）与拆分形态（密文在本机 secret.json，那份优先）。
 Profile ProfileFromJson(const json& j) {
     Profile p;
     p.name = j.value("name", std::string{});
@@ -98,19 +62,7 @@ Profile ProfileFromJson(const json& j) {
         p.isp.custom = j["isp"].value("custom", std::string{});
     }
 
-    std::string enc = j.value("password_enc", std::string{});
-    if (!enc.empty()) {
-        std::string blob = Base64Decode(enc);
-        if (DpapiUnprotect(blob, p.password)) {
-            p.has_password = true;
-        } else {
-            // 已知行为：解密失败后 password 为空，后续任何 ConfigSave 都会把
-            // password_enc 清空。该密文在本机本不可解（换机/换用户才会发生），
-            // spec §8 要求此时提示用户重新输入，故此处不保留原密文。
-            LogWarn("配置中的密码无法解密（可能来自其他机器或用户），需重新输入");
-            p.has_password = false;
-        }
-    }
+    p.password_enc_raw = j.value("password_enc", std::string{});
 
     if (j.contains("custom_template") && j["custom_template"].is_object()) {
         const auto& ct = j["custom_template"];
@@ -125,6 +77,35 @@ Profile ProfileFromJson(const json& j) {
     return p;
 }
 
+// 用一段 base64 密文解出明文。成功则档案进入「有可用密码」状态。
+// 失败**不删除任何东西**：调用方保留原密文，等用户决定怎么办。
+bool TryUnprotect(const std::string& enc_b64, Profile& p) {
+    if (enc_b64.empty()) return false;
+    std::string blob;
+    if (!Base64Decode(enc_b64, blob) || blob.empty()) return false;
+    std::string plain;
+    if (!DpapiUnprotect(blob, plain)) return false;
+    p.password = plain;
+    p.has_password = true;
+    p.password_foreign = false;
+    p.password_enc_raw.clear();
+    return true;
+}
+
+// 自包含形态：密文就在 config.json 里，逐条试解。
+void ResolveInlinePasswords(AppConfig& cfg) {
+    for (auto& p : cfg.profiles) {
+        if (p.password_enc_raw.empty()) continue;
+        if (TryUnprotect(p.password_enc_raw, p)) continue;
+        p.has_password = false;
+        p.password_foreign = true;
+        // 已知行为：解不开的密文**原样保留**（password_enc_raw），保存时照写回去。
+        // 旧实现会把它清空，于是「在另一台机器上点一次保存」就把原机器能用的密码
+        // 永久抹掉了（且没有备份可回退）。
+        LogWarn("配置中的密码无法解密（来自其他机器或 Windows 账号）：已保留原密文，请在本机重新输入");
+    }
+}
+
 }  // namespace
 
 std::string ConfigPath() {
@@ -133,7 +114,11 @@ std::string ConfigPath() {
     return (fs::u8path(dir) / "config.json").u8string();
 }
 
-bool ConfigToJson(const AppConfig& cfg, std::string& out_json) {
+namespace {
+
+// secrets 非空 = 拆分形态：本次加密出的密文交给它，config.json 只写外来密文。
+// secrets 为空 = 自包含形态：密文直接写进 config.json 的 password_enc。
+bool ConfigToJsonImpl(const AppConfig& cfg, std::string& out_json, SecretMap* secrets) {
     try {
         json j;
         j["version"] = cfg.version;
@@ -155,7 +140,14 @@ bool ConfigToJson(const AppConfig& cfg, std::string& out_json) {
         j["profiles"] = json::array();
         for (const auto& p : cfg.profiles) {
             json pj;
-            if (!ProfileToJson(p, pj)) return false;  // 密码加密失败
+            std::string enc;
+            if (!ProfileToJson(p, pj, enc)) return false;  // 密码加密失败
+            if (secrets) {
+                if (!enc.empty()) (*secrets)[p.name] = enc;
+                pj["password_enc"] = p.password_enc_raw;  // 外来密文跟着配置走
+            } else {
+                pj["password_enc"] = !enc.empty() ? enc : p.password_enc_raw;
+            }
             j["profiles"].push_back(std::move(pj));
         }
 
@@ -168,8 +160,8 @@ bool ConfigToJson(const AppConfig& cfg, std::string& out_json) {
     }
 }
 
-bool ConfigFromJson(const std::string& json_str, AppConfig& out, std::string& error) {
-    out = AppConfig{};
+// 只解析、不解密密码（拆形态要先拿 secret.json 里的密文，见 ConfigLoadSplitFrom）
+bool ParseConfigJson(const std::string& json_str, AppConfig& out, std::string& error) {
     error.clear();
     json j;
     try {
@@ -224,6 +216,19 @@ bool ConfigFromJson(const std::string& json_str, AppConfig& out, std::string& er
     return true;
 }
 
+}  // namespace
+
+bool ConfigToJson(const AppConfig& cfg, std::string& out_json) {
+    return ConfigToJsonImpl(cfg, out_json, nullptr);
+}
+
+bool ConfigFromJson(const std::string& json_str, AppConfig& out, std::string& error) {
+    out = AppConfig{};
+    if (!ParseConfigJson(json_str, out, error)) return false;
+    ResolveInlinePasswords(out);
+    return true;
+}
+
 namespace {
 
 // 检测路径是否可被创建（成功返回 0 并清理探针文件；失败返回 Win32 错误码）
@@ -267,12 +272,12 @@ std::string SaveFailureDiagnostics(const fs::path& tmp, DWORD last, int en) {
 
 }  // namespace
 
-bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& error) {
-    error.clear();
-    if (path.empty()) { error = "配置路径为空"; return false; }
+namespace {
 
-    std::string json_str;
-    if (!ConfigToJson(cfg, json_str)) { error = "序列化失败"; return false; }
+// 原子写：先写 .tmp 再改名，写入中断不会留下半截文件
+bool WriteJsonAtomic(const std::string& path, const std::string& json_str,
+                     std::string& error) {
+    if (path.empty()) { error = "配置路径为空"; return false; }
 
     // 目标目录可能尚不存在（如 --config 指向新目录）——确保父目录存在
     {
@@ -281,7 +286,6 @@ bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& er
         if (!parent.empty()) fs::create_directories(parent, ec);
     }
 
-    // 先写临时文件再改名，避免写入中断留下半截文件
     fs::path tmp = fs::u8path(path + ".tmp");
     {
         // 清掉可能卡住的旧残留（上次异常中断留下的 .tmp 会让后续每次保存
@@ -327,15 +331,64 @@ bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& er
     return true;
 }
 
+}  // namespace
+
+bool ConfigSaveTo(const std::string& path, const AppConfig& cfg, std::string& error) {
+    error.clear();
+    std::string json_str;
+    if (!ConfigToJson(cfg, json_str)) { error = "序列化失败（密码加密失败）"; return false; }
+    return WriteJsonAtomic(path, json_str, error);
+}
+
+bool ConfigSaveSplitTo(const std::string& config_path, const std::string& secret_path,
+                       const AppConfig& cfg, std::string& error) {
+    error.clear();
+    if (config_path.empty()) { error = "配置路径为空"; return false; }
+    if (secret_path.empty()) {   // 拿不到本机目录时退回自包含，宁可内联也不丢密码
+        LogWarn("无法确定本机密码库路径，本次以自包含形态保存");
+        return ConfigSaveTo(config_path, cfg, error);
+    }
+
+    SecretMap existing;
+    std::string serr;
+    if (!SecretLoadFrom(secret_path, existing, serr)) {
+        // 读不出来时**先备份再继续**：坏文件里的条目已经解不开了，
+        // 但备份留着，人工还能抢救；直接拿空库写盘才是真的删数据。
+        LogWarn("密码库读取失败（" + serr + "），已备份为 " + secret_path + ".bak");
+        std::error_code e2;
+        fs::copy_file(fs::u8path(secret_path), fs::u8path(secret_path + ".bak"),
+                      fs::copy_options::overwrite_existing, e2);
+        existing.clear();
+    }
+
+    SecretMap fresh = existing;
+    std::string json_str;
+    if (!ConfigToJsonImpl(cfg, json_str, &fresh)) {
+        error = "序列化失败（密码加密失败）";
+        return false;
+    }
+
+    // 先落密码库再落配置：配置写失败时密码已经在本机了，下次保存会自动补上；
+    // 反过来（先配置后密码）会短暂出现「配置说没密码、密码库有」的错位。
+    if (fresh != existing)
+        if (!SecretSaveTo(secret_path, fresh, serr)) {
+            error = "保存密码库失败：" + serr;
+            return false;
+        }
+    return WriteJsonAtomic(config_path, json_str, error);
+}
+
 bool ConfigSave(const AppConfig& cfg, std::string& error) {
     const std::string path = ConfigPath();
     if (path.empty()) { error = "无法确定配置目录"; return false; }
-    return ConfigSaveTo(path, cfg, error);
+    return ConfigSaveSplitTo(path, SecretPath(), cfg, error);
 }
 
-bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error) {
-    error.clear();
-    out = AppConfig{};
+namespace {
+
+bool ReadConfigText(const std::string& path, std::string& content,
+                    std::string& error) {
+    content.clear();
     if (path.empty()) { error = "配置路径为空"; return false; }
 
     std::error_code ec;
@@ -343,27 +396,88 @@ bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error)
         error = "配置文件不存在";
         return false;
     }
-
     std::ifstream ifs(fs::u8path(path), std::ios::binary);
     if (!ifs) { error = "无法读取配置文件"; return false; }
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                        std::istreambuf_iterator<char>());
+    content.assign((std::istreambuf_iterator<char>(ifs)),
+                   std::istreambuf_iterator<char>());
+    return true;
+}
+
+// 损坏：备份后回落默认配置，绝不让上层拿到半个配置
+void BackupCorruptConfig(const std::string& path, const std::string& why) {
+    const fs::path bak = fs::u8path(path + ".bak");
+    std::error_code e2;
+    fs::copy_file(fs::u8path(path), bak, fs::copy_options::overwrite_existing, e2);
+    if (e2) {
+        LogError("配置文件损坏，且备份失败（" + e2.message() + "），已回落默认配置：" + why);
+    } else {
+        LogError("配置文件损坏，已备份到 " + path + ".bak：" + why);
+    }
+}
+
+}  // namespace
+
+bool ConfigLoadFrom(const std::string& path, AppConfig& out, std::string& error) {
+    error.clear();
+    out = AppConfig{};
+    std::string content;
+    if (!ReadConfigText(path, content, error)) return false;
 
     std::string parse_err;
     if (!ConfigFromJson(content, out, parse_err)) {
-        // 损坏：备份后回落默认配置，绝不让上层拿到半个配置
-        fs::path bak = fs::u8path(path + ".bak");
-        std::error_code e2;
-        fs::copy_file(fs::u8path(path), bak, fs::copy_options::overwrite_existing, e2);
-        if (e2) {
-            LogError("配置文件损坏，且备份失败（" + e2.message() + "），已回落默认配置：" + parse_err);
-        } else {
-            LogError("配置文件损坏，已备份到 " + path + ".bak：" + parse_err);
-        }
+        BackupCorruptConfig(path, parse_err);
         out = AppConfig{};
         error = parse_err;
         return false;
     }
+    return true;
+}
+
+bool ConfigLoadSplitFrom(const std::string& config_path, const std::string& secret_path,
+                         AppConfig& out, std::string& error) {
+    error.clear();
+    out = AppConfig{};
+    std::string content;
+    if (!ReadConfigText(config_path, content, error)) return false;
+
+    AppConfig cfg;
+    std::string parse_err;
+    if (!ParseConfigJson(content, cfg, parse_err)) {
+        BackupCorruptConfig(config_path, parse_err);
+        error = parse_err;
+        return false;
+    }
+
+    // 密码库读不出来不是致命错误：配置里的非密码部分仍然可用，
+    // 只是这次会话拿不到明文（并按「外来密文」提示重输）。
+    SecretMap secrets;
+    std::string serr;
+    const bool have_secrets = SecretLoadFrom(secret_path, secrets, serr);
+    if (!have_secrets) LogWarn("密码库读取失败（" + serr + "）：本次将按「无密码」处理");
+
+    for (auto& p : cfg.profiles) {
+        // 本机密码库优先（拆分形态的正路）
+        if (have_secrets) {
+            auto it = secrets.find(p.name);
+            if (it != secrets.end()) {
+                if (TryUnprotect(it->second, p)) continue;
+                // 解不开的条目**留在库里**：SecretSaveTo 只更新有明文的档案，
+                // 从不删除其它条目，所以这里什么都不做就等于「保全」。
+                p.has_password = false;
+                p.password_foreign = true;
+                LogWarn("密码库中的密码无法解密（来自其他机器或 Windows 账号）：请在本机重新输入");
+                continue;
+            }
+        }
+        // 旧格式：密文还内联在 config.json 里（v0.1.5 及更早）
+        if (p.password_enc_raw.empty()) continue;
+        if (TryUnprotect(p.password_enc_raw, p)) continue;  // 解出来了，下次保存会搬进密码库
+        p.has_password = false;
+        p.password_foreign = true;  // 密文原样保留在 password_enc_raw
+        LogWarn("配置中的密码无法解密（来自其他机器或 Windows 账号）：已保留原密文，请在本机重新输入");
+    }
+
+    out = std::move(cfg);
     return true;
 }
 
@@ -374,7 +488,7 @@ bool ConfigLoad(AppConfig& out, std::string& error) {
         error = "无法确定配置目录";
         return false;
     }
-    return ConfigLoadFrom(path, out, error);
+    return ConfigLoadSplitFrom(path, SecretPath(), out, error);
 }
 
 std::string IspSuffix(const Profile& p) {
@@ -427,6 +541,8 @@ bool SetProfilePassword(AppConfig& cfg, const std::string& user,
 
     target->password = password;
     target->has_password = true;
+    target->password_foreign = false;
+    target->password_enc_raw.clear();  // 新密码取代外来密文，旧的可以放手了
     return true;
 }
 

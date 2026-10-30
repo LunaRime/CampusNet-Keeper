@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 #include "core/Version.h"
@@ -23,6 +25,7 @@
 #include "auth/Carrier.h"
 #include "auth/Detector.h"
 #include "store/Config.h"
+#include "store/PortableSecret.h"
 #include "sim/SimServer.h"
 #include "sys/SingleInstance.h"
 #include "sys/Autostart.h"
@@ -421,13 +424,14 @@ int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst, bool open_ui_on_start) {
 
 // 交互式读取密码（不回显）。仅适用于真实控制台；非控制台环境返回空串，
 // 由调用方提示改用环境变量 CNK_PASSWORD。
-std::string ReadPasswordFromConsole() {
+std::string ReadPasswordFromConsole(
+    const char* prompt = "请输入校园网密码（输入不回显，回车确认）：") {
     HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
     DWORD mode = 0;
     if (!hIn || hIn == INVALID_HANDLE_VALUE || !GetConsoleMode(hIn, &mode)) {
         return {};
     }
-    std::printf("请输入校园网密码（输入不回显，回车确认）：");
+    std::printf("%s", prompt);
     std::fflush(stdout);
     SetConsoleMode(hIn, mode & ~ENABLE_ECHO_INPUT);
 
@@ -516,6 +520,141 @@ int RunSetPassword(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
         std::printf("目标账号：%s\n", opts.user.c_str());
         std::printf("提示：还需在配置文件中确认 auth_url 与 isp.preset 指向你的学校。\n");
     }
+    return 0;
+}
+
+// 导出/导入口令：环境变量优先（便于脚本化），否则交互输入。
+// confirm=true 时要求输入两遍——导出口令打错等于把文件变成废纸，没法事后补救。
+std::string ReadPassphrase(bool confirm) {
+    if (const char* env = std::getenv("CNK_PASSPHRASE"); env && *env)
+        return std::string(env);
+
+    const std::string first =
+        ReadPasswordFromConsole("请输入口令（不回显，至少 6 位，回车确认）：");
+    if (first.empty()) return {};
+    if (first.size() < 6) {
+        PrintLine("口令太短（至少 6 位）。");
+        return {};
+    }
+    if (!confirm) return first;
+    const std::string again = ReadPasswordFromConsole("请再输入一次口令：");
+    if (again != first) {
+        PrintLine("两次口令不一致，已取消（什么都没写）。");
+        return {};
+    }
+    return first;
+}
+
+const cnk::Profile* SelectProfileForCli(const cnk::AppConfig& cfg, const std::string& user) {
+    if (!user.empty()) {
+        for (const auto& p : cfg.profiles)
+            if (p.username == user || p.name == user) return &p;
+        return nullptr;
+    }
+    return cnk::ActiveProfile(cfg);
+}
+
+int RunExportSecret(const cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
+    if (opts.secret_path.empty()) {
+        PrintLine("请用 --export-secret=<文件路径> 指定导出文件。");
+        return 64;
+    }
+    const cnk::Profile* p = SelectProfileForCli(cfg, opts.user);
+    if (p == nullptr) {
+        PrintLine("找不到匹配的档案（可用 --user=账号 指定）。");
+        return 1;
+    }
+    if (!p->has_password || p->password.empty()) {
+        PrintLine("该档案没有可用密码，无法导出。");
+        if (p->password_foreign)
+            PrintLine("提示：这份密文来自其他电脑或别的 Windows 账号，本机解不开；"
+                      "请到原来那台机器上导出，或先在本机重新输入密码。");
+        return 1;
+    }
+
+    const std::string pass = ReadPassphrase(true);
+    if (pass.empty()) return 1;
+
+    cnk::PortableSecret s;
+    s.profile = p->name;
+    s.username = p->username;
+    s.password = p->password;
+
+    std::string json, err;
+    if (!cnk::ExportPortableSecret(s, pass, json, err)) {
+        PrintLine("导出失败：" + err);
+        return 1;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path path = std::filesystem::u8path(opts.secret_path);
+    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
+    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    if (!ofs) {
+        PrintLine("无法写入导出文件：" + opts.secret_path);
+        return 1;
+    }
+    ofs << json;
+    ofs.flush();
+    if (!ofs) {
+        PrintLine("写入导出文件失败：" + opts.secret_path);
+        return 1;
+    }
+
+    PrintLine("已导出到 " + opts.secret_path);
+    PrintLine("档案：" + s.profile + "    账号：" + s.username);
+    PrintLine("文件已用你的口令加密；口令不在文件里，请另走一个渠道告诉对方。");
+    return 0;
+}
+
+int RunImportSecret(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
+    if (opts.secret_path.empty()) {
+        PrintLine("请用 --import-secret=<文件路径> 指定导出文件。");
+        return 64;
+    }
+
+    std::ifstream ifs(std::filesystem::u8path(opts.secret_path), std::ios::binary);
+    if (!ifs) {
+        PrintLine("无法读取导出文件：" + opts.secret_path);
+        return 1;
+    }
+    const std::string text((std::istreambuf_iterator<char>(ifs)),
+                           std::istreambuf_iterator<char>());
+
+    const std::string pass = ReadPassphrase(false);
+    if (pass.empty()) return 1;
+
+    cnk::PortableSecret s;
+    std::string err;
+    if (!cnk::ImportPortableSecret(text, pass, s, err)) {
+        PrintLine("导入失败：" + err);
+        return 1;
+    }
+
+    // 目标档案：--user 优先，否则按文件里的账号匹配（SetProfilePassword 按账号查找，
+    // 找不到会新建一份档案——总比把密码丢弃好，但会提示用户补 auth_url）
+    const std::string target = opts.user.empty() ? s.username : opts.user;
+    if (target.empty()) {
+        PrintLine("导出文件里没有账号信息，请用 --user=账号 指定要导入到哪个档案。");
+        return 1;
+    }
+    const size_t before = cfg.profiles.size();
+    if (!cnk::SetProfilePassword(cfg, target, s.password, err)) {
+        PrintLine("写入密码失败：" + err);
+        return 1;
+    }
+
+    std::string serr;
+    const bool saved = opts.config_path.empty() ? cnk::ConfigSave(cfg, serr)
+                                                : cnk::ConfigSaveTo(opts.config_path, cfg, serr);
+    if (!saved) {
+        PrintLine("保存配置失败：" + serr);
+        return 1;
+    }
+
+    PrintLine("已导入密码到档案：" + target);
+    if (cfg.profiles.size() > before)
+        PrintLine("注意：这是新建的档案，请到设置界面补上认证网址与运营商。");
     return 0;
 }
 
@@ -811,6 +950,8 @@ int WinMainEntry() {
         case cnk::CliMode::Detect:    rc = RunDetect(cfg); break;
         case cnk::CliMode::TestLogin: rc = RunTestLogin(cfg); break;
         case cnk::CliMode::SetPassword: rc = RunSetPassword(cfg, opts); break;
+        case cnk::CliMode::ExportSecret: rc = RunExportSecret(cfg, opts); break;
+        case cnk::CliMode::ImportSecret: rc = RunImportSecret(cfg, opts); break;
         case cnk::CliMode::Daemon:
         default:                      rc = RunDaemon(cfg, hinst, open_ui_on_start); break;
     }

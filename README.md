@@ -24,7 +24,9 @@
   S2 目标「<10 MB」按任务管理器的"内存"列/专用工作集口径达成），空闲 CPU ≈ 0%（500ms 定时器驱动）
 - **自动重连**：网络断开或被 Portal 劫持时自动重新登录（Dr.COM 完整实现）
 - **厂商识别**：自动识别 Portal 类型（Dr.COM / 锐捷 / 深澜 / 华为，其余回退通用表单/自定义模板）
-- **密码加密**：使用 Windows DPAPI，配置文件被拷走也无法在其它机器解密
+- **密码加密**：Windows DPAPI（绑定「本机 + 当前 Windows 账号」）。密文单独存在
+  `%LOCALAPPDATA%\CampusNet-Keeper\secret.json`，**不随配置漫游**；配置被拷到别的机器也解不开，
+  但也不会被那边的一次保存抹掉（解不开就原样保留）。跨机迁移走「导出/导入密码」（口令加密）
 - **网络感知**：监听系统地址变更（`NotifyAddrChange`），切网/睡眠唤醒后立即探测
 - **单 exe 双形态**：界面程序集内嵌在 exe 里（存储型 ZIP 载荷，**不引第三方解压库**），
   首次打开设置时释放到 `%LOCALAPPDATA%\CampusNet-Keeper\ui` 并按需加载 .NET 运行时；
@@ -37,6 +39,8 @@
     CampusNet-Keeper.exe --detect                     # 识别你学校的认证系统
     CampusNet-Keeper.exe --probe-now                  # 检查当前网络状态
     CampusNet-Keeper.exe --set-password --user=学号   # 录入密码（DPAPI 加密保存）
+    CampusNet-Keeper.exe --export-secret=D://s.json   # 导出密码（口令加密，可拷到别的电脑）
+    CampusNet-Keeper.exe --import-secret=D://s.json   # 在新电脑上导入密码
     CampusNet-Keeper.exe --test-login                 # 试一次登录（需先在门户注销）
 
 完整步骤与反馈要求见 `docs/M1-实测指南.md`。
@@ -70,12 +74,20 @@ IPC 与守护进程通信，**密码明文从不离开守护进程**（界面只
 | `--test-login` | 一次探测 + 登录尝试，输出完整请求（已脱敏） |
 | `--detect` | 厂商识别与运营商列表 |
 | `--set-password` | 录入密码（配 `--user=账号` 指定目标；支持环境变量 `CNK_PASSWORD`） |
-| `--config=<路径>` | 使用指定的配置文件 |
+| `--export-secret=<文件>` | 把当前档案的密码导出成**口令加密**的可携带文件（配 `--user=账号`；
+  口令取环境变量 `CNK_PASSPHRASE` 或交互输入，导出时会要求输入两遍） |
+| `--import-secret=<文件>` | 从导出文件恢复密码到本机密码库（口令错/文件被改会明确失败） |
+| `--config=<路径>` | 使用指定的配置文件（该形态下密码密文内联在配置里） |
 | `--simulate=<厂商>` | 使用本地模拟 Portal 服务器（开发/测试用） |
 | `--version` / `--help` | 版本 / 用法 |
 
-配置文件位于 `%APPDATA%\CampusNet-Keeper\config.json`；
+配置文件位于 `%APPDATA%\CampusNet-Keeper\config.json`（可随漫游带走，不含本机密码密文）；
+密码库位于 `%LOCALAPPDATA%\CampusNet-Keeper\secret.json`（本机专属，随 DPAPI 绑定本账号）；
 日志位于 `%APPDATA%\CampusNet-Keeper\logs\keeper.log`。
+
+> 换了电脑/换了 Windows 账号时，密码解不开是**预期行为**：界面会显示「密码来自其他电脑/账号，
+> 需在本机重新输入」，旧密文原样保留、不会被覆盖。想把密码带过去，用 `--export-secret` 导出、
+> 在新机器 `--import-secret` 导入（或设置界面里的「密码迁移」面板）。
 
 ## 支持的认证策略
 
@@ -264,7 +276,7 @@ SHA256 —— 这一步是**故意**的：曾出现"新功能只构建在开发�
 
 ## CI 与发布
 
-**最新发布**：[v0.1.5](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.5)
+**最新发布**：[v0.1.6](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.6)
 （完整版单 exe + 精简版两个 zip，均已数字签名；附带公钥证书 `CampusNet-Keeper-codesign.cer`）。
 历史版本：[v0.1.4](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.4)、
 [v0.1.3](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.3)、

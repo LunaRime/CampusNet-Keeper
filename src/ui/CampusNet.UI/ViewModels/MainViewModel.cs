@@ -54,6 +54,16 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _retryBackoffText = "5, 10, 20, 30, 60";
     [ObservableProperty] private string _logLevel = "info";
 
+    /// <summary>密码迁移：导出/导入文件路径（用户可改，默认落在「文档」里）。</summary>
+    [ObservableProperty] private string _secretPath = DefaultSecretPath();
+
+    /// <summary>密码迁移口令：只在界面内存里停留，不落盘、不进日志。</summary>
+    [ObservableProperty] private string _secretPassphrase = "";
+
+    private static string DefaultSecretPath() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        "campusnet-secret.json");
+
     public bool IsOnline => State == "online";
     public bool IsBusy => State == "authenticating";
     public bool IsFailed => State is "auth_failed" or "not_campus";
@@ -245,8 +255,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void AddProfile()
-    {
+    private void AddProfile()    {
         var vm = new ProfileViewModel { Name = $"档案 {Profiles.Count + 1}" };
         Profiles.Add(vm);
         SelectedProfile = vm;
@@ -292,13 +301,102 @@ public partial class MainViewModel : ObservableObject
 
             if (resp?["ok"]?.GetValue<bool>() == true)
             {
-                StatusText = "已保存";
-                LastError = null;
-                foreach (var vm in Profiles) vm.PasswordInput = "";   // 已交给守护进程，界面不再留存
+                foreach (var vm in Profiles)
+                {
+                    // 带新密码的档案：守护进程已加密落盘，这里同步「已保存」状态
+                    if (vm.PasswordInput.Length > 0) vm.HasPassword = true;
+                    vm.PasswordInput = "";   // 已交给守护进程，界面不再留存明文
+                }
+
+                // ⚠「已保存」≠「能登录」：当前档案没有密码时必须当场说清楚，
+                // 否则用户以为存好了，等自连时才看到「密码为空」。
+                var active = SelectedProfile ?? Profiles.FirstOrDefault();
+                if (active is not null && !active.HasPassword)
+                {
+                    StatusText = "已保存（当前档案没有密码）";
+                    LastError = "当前档案还没有密码，自连会提示「密码为空」——请在密码框输入后保存";
+                }
+                else
+                {
+                    StatusText = "已保存";
+                    LastError = null;
+                }
             }
             else
             {
                 LastError = resp?["error"]?.GetValue<string>() ?? "保存失败";
+            }
+        }
+        catch (IpcException ex)
+        {
+            LastError = ex.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportSecretAsync()
+    {
+        LastError = null;
+        if (SelectedProfile is null) { LastError = "请先选择一个配置档案"; return; }
+        if (SecretPassphrase.Length < 6) { LastError = "口令至少 6 位（导出文件全靠它保护）"; return; }
+        if (SecretPath.Trim().Length == 0) { LastError = "请填写导出文件路径"; return; }
+        if (!DaemonRunning) { LastError = "守护进程未运行，无法导出"; return; }
+
+        try
+        {
+            var resp = await _ipc.SendAsync("export_secret", new JsonObject
+            {
+                ["path"] = SecretPath.Trim(),
+                ["passphrase"] = SecretPassphrase,
+                ["profile"] = SelectedProfile.Name,
+            });
+
+            if (resp?["ok"]?.GetValue<bool>() == true)
+            {
+                StatusText = "密码已导出";
+                SecretPassphrase = "";   // 口令不留在界面里
+                LastError = $"已导出到 {resp["data"]?["path"]?.GetValue<string>() ?? SecretPath}；口令请另走一个渠道告诉对方";
+            }
+            else
+            {
+                LastError = resp?["error"]?.GetValue<string>() ?? "导出失败";
+            }
+        }
+        catch (IpcException ex)
+        {
+            LastError = ex.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task ImportSecretAsync()
+    {
+        LastError = null;
+        if (SecretPassphrase.Length < 6) { LastError = "请填写导出时设的口令"; return; }
+        if (SecretPath.Trim().Length == 0) { LastError = "请填写导出文件路径"; return; }
+        if (!DaemonRunning) { LastError = "守护进程未运行，无法导入"; return; }
+
+        try
+        {
+            var resp = await _ipc.SendAsync("import_secret", new JsonObject
+            {
+                ["path"] = SecretPath.Trim(),
+                ["passphrase"] = SecretPassphrase,
+            });
+
+            if (resp?["ok"]?.GetValue<bool>() == true)
+            {
+                SecretPassphrase = "";
+                await RefreshAsync();     // 重新拉配置：密码状态要变成「已保存」
+                StatusText = "密码已导入";
+                var created = resp["data"]?["created_new_profile"]?.GetValue<bool>() == true;
+                LastError = created
+                    ? "导入成功，但新建了档案：请补上认证网址与运营商后保存"
+                    : "导入成功，可以关闭窗口了";
+            }
+            else
+            {
+                LastError = resp?["error"]?.GetValue<string>() ?? "导入失败";
             }
         }
         catch (IpcException ex)

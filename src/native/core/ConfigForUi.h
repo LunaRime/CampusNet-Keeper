@@ -5,10 +5,13 @@
 
 namespace cnk {
 
-// 给设置界面用的配置序列化：**剥掉 password_enc**，只留 has_password。
+// 给设置界面用的配置序列化：**剥掉 password_enc**，只留 has_password 与 password_state。
 //
 // 安全红线：password_enc 是 DPAPI 密文，解它只需要「当前用户」这一条件——而 UI 进程
-// 正是当前用户，拿到密文就等于拿到密码。界面只需要知道「这份档案有没有密码」。
+// 正是当前用户，拿到密文就等于拿到密码。界面只需要知道「这份档案能不能用」：
+//   has_password=true        本机可解，能登录
+//   password_state="foreign" 密文在但本机解不开（换机器/换账号）→ 提示重新输入
+//   password_state="none"    从来没有密码
 std::string ConfigForUiJson(const AppConfig& cfg);
 
 // 把设置界面送来的配置合并成可落盘的配置：密码按「新值优先、否则沿用旧值」处理。

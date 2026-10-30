@@ -22,14 +22,36 @@ public static class CarrierOptions
     /// <summary>「自定义…」的值（对应 C++ 的 <c>isp.preset == "custom"</c>）。</summary>
     public const string CustomValue = "custom";
 
+    /// <summary>已知取值的显示名。服务器只给 id 不给 name 时用它兜底，别把 cmcc 这种原文丢给用户。</summary>
+    // ⚠ 必须声明在 Builtin 之前：静态字段按文本顺序初始化，反了就是 NullReferenceException。
+    private static readonly Dictionary<string, string> KnownLabels = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["campus"] = "校园网（默认）",
+        ["cmcc"] = "中国移动",
+        ["telecom"] = "中国电信",
+        ["unicom"] = "中国联通",
+    };
+
     /// <summary>内置回退预设（与 C++ <c>IspSuffix</c> 支持的取值一致）。</summary>
     public static IReadOnlyList<CarrierOption> Builtin { get; } = new[]
     {
-        new CarrierOption("campus", "校园网（默认）"),
-        new CarrierOption("cmcc", "中国移动"),
-        new CarrierOption("telecom", "中国电信"),
-        new CarrierOption("unicom", "中国联通"),
+        new CarrierOption("campus", KnownLabels["campus"]),
+        new CarrierOption("cmcc", KnownLabels["cmcc"]),
+        new CarrierOption("telecom", KnownLabels["telecom"]),
+        new CarrierOption("unicom", KnownLabels["unicom"]),
     };
+
+    /// <summary>
+    /// 取显示名：服务器给的名字优先；但「空」或「只是把 id 原样回显」都不算名字
+    /// （真机上出现过只下发 id、name 为空的部署 → 下拉里出现一条光秃秃的 cmcc）。
+    /// </summary>
+    private static string DisplayLabel(string key, string? serverName)
+    {
+        if (!string.IsNullOrWhiteSpace(serverName) &&
+            !string.Equals(serverName, key, StringComparison.OrdinalIgnoreCase))
+            return serverName!;
+        return KnownLabels.TryGetValue(key, out var zh) ? zh : key;
+    }
 
     public static CarrierOption Custom { get; } = new(CustomValue, "自定义…", true);
 
@@ -51,17 +73,18 @@ public static class CarrierOptions
                 var key = item?["id"]?.GetValue<string>() ?? item?["key"]?.GetValue<string>();
                 if (string.IsNullOrEmpty(key)) continue;
                 var label = item?["name"]?.GetValue<string>() ?? item?["label"]?.GetValue<string>();
-                list.Add(new CarrierOption(key, string.IsNullOrEmpty(label) ? key : label));
+                list.Add(new CarrierOption(key, DisplayLabel(key, label)));
             }
         }
 
         if (list.Count == 0) list.AddRange(Builtin);
 
-        // 当前值不在列表里也要能显示（否则下拉会空白，用户以为配置丢了）
+        // 当前值不在列表里也要能显示（否则下拉会空白，用户以为配置丢了）。
+        // 显示名仍走映射表：这里曾经直接拿 id 当名字，于是下拉里冒出一条「cmcc」。
         if (!string.IsNullOrEmpty(current) && current != CustomValue &&
             !list.Exists(o => o.Value == current))
         {
-            list.Add(new CarrierOption(current, current));
+            list.Add(new CarrierOption(current, DisplayLabel(current, null)));
         }
 
         list.Add(Custom);

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace CampusNet.UI.Models;
@@ -27,7 +28,22 @@ public sealed class AppConfig
     [JsonPropertyName("settings")] public Settings Settings { get; set; } = new();
     [JsonPropertyName("profiles")] public List<Profile> Profiles { get; set; } = new();
 
-    public string ToJson() => JsonSerializer.Serialize(this, Options);
+    public string ToJson()
+    {
+        var node = JsonNode.Parse(JsonSerializer.Serialize(this, Options))!;
+
+        // ⚠ 用户新输入的密码必须在这里补回：PasswordPlain 带 [JsonIgnore]（防止明文被
+        // 任何属性序列化顺手带出去），而保存走的是本方法，不是 Profile.ToJson()。
+        // System.Text.Json 不认 ShouldSerializeXxx 约定 → 少了这段，明文根本不进
+        // set_config 报文，守护进程只能按档案名沿用旧密码（新机器上等于没有），
+        // 症状就是「界面显示已保存、自连却报密码为空」。
+        if (node["profiles"] is JsonArray arr)
+            for (var i = 0; i < arr.Count && i < Profiles.Count; i++)
+                if (Profiles[i].PasswordPlain.Length > 0 && arr[i] is JsonObject po)
+                    po["password_plain"] = Profiles[i].PasswordPlain;
+
+        return node.ToJsonString();
+    }
 
     public static AppConfig FromJson(string json) =>
         JsonSerializer.Deserialize<AppConfig>(json, Options) ?? new AppConfig();
@@ -87,16 +103,28 @@ public sealed class Profile
     [JsonPropertyName("has_password")] public bool HasPassword { get; set; }
 
     /// <summary>
+    /// 只读三态：<c>ok</c>=本机可解；<c>foreign</c>=密文存在但本机解不开（换机器/换 Windows 账号，
+    /// 需要重新输入）；<c>none</c>=从来没有密码。界面据此给不同提示，别把 foreign 说成「没设置过」。
+    /// </summary>
+    [JsonPropertyName("password_state")] public string PasswordState { get; set; } = "none";
+
+    /// <summary>
     /// 写侧：用户输入的新密码（明文）。**非空才会被序列化**——没改密码时绝不能覆盖
     /// 已存的 password_enc（C++ 侧据此判断要不要重新加密）。
     /// </summary>
     [JsonIgnore] public string PasswordPlain { get; set; } = "";
 
-    public bool ShouldSerializePasswordPlain() => PasswordPlain.Length > 0;
+    // 注意：这里**不要**写 ShouldSerializePasswordPlain()。那是 Newtonsoft.Json 的约定，
+    // System.Text.Json 完全不认，写了不生效还让人以为已经处理好了——
+    // password_plain 由 AppConfig.ToJson() 统一补入。
 
+    /// <summary>
+    /// 单档案的报文形态（自检与调试用；**真正的保存走 <see cref="AppConfig.ToJson"/>**，
+    /// 两者对 password_plain 的处理必须一致，否则又会退回「已保存但没密码」）。
+    /// </summary>
     public string ToJson()
     {
-        var node = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(this, Options))!;
+        var node = JsonNode.Parse(JsonSerializer.Serialize(this, Options))!;
         if (PasswordPlain.Length > 0) node["password_plain"] = PasswordPlain;
         return node.ToJsonString();
     }
