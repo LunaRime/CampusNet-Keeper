@@ -159,7 +159,8 @@ cnkrouter --selftest                                  # 不联网，验 AES/Base
 ## 五、真机实录（2026-10-29，京东云亚瑟 AX1800 Pro）
 
 固件 **Kwrt 24.10.4**（OpenWrt 系）、`aarch64`、target `qualcommax/ipq60xx`、
-RAM 414 MB、overlay 1.9 G。WAN 为 DHCP（校园网下发 `10.16.x.x/17`），LAN `192.168.100.1`。
+RAM 414 MB、overlay 1.9 G。WAN 为 DHCP（校园网下发私网段），LAN 走固件默认网关
+（具体地址属现场信息，不在此记录）。
 
 ### 交叉编译（本机无 gcc，走 CI）
 
