@@ -233,6 +233,55 @@ static int ac_says_online(const Config *c) {
     return verdict;
 }
 
+/* 第三层验证：真的能出网吗？
+ *
+ * 前两层（apple 探测 + chkstatus）都可能被"僵尸会话"骗过：
+ * AC 记着"这个 IP 已认证"、探测域名又能通，但**转发面已经失效**，
+ * 用户实际打不开任何网页（实测持续 9 小时，程序毫无察觉）。
+ *
+ * 这里用两个与校园网无关的目标确认"真的能出去"：
+ *   · MIUI 的 generate_204：正常必回 204 空正文
+ *   · 百度 robots.txt：正常必回 200 且含 "User-agent"
+ * 被劫持/被拦时这两个都会返回门户页或超时，与"真在线"区分得开。
+ *
+ * 返回 1 = 能出网，0 = 不能，-1 = 目标全都不可达（判不出来，别据此断网） */
+static int can_reach_internet(const Config *c) {
+    static const char *urls[] = {
+        "http://connect.rom.miui.com/generate_204",
+        "http://www.baidu.com/robots.txt",
+        NULL
+    };
+    int i;
+    int got_response = 0;   /* 至少有一个目标回了 HTTP —— 用来区分"被劫持"和"够不着" */
+
+    for (i = 0; urls[i]; ++i) {
+        HttpResp resp;
+        char err[128];
+
+        memset(&resp, 0, sizeof resp);
+        if (http_request("GET", urls[i], NULL, NULL, c->bind_ip, 5000,
+                         &resp, err, sizeof err) != 0) {
+            log_write(LOG_DBG, "出网验证：%s 请求失败（%s）", urls[i], err);
+            continue;
+        }
+        got_response = 1;
+
+        if (resp.status == 204 ||
+            (resp.status == 200 && resp.body && has(resp.body, "User-agent"))) {
+            log_write(LOG_DBG, "出网验证：%s → HTTP %d 通", urls[i], resp.status);
+            http_resp_free(&resp);
+            return 1;
+        }
+        /* 回了 200/302 但内容不是预期 → 多半被劫持到门户页，明确不通 */
+        log_write(LOG_DBG, "出网验证：%s → HTTP %d，内容不符（疑似劫持）",
+                  urls[i], resp.status);
+        http_resp_free(&resp);
+    }
+
+    if (got_response) return 0;   /* 能收到响应但都不对 —— 确定出不去，判僵尸 */
+    return -1;                    /* 一个都没搭上（可能目标被墙）—— 判不出来 */
+}
+
 ProbeResult probe_once(const Config *c) {
     ProbeResult r;
     HttpResp resp;
@@ -287,29 +336,38 @@ ProbeResult probe_once(const Config *c) {
         const int has_expect = c->probe_expect[0] && has(resp.body, c->probe_expect);
         const int too_long = resp.body_len > 8192;
         if (has_expect && !too_long) {
-            /* 正文匹配成功也不能全信：本网的探测域名被 DNS 劫持到国内 CDN，
-             * AC 会话失效后它仍然回 Success（见 ac_says_online 的注释）。
-             * 让认证服务器自己说一句，只有它也认为在线才算在线。 */
-            if (c->verify_ac) {
-                int ac = ac_says_online(c);
-                if (ac == 0) {
+            int ac = 1;
+            /* 第 2 层：问 AC 自己（防 DNS 劫持导致的假在线） */
+            if (c->verify_ac) ac = ac_says_online(c);
+
+            if (ac == 0) {
+                r.state = NET_OFFLINE;
+                snprintf(r.message, sizeof r.message,
+                         "正文匹配但认证服务器判定不在线（AC 会话多半已失效）");
+                http_resp_free(&resp);
+                return r;
+            }
+
+            /* 第 3 层：AC 说在线也得"真的出得去"。
+             * 僵尸会话正是"AC 记着已认证、探测域名也能通、但实际打不开网页"，
+             * 只靠前两层永远发现不了。 */
+            {
+                int net = can_reach_internet(c);
+                if (net == 0) {
                     r.state = NET_OFFLINE;
                     snprintf(r.message, sizeof r.message,
-                             "正文匹配但认证服务器判定不在线（AC 会话多半已失效）");
+                             "探测页可通但实际出不了网（疑似僵尸会话）");
                     http_resp_free(&resp);
                     return r;
                 }
-                if (ac < 0) {
-                    /* 查不到就不改判，但要留痕：连续出现说明这台 AC 没有 chkstatus 接口 */
-                    snprintf(r.message, sizeof r.message,
-                             "正文匹配（AC 复核不可用，按在线处理）");
-                    r.state = NET_ONLINE;
-                    http_resp_free(&resp);
-                    return r;
-                }
+                /* net < 0：两个目标都够不着，判不出来，维持在线（宁可不折腾） */
             }
+
             r.state = NET_ONLINE;
-            snprintf(r.message, sizeof r.message, "正文匹配预期标识");
+            if (ac < 0)
+                snprintf(r.message, sizeof r.message, "正文匹配（AC 复核不可用）");
+            else
+                snprintf(r.message, sizeof r.message, "正文匹配预期标识");
         } else {
             r.state = NET_PORTAL;
             snprintf(r.message, sizeof r.message, "%s",
@@ -616,10 +674,14 @@ LoginResult portal_login(const Config *c) {
         return lr;
     }
 
-    /* 「终端IP已在线」= 链路已通、无需重登，按成功处理（必须含「终端」） */
+    /* 「终端IP已在线」= 链路已通、无需重登，按成功处理（必须含「终端」）
+     * 但要把 inuse 标出来：这不一定真成功——AC 库里有记录、转发面却已失效时，
+     * 重试再多遍也没用（用户实测过：网页卡死、脚本重试全无效，拔插网线才恢复）。
+     * 上层据此走注销/换 IP/换 MAC，而不是傻等重试。 */
     if (has(msg, "已在线") && has(msg, "终端")) {
         lr.ok = 1;
-        snprintf(lr.message, sizeof lr.message, "服务器报告该终端已在线（无需重新登录）");
+        lr.inuse = 1;
+        snprintf(lr.message, sizeof lr.message, "服务器报告该终端已在线（inuse）");
         return lr;
     }
 
@@ -640,4 +702,55 @@ LoginResult portal_login(const Config *c) {
         lr.cred_error = (mentions_cred && says_invalid) ? 1 : 0;
     }
     return lr;
+}
+
+/* ---------------- 主动注销 ---------------- */
+
+/* 把服务器侧的会话杀掉，让下一次 login 能真正建立新会话。
+ *
+ * 为什么需要：AC 的会话是按 **IP** 记的（chkstatus 回包里只有 v4ip/ss5，没有 MAC）。
+ * 当它不是"没认证"而是"记着你已认证、转发面却已失效"时，重登只会收到
+ * 「终端IP已在线」，客户端判成功、实际照样上不了网 —— 死循环重试永远不会恢复，
+ * 用户实测只有拔插网线（换 IP）才好。注销就是软件版的"踢掉这条记录"。
+ *
+ * 地址不靠猜：门户首页会下发 logoutport / logoutpath / logoutparam，
+ * 本网实测是 :801 + /eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall。
+ * 先按 801 试，失败再回落 auth_url 自带端口（兼容别的部署）。
+ *
+ * 返回 0 = 请求发出去了（不等于服务器真的注销成功，要重新探测才知道）；
+ * 严格说这个返回值只代表"动作已尝试"。 */
+int portal_logout(const Config *c) {
+    char scheme[16], host[CNK_HOST_MAX], port[16], path[CNK_URL_MAX];
+    char url[CNK_URL_MAX * 2], err[128], brief[128];
+    HttpResp resp;
+
+    if (!c->auth_url[0]) return -1;
+    if (url_split(c->auth_url, scheme, sizeof scheme, host, sizeof host,
+                  port, sizeof port, path, sizeof path) != 0)
+        return -1;
+
+    snprintf(url, sizeof url,
+             "http://%s:801/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall", host);
+
+    memset(&resp, 0, sizeof resp);
+    if (http_request("GET", url, NULL, NULL, c->bind_ip, 5000, &resp, err, sizeof err) != 0) {
+        log_write(LOG_DBG, "注销：%s:801 不通（%s），回落默认端口", host, err);
+        if (port[0])
+            snprintf(url, sizeof url,
+                     "http://%s:%s/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall",
+                     host, port);
+        else
+            snprintf(url, sizeof url,
+                     "http://%s/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall", host);
+        memset(&resp, 0, sizeof resp);
+        if (http_request("GET", url, NULL, NULL, c->bind_ip, 5000, &resp, err, sizeof err) != 0) {
+            log_write(LOG_WARN, "注销：两个地址都没发出去（%s）", err);
+            return -1;
+        }
+    }
+
+    snprintf(brief, sizeof brief, "%.*s", 120, resp.body ? resp.body : "");
+    log_write(LOG_INFO, "注销：HTTP %d %s", resp.status, brief);
+    http_resp_free(&resp);
+    return 0;
 }

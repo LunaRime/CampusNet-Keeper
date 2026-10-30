@@ -152,11 +152,20 @@ const char *net_state_name(NetState s);
 typedef struct {
     int  ok;
     int  cred_error;    /* 1 = 服务器明确报凭据错误 → 停止自动重试 */
+    /* 1 = 服务器回「终端IP已在线」而非真正完成登录。
+     * 这种情况可能是正常的（链路本来就通），也可能是**僵尸会话**：
+     * AC 数据库里记着"这个 IP 已认证"，但转发面已经失效 —— 此时只重试永远好不了，
+     * 必须走注销/换 IP/换 MAC 三步处置（见 main.c 的 handle_inuse）。 */
+    int  inuse;
     char message[CNK_MSG_MAX];
     char request_url[CNK_URL_MAX * 2];
 } LoginResult;
 
 LoginResult portal_login(const Config *c);
+
+/* 主动注销（杀掉服务器侧的会话）。返回 0 成功。
+ * 地址不用猜：门户首页会下发 logoutport / logoutpath / logoutparam 三个变量。 */
+int portal_logout(const Config *c);
 
 /* ---------------- 运行 ---------------- */
 long long now_ms(void);

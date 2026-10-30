@@ -270,9 +270,97 @@ static int run_once(Config *c) {
     return wait_online(c, 5, 1500) ? 0 : 2;
 }
 
+/* ---------------- 僵尸会话处置 ---------------- */
+
+/* AC 的会话是按 **IP** 记的（chkstatus 回包里只有 v4ip/ss5，没有 MAC 字段）。
+ * 当它记着"这个 IP 已认证"、转发面却已失效时，重登只会收到「终端IP已在线」——
+ * 客户端判成功、实际照样不通，**重试再多次也没用**。用户实测的唯一解法是
+ * 拔插网线（= 换 IP，让 AC 眼里变成另一台设备）。
+ *
+ * 这里按代价从低到高复刻人工做的三件事，每级都限流，避免反复断网：
+ *   ① 注销会话            不中断连接
+ *   ② 重启 WAN 换 IP      断 3~5 秒，≈ 拔插网线
+ *   ③ 改 MAC 换身份       最重，30 分钟最多一次
+ */
+#ifndef _WIN32
+/* 把 wan MAC 的最后一个字节 +1：保持 OUI 前缀不变，只让服务器认为是"新设备" */
+static int bump_wan_mac(void) {
+    char mac[32] = "";
+    char line[64];
+    unsigned last;
+    size_t n;
+    FILE *f = fopen("/sys/class/net/wan/address", "r");
+
+    if (!f) return -1;
+    if (fgets(line, sizeof line, f)) snprintf(mac, sizeof mac, "%s", line);
+    fclose(f);
+    n = strlen(mac);
+    while (n && (mac[n - 1] == '\n' || mac[n - 1] == '\r')) mac[--n] = '\0';
+    if (n != 17) return -1;
+
+    last = (unsigned)strtoul(mac + 15, NULL, 16);
+    last = (last + 1) & 0xFF;
+    mac[15] = "0123456789ABCDEF"[(last >> 4) & 0xF];
+    mac[16] = "0123456789ABCDEF"[last & 0xF];
+
+    {
+        char cmd[320];
+        snprintf(cmd, sizeof cmd,
+                 "uci set network.wan.macaddr='%s'; uci commit network; "
+                 "ubus call network.interface.wan down >/dev/null 2>&1; "
+                 "sleep 2; ubus call network.interface.wan up >/dev/null 2>&1", mac);
+        log_write(LOG_WARN, "僵尸会话处置③：改 MAC 为 %s 并重连 WAN", mac);
+        if (system(cmd) != 0) log_write(LOG_WARN, "改 MAC 的命令执行失败");
+    }
+    return 0;
+}
+#endif
+
+static void handle_inuse(Config *c) {
+    static time_t t_logout = 0, t_ifup = 0, t_mac = 0;
+    time_t now = time(NULL);
+
+    /* ① 注销：不中断连接，先试它 */
+    if (now - t_logout >= 300) {
+        t_logout = now;
+        log_write(LOG_INFO, "僵尸会话处置①：发注销，3 秒后重探");
+        if (portal_logout(c) == 0) {
+            sleep_slices(3000);
+            return;
+        }
+        log_write(LOG_WARN, "注销发不出去，直接升级到下一级");
+    }
+
+#ifndef _WIN32
+    /* ② 换 IP（≈ 拔插网线）。Windows 上没有 ubus，编译期就排除 */
+    if (now - t_ifup >= 1800) {
+        t_ifup = now;
+        log_write(LOG_WARN, "僵尸会话处置②：重启 WAN 接口换 IP（会断 3~5 秒）");
+        if (system("ubus call network.interface.wan down >/dev/null 2>&1; sleep 2; "
+                   "ubus call network.interface.wan up >/dev/null 2>&1") != 0)
+            log_write(LOG_WARN, "重启 WAN 的命令执行失败");
+        sleep_slices(12000);
+        return;
+    }
+
+    /* ③ 换 MAC */
+    if (now - t_mac >= 1800) {
+        t_mac = now;
+        if (bump_wan_mac() == 0) {
+            sleep_slices(15000);
+            return;
+        }
+        log_write(LOG_WARN, "读不到 wan 的 MAC，跳过换 MAC");
+    }
+#endif
+
+    log_write(LOG_WARN, "僵尸会话处置手段已用尽，5 分钟后再试一轮");
+    sleep_slices(300000);
+}
+
 static int run_daemon(Config *c) {
     static const int backoff[] = {15, 30, 60, 120, 300};
-    int bidx = 0, total = 0, ever_ok = 0, stopped = 0;
+    int bidx = 0, total = 0, ever_ok = 0, stopped = 0, offline_streak = 0;
 
     log_write(LOG_INFO, "cnkrouter %s 启动：账号=%s%s 认证地址=%s 探测间隔=%ds",
               CNK_VERSION, c->username, isp_suffix(c), c->auth_url, c->probe_interval);
@@ -306,6 +394,7 @@ static int run_daemon(Config *c) {
             stopped = 0;
             total = 0;
             bidx = 0;
+            offline_streak = 0;
             sleep_slices(c->probe_interval * 1000);
             continue;
         }
@@ -320,9 +409,17 @@ static int run_daemon(Config *c) {
             continue;
         }
         if (pr.state == NET_OFFLINE) {
-            log_write(LOG_INFO, "离线：%s", pr.message);
-            sleep_slices(3000);             /* 快速重探 */
-            continue;
+            ++offline_streak;
+            log_write(LOG_INFO, "离线：%s（连续 %d 次）", pr.message, offline_streak);
+            if (offline_streak < 3) {
+                sleep_slices(3000);         /* 快速重探：先排除瞬时抖动 */
+                continue;
+            }
+            /* 连续 3 次都不通，就别再干等了：真断网时登录也会失败（有退避兜底），
+             * 但僵尸会话必须靠登录 → inuse → 处置 这条链才能恢复。
+             * 只重探不登录，就是"死循环重试"——正是用户遇到的那种假死。 */
+            log_write(LOG_WARN, "连续 %d 次离线，主动尝试登录（不再干等）", offline_streak);
+            offline_streak = 0;
         }
 
         log_write(LOG_INFO, "检测到门户劫持：%s", pr.message);
@@ -330,6 +427,22 @@ static int run_daemon(Config *c) {
             LoginResult lr = portal_login(c);
             ++total;
             log_write(lr.ok ? LOG_INFO : LOG_WARN, "登录：%s", lr.message);
+
+            if (lr.ok && lr.inuse) {
+                /* 服务器回「终端IP已在线」：这时**不能**当成功就走人。
+                 * 复测通了才是真在线；复测不通就是僵尸会话（AC 记着已认证、
+                 * 转发面却失效），必须走注销/换 IP/换 MAC，而不是傻等重试。 */
+                if (wait_online(c, 3, 1500)) {
+                    log_write(LOG_INFO, "服务器报已在线，复测也通，正常");
+                    ever_ok = 1;
+                    total = 0;
+                    bidx = 0;
+                } else {
+                    log_write(LOG_WARN, "服务器报「已在线」但复测不通 —— 按僵尸会话处置");
+                    handle_inuse(c);
+                }
+                continue;
+            }
 
             if (lr.ok) {
                 if (wait_online(c, 5, 1500)) {
