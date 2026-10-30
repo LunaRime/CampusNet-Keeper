@@ -34,6 +34,7 @@ render_config() {
 	config_get log_max_kb    main log_max_kb    256
 	config_get log_keep      main log_keep      3
 	config_get verify_ac     main verify_ac     1
+	config_get inuse_action  main inuse_action  0
 
 	if [ -z "$username" ] || [ -z "$password" ]; then
 		logger -t cnkrouter "未配置 username/password，服务不启动"
@@ -57,6 +58,7 @@ render_config() {
 		echo "log_max_kb=$log_max_kb"
 		echo "log_keep=$log_keep"
 		echo "verify_ac=$verify_ac"
+		echo "inuse_action=$inuse_action"
 	} > $CONF_FILE
 	return 0
 }

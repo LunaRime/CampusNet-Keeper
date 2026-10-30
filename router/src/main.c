@@ -143,6 +143,8 @@ void config_defaults(Config *c) {
     c->log_max_kb = 256;
     c->log_keep = 3;
     c->verify_ac = 1;   /* 探测成功后用 chkstatus 复核，防 DNS 劫持导致的"假在线" */
+    /* 默认只记录：处置动作（尤其换 IP/换 MAC）会主动断网，误报的代价比漏报高得多 */
+    c->inuse_action = 0;
 }
 
 static void trim_inplace(char *s) {
@@ -206,6 +208,7 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
         else if (strcmp(key, "log_max_kb") == 0) c->log_max_kb = atoi(val);
         else if (strcmp(key, "log_keep") == 0)   c->log_keep = atoi(val);
         else if (strcmp(key, "verify_ac") == 0)  c->verify_ac = atoi(val) ? 1 : 0;
+        else if (strcmp(key, "inuse_action") == 0) c->inuse_action = atoi(val);
         else log_write(LOG_WARN, "配置第 %d 行：未知键 '%s'（已忽略）", lineno, key);
     }
     fclose(f);
@@ -320,8 +323,20 @@ static void handle_inuse(Config *c) {
     static time_t t_logout = 0, t_ifup = 0, t_mac = 0;
     time_t now = time(NULL);
 
+    /* 默认只记录。处置里含"换 IP / 换 MAC"这类主动断网动作，
+     * 判定一旦误报就会亲手制造故障 —— 在拿到真实故障的日志证据之前，
+     * 程序只负责把现场记清楚，不替用户做决定。需要它动手时把
+     * /etc/config/cnkrouter 的 inuse_action 调到 1/2/3。 */
+    if (c->inuse_action <= 0) {
+        log_write(LOG_WARN,
+                  "疑似僵尸会话：服务器说已在线但实际不通。"
+                  "inuse_action=0，只记录不动作（要自动处置请调高该项）");
+        sleep_slices(60000);
+        return;
+    }
+
     /* ① 注销：不中断连接，先试它 */
-    if (now - t_logout >= 300) {
+    if (c->inuse_action >= 1 && now - t_logout >= 300) {
         t_logout = now;
         log_write(LOG_INFO, "僵尸会话处置①：发注销，3 秒后重探");
         if (portal_logout(c) == 0) {
@@ -333,7 +348,7 @@ static void handle_inuse(Config *c) {
 
 #ifndef _WIN32
     /* ② 换 IP（≈ 拔插网线）。Windows 上没有 ubus，编译期就排除 */
-    if (now - t_ifup >= 1800) {
+    if (c->inuse_action >= 2 && now - t_ifup >= 1800) {
         t_ifup = now;
         log_write(LOG_WARN, "僵尸会话处置②：重启 WAN 接口换 IP（会断 3~5 秒）");
         if (system("ubus call network.interface.wan down >/dev/null 2>&1; sleep 2; "
@@ -344,7 +359,7 @@ static void handle_inuse(Config *c) {
     }
 
     /* ③ 换 MAC */
-    if (now - t_mac >= 1800) {
+    if (c->inuse_action >= 3 && now - t_mac >= 1800) {
         t_mac = now;
         if (bump_wan_mac() == 0) {
             sleep_slices(15000);

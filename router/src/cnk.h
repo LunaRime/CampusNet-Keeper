@@ -125,6 +125,14 @@ typedef struct {
     int  log_max_kb;               /* 单文件上限（KB），<=0 表示不轮转 */
     int  log_keep;                 /* 保留几份 .1 .2 …，<=0 表示不轮转 */
     int  verify_ac;                /* 1 = 探测"成功"后再用 chkstatus 复核（防劫持误判） */
+    /* 僵尸会话的自动处置级别。**默认 0 = 只记录不动作**：
+     * 处置里有换 IP / 换 MAC 这类主动断网操作，一旦判定误报就会亲手制造故障。
+     * 在拿到真实故障的日志证据之前，程序只负责记录，不替用户做决定。
+     *   0 = 只记录（默认）
+     *   1 = 额外发注销（断 3~5 秒）
+     *   2 = 额外重启 WAN 换 IP（断 3~5 秒）
+     *   3 = 额外改 MAC 换身份（最重） */
+    int  inuse_action;
 } Config;
 
 void        config_defaults(Config *c);

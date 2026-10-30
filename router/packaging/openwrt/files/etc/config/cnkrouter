@@ -43,3 +43,9 @@ config main 'main'
 	# 为什么要：本网把 captive.apple.com DNS 劫持到国内 CDN，AC 会话失效后它照样
 	# 返回 Success，会导致守护进程"假在线"而不去重连（已实测发生过）。
 	option verify_ac '1'
+
+	# 僵尸会话自动处置级别（0=只记录，这是默认）
+	# 处置含"换 IP / 换 MAC"这类主动断网动作，误报会亲手制造故障。
+	# 先让程序把现场记清楚（日志里有完整判定链），确认是僵尸会话后再调高：
+	#   1=发注销  2=+重启WAN换IP  3=+改MAC
+	option inuse_action '0'
