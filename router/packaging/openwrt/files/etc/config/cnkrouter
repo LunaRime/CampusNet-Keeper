@@ -32,12 +32,12 @@ config main 'main'
 	# 0=只报错 1=警告 2=信息 3=调试
 	option log_level '2'
 
-	# 日志落盘 + 轮转（默认 256 KB × 3 份，最多约 1 MB）
-	# 为什么默认开：只写 logd 时它只有 128 KB 环形缓冲，排查"某时刻为什么没自动重连"
-	# 历史太短。留空则只写 logd。
-	option log_file '/var/log/cnkrouter.log'
-	option log_max_kb '256'
-	option log_keep '3'
+	# 日志按天分文件，落在数据盘：/mnt/data/log/cnkrouter/YYYY-MM-DD.log
+	# 为什么：只写 logd 时它只有 128 KB 环形缓冲，一出问题历史就滚没了；
+	# 而 54 GB 的数据盘没必要为省空间牺牲可读性。旧文件由 cnk-cleanup 清理。
+	# 留空则只写 logd。
+	option log_dir '/mnt/data/log/cnkrouter'
+	option log_keep_days '7'
 
 	# 1 = 探测到"在线"后再问一次认证服务器（chkstatus）复核
 	# 为什么要：本网把 captive.apple.com DNS 劫持到国内 CDN，AC 会话失效后它照样

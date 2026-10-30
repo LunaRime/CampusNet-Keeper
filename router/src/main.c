@@ -20,62 +20,50 @@
 
 static int   g_level = LOG_INFO;
 static FILE *g_logf  = NULL;
-static char  g_log_path[CNK_PATH_MAX];   /* 空 = 不落盘 */
-static long  g_log_bytes = 0;            /* 当前文件已写字节 */
-static long  g_log_max_kb = 0;           /* <=0 不轮转 */
-static int   g_log_keep = 0;             /* <=0 不轮转 */
-static volatile sig_atomic_t g_stop = 0;
-static volatile sig_atomic_t g_reload = 0;
-/* SIGHUP 必须重载**同一个**文件：init 脚本用的是 /var/etc/cnkrouter.conf，
- * 写死 /etc/cnkrouter.conf 会让热重载静默读到另一份（或读不到） */
-static char g_config_path[256] = "/etc/cnkrouter.conf";
+static char  g_log_dir[CNK_PATH_MAX];   /* 空 = 不落盘 */
+static char  g_log_date[16];            /* 当前打开的文件对应哪天 */
 
-/* ---------------- 日志 ---------------- */
-
-void log_set_rotate(long max_kb, int keep) {
-    g_log_max_kb = max_kb > 0 ? max_kb : 0;
-    g_log_keep   = keep > 0 ? keep : 0;
+/* 配置里的目录名直接进 system()，防一手注入（配置文件本身 600，但别留口子） */
+static int path_is_safe(const char *p) {
+    return p[0] && !strpbrk(p, "'\"`;$|&<>()\n");
 }
 
-/* 轮转：<path> → <path>.1 → <path>.2 …，最老的删掉，再重开一个空文件。
- * 只在写满时调用；256 KB、每 60 秒一行的话大概几天到一周触发一次，开销可忽略。 */
-static void log_rotate(void) {
-    char src[CNK_PATH_MAX + 16], dst[CNK_PATH_MAX + 16];
-    int i;
+/* 跨天就切文件；目录不存在就建一次。
+ * 每次写日志都会调它，但只是 strftime + strcmp，开销可忽略。 */
+static void log_open_today(void) {
+    char date[16], path[CNK_PATH_MAX + 32];
+    time_t t = time(NULL);
+    struct tm tmv;
 
-    if (!g_log_path[0] || g_log_keep <= 0) return;
+    if (!g_log_dir[0]) return;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    strftime(date, sizeof date, "%Y-%m-%d", &tmv);
+    if (g_logf && strcmp(date, g_log_date) == 0) return;
+
     if (g_logf) { fclose(g_logf); g_logf = NULL; }
+    snprintf(g_log_date, sizeof g_log_date, "%s", date);
+    snprintf(path, sizeof path, "%s/%s.log", g_log_dir, date);
 
-    snprintf(src, sizeof src, "%s.%d", g_log_path, g_log_keep);
-    remove(src);
-    for (i = g_log_keep - 1; i >= 1; --i) {
-        snprintf(src, sizeof src, "%s.%d", g_log_path, i);
-        snprintf(dst, sizeof dst, "%s.%d", g_log_path, i + 1);
-        rename(src, dst);
+    g_logf = fopen(path, "a");
+    if (!g_logf && path_is_safe(g_log_dir)) {
+        char cmd[CNK_PATH_MAX + 32];
+        snprintf(cmd, sizeof cmd, "mkdir -p '%s' 2>/dev/null", g_log_dir);
+        if (system(cmd) == 0) g_logf = fopen(path, "a");
     }
-    snprintf(dst, sizeof dst, "%s.1", g_log_path);
-    rename(g_log_path, dst);
-
-    g_logf = fopen(g_log_path, "a");
-    g_log_bytes = 0;
-    if (!g_logf) fprintf(stderr, "[warn] 轮转后无法重开日志 %s\n", g_log_path);
+    if (!g_logf) fprintf(stderr, "[warn] 无法打开日志 %s\n", path);
 }
 
-void log_init(int level, const char *path) {
+void log_init(int level, const char *dir) {
     g_level = level;
-    if (path && path[0]) {
-        snprintf(g_log_path, sizeof g_log_path, "%s", path);
-        g_logf = fopen(path, "a");
-        if (g_logf) {
-            /* 从现有大小接着算：否则每次重启都把计数清零，长期看还是会涨 */
-            if (fseek(g_logf, 0, SEEK_END) == 0) {
-                long sz = ftell(g_logf);
-                g_log_bytes = sz > 0 ? sz : 0;
-            }
-        } else {
-            fprintf(stderr, "[warn] 无法打开日志文件 %s，改用 stderr\n", path);
-        }
-    }
+    if (g_logf) { fclose(g_logf); g_logf = NULL; }
+    g_log_date[0] = '\0';
+    if (dir && dir[0]) snprintf(g_log_dir, sizeof g_log_dir, "%s", dir);
+    else g_log_dir[0] = '\0';
+    log_open_today();
 }
 
 void log_write(int level, const char *fmt, ...) {
@@ -88,6 +76,7 @@ void log_write(int level, const char *fmt, ...) {
     va_list ap;
 
     if (level > g_level) return;
+    log_open_today();               /* 跨天自动换文件 */
 #ifdef _WIN32
     localtime_s(&tmv, &t);
 #else
@@ -95,8 +84,6 @@ void log_write(int level, const char *fmt, ...) {
 #endif
     strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tmv);
 
-    /* 先格式化到缓冲：一个是为了算清写了多少字节（轮转要用），
-     * 另一个是避免 stderr 与文件各写一遍导致两边内容不一致 */
     n = snprintf(line, sizeof line, "%s [%s] ", ts,
                  level == LOG_ERR ? "ERROR" : level == LOG_WARN ? "WARN" :
                  level == LOG_INFO ? "INFO" : "DEBUG");
@@ -116,12 +103,6 @@ void log_write(int level, const char *fmt, ...) {
     fputs(line, out);
     fputc('\n', out);
     fflush(out);
-
-    /* 只有落盘才累加；stderr 交给 logd 自己的 ring buffer 滚，不会撑爆存储 */
-    if (g_logf && g_log_max_kb > 0 && g_log_keep > 0) {
-        g_log_bytes += (long)n + 1;
-        if (g_log_bytes > g_log_max_kb * 1024) log_rotate();
-    }
 }
 
 /* ---------------- 配置 ---------------- */
@@ -135,13 +116,12 @@ void config_defaults(Config *c) {
     snprintf(c->probe_url, sizeof c->probe_url, "http://captive.apple.com/hotspot-detect.html");
     snprintf(c->probe_expect, sizeof c->probe_expect, "Success");
     c->probe_timeout = 6;
-    c->probe_interval = 60;
+    c->probe_interval = 30;
     c->log_level = LOG_INFO;
-    /* 日志落盘默认开：logd 的 ring buffer 只有 128 KB，排查"某时刻为何没重连"时
-     * 历史太短。256 KB × 3 份 = 最多 1 MB，对 1.7 GB 的 overlay 无压力，且不会涨。 */
-    snprintf(c->log_file, sizeof c->log_file, "/var/log/cnkrouter.log");
-    c->log_max_kb = 256;
-    c->log_keep = 3;
+    /* 日志落到数据盘、按天分文件：/mnt/data 有 54 GB，一天一百多 KB 根本不用省；
+     * 排查故障时"哪一天"比"文件多大"重要。旧文件由 cnk-cleanup 清理。 */
+    snprintf(c->log_dir, sizeof c->log_dir, "/mnt/data/log/cnkrouter");
+    c->log_keep_days = 7;
     c->verify_ac = 1;   /* 探测成功后用 chkstatus 复核，防 DNS 劫持导致的"假在线" */
     /* 默认只记录：处置动作（尤其换 IP/换 MAC）会主动断网，误报的代价比漏报高得多 */
     c->inuse_action = 0;
@@ -204,9 +184,8 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
         else if (strcmp(key, "probe_interval") == 0) c->probe_interval = atoi(val);
         else if (strcmp(key, "bind_ip") == 0)    copy_field(c->bind_ip, sizeof c->bind_ip, val);
         else if (strcmp(key, "log_level") == 0)  c->log_level = atoi(val);
-        else if (strcmp(key, "log_file") == 0)   copy_field(c->log_file, sizeof c->log_file, val);
-        else if (strcmp(key, "log_max_kb") == 0) c->log_max_kb = atoi(val);
-        else if (strcmp(key, "log_keep") == 0)   c->log_keep = atoi(val);
+        else if (strcmp(key, "log_dir") == 0)        copy_field(c->log_dir, sizeof c->log_dir, val);
+        else if (strcmp(key, "log_keep_days") == 0)  c->log_keep_days = atoi(val);
         else if (strcmp(key, "verify_ac") == 0)  c->verify_ac = atoi(val) ? 1 : 0;
         else if (strcmp(key, "inuse_action") == 0) c->inuse_action = atoi(val);
         else log_write(LOG_WARN, "配置第 %d 行：未知键 '%s'（已忽略）", lineno, key);
@@ -426,8 +405,8 @@ static int run_daemon(Config *c) {
         if (pr.state == NET_OFFLINE) {
             ++offline_streak;
             log_write(LOG_INFO, "离线：%s（连续 %d 次）", pr.message, offline_streak);
-            if (offline_streak < 3) {
-                sleep_slices(3000);         /* 快速重探：先排除瞬时抖动 */
+            if (offline_streak < 2) {
+                sleep_slices(1500);         /* 快速重探：先排除瞬时抖动 */
                 continue;
             }
             /* 连续 3 次都不通，就别再干等了：真断网时登录也会失败（有退避兜底），
@@ -447,7 +426,7 @@ static int run_daemon(Config *c) {
                 /* 服务器回「终端IP已在线」：这时**不能**当成功就走人。
                  * 复测通了才是真在线；复测不通就是僵尸会话（AC 记着已认证、
                  * 转发面却失效），必须走注销/换 IP/换 MAC，而不是傻等重试。 */
-                if (wait_online(c, 3, 1500)) {
+                if (wait_online(c, 2, 1000)) {
                     log_write(LOG_INFO, "服务器报已在线，复测也通，正常");
                     ever_ok = 1;
                     total = 0;
@@ -460,14 +439,14 @@ static int run_daemon(Config *c) {
             }
 
             if (lr.ok) {
-                if (wait_online(c, 5, 1500)) {
+                if (wait_online(c, 4, 1000)) {
                     log_write(LOG_INFO, "已恢复在线");
                     ever_ok = 1;
                     total = 0;
                     bidx = 0;
                 } else {
-                    log_write(LOG_WARN, "接口报成功但复测不在线，15 秒后重试");
-                    sleep_slices(15000);
+                    log_write(LOG_WARN, "接口报成功但复测不在线，8 秒后重试");
+                    sleep_slices(8000);
                 }
                 continue;
             }
@@ -651,12 +630,8 @@ int main(int argc, char **argv) {
 
     /* 配置读到了再开文件日志：daemon 才落盘（一次性命令打到终端就够了，
      * 避免 --probe 之类的临时调用污染服务日志）。 */
-    if (mode == 1) {
-        log_init(cfg.log_level, cfg.log_file);
-        log_set_rotate(cfg.log_max_kb, cfg.log_keep);
-    } else {
-        log_init(cfg.log_level, NULL);
-    }
+    if (mode == 1) log_init(cfg.log_level, cfg.log_dir);
+    else           log_init(cfg.log_level, NULL);
 
     if (!cfg.username[0]) {
         log_write(LOG_ERR, "配置里没有账号（username=），请编辑 %s", config_path);
