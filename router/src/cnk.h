@@ -58,6 +58,8 @@
 
 void log_init(int level, const char *path);
 void log_write(int level, const char *fmt, ...);
+/* 设置轮转策略：max_kb<=0 或 keep<=0 表示不轮转（一直写同一个文件） */
+void log_set_rotate(long max_kb, int keep);
 
 /* ---------------- 加密 / 编码 ---------------- */
 /* AES-128-ECB + PKCS7 填充 + 标准 Base64（与 Windows 版 Crypto.cpp 逐字节等价） */
@@ -115,6 +117,14 @@ typedef struct {
     int  probe_interval;       /* 秒 */
     char bind_ip[64];
     int  log_level;
+    /* 日志落盘与轮转（2026-10-30 新增）
+     * 背景：默认只写 stderr 由 procd 收进 logd，而 logd 是环形缓冲（128 KB），
+     *       历史很短——排查"某时刻为什么没自动重连"时什么都看不到。
+     *       配了 log_file 才落盘，并按大小轮转，避免路由器长期不关机把 overlay 撑满。 */
+    char log_file[CNK_PATH_MAX];   /* 空 = 只写 stderr/logd */
+    int  log_max_kb;               /* 单文件上限（KB），<=0 表示不轮转 */
+    int  log_keep;                 /* 保留几份 .1 .2 …，<=0 表示不轮转 */
+    int  verify_ac;                /* 1 = 探测"成功"后再用 chkstatus 复核（防劫持误判） */
 } Config;
 
 void        config_defaults(Config *c);

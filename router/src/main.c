@@ -20,6 +20,10 @@
 
 static int   g_level = LOG_INFO;
 static FILE *g_logf  = NULL;
+static char  g_log_path[CNK_PATH_MAX];   /* 空 = 不落盘 */
+static long  g_log_bytes = 0;            /* 当前文件已写字节 */
+static long  g_log_max_kb = 0;           /* <=0 不轮转 */
+static int   g_log_keep = 0;             /* <=0 不轮转 */
 static volatile sig_atomic_t g_stop = 0;
 static volatile sig_atomic_t g_reload = 0;
 /* SIGHUP 必须重载**同一个**文件：init 脚本用的是 /var/etc/cnkrouter.conf，
@@ -28,16 +32,56 @@ static char g_config_path[256] = "/etc/cnkrouter.conf";
 
 /* ---------------- 日志 ---------------- */
 
+void log_set_rotate(long max_kb, int keep) {
+    g_log_max_kb = max_kb > 0 ? max_kb : 0;
+    g_log_keep   = keep > 0 ? keep : 0;
+}
+
+/* 轮转：<path> → <path>.1 → <path>.2 …，最老的删掉，再重开一个空文件。
+ * 只在写满时调用；256 KB、每 60 秒一行的话大概几天到一周触发一次，开销可忽略。 */
+static void log_rotate(void) {
+    char src[CNK_PATH_MAX + 16], dst[CNK_PATH_MAX + 16];
+    int i;
+
+    if (!g_log_path[0] || g_log_keep <= 0) return;
+    if (g_logf) { fclose(g_logf); g_logf = NULL; }
+
+    snprintf(src, sizeof src, "%s.%d", g_log_path, g_log_keep);
+    remove(src);
+    for (i = g_log_keep - 1; i >= 1; --i) {
+        snprintf(src, sizeof src, "%s.%d", g_log_path, i);
+        snprintf(dst, sizeof dst, "%s.%d", g_log_path, i + 1);
+        rename(src, dst);
+    }
+    snprintf(dst, sizeof dst, "%s.1", g_log_path);
+    rename(g_log_path, dst);
+
+    g_logf = fopen(g_log_path, "a");
+    g_log_bytes = 0;
+    if (!g_logf) fprintf(stderr, "[warn] 轮转后无法重开日志 %s\n", g_log_path);
+}
+
 void log_init(int level, const char *path) {
     g_level = level;
     if (path && path[0]) {
+        snprintf(g_log_path, sizeof g_log_path, "%s", path);
         g_logf = fopen(path, "a");
-        if (!g_logf) fprintf(stderr, "[warn] 无法打开日志文件 %s，改用 stderr\n", path);
+        if (g_logf) {
+            /* 从现有大小接着算：否则每次重启都把计数清零，长期看还是会涨 */
+            if (fseek(g_logf, 0, SEEK_END) == 0) {
+                long sz = ftell(g_logf);
+                g_log_bytes = sz > 0 ? sz : 0;
+            }
+        } else {
+            fprintf(stderr, "[warn] 无法打开日志文件 %s，改用 stderr\n", path);
+        }
     }
 }
 
 void log_write(int level, const char *fmt, ...) {
     char ts[32];
+    char line[768];
+    int n;
     time_t t = time(NULL);
     struct tm tmv;
     FILE *out;
@@ -51,15 +95,33 @@ void log_write(int level, const char *fmt, ...) {
 #endif
     strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tmv);
 
-    out = g_logf ? g_logf : stderr;
-    fprintf(out, "%s [%s] ", ts,
-            level == LOG_ERR ? "ERROR" : level == LOG_WARN ? "WARN" :
-            level == LOG_INFO ? "INFO" : "DEBUG");
+    /* 先格式化到缓冲：一个是为了算清写了多少字节（轮转要用），
+     * 另一个是避免 stderr 与文件各写一遍导致两边内容不一致 */
+    n = snprintf(line, sizeof line, "%s [%s] ", ts,
+                 level == LOG_ERR ? "ERROR" : level == LOG_WARN ? "WARN" :
+                 level == LOG_INFO ? "INFO" : "DEBUG");
+    if (n < 0) return;
+    if (n > (int)sizeof line - 2) n = (int)sizeof line - 2;
     va_start(ap, fmt);
-    vfprintf(out, fmt, ap);
+    {
+        int m = vsnprintf(line + n, sizeof line - (size_t)n, fmt, ap);
+        if (m > 0) {
+            n += m;
+            if (n > (int)sizeof line - 2) n = (int)sizeof line - 2;
+        }
+    }
     va_end(ap);
+
+    out = g_logf ? g_logf : stderr;
+    fputs(line, out);
     fputc('\n', out);
     fflush(out);
+
+    /* 只有落盘才累加；stderr 交给 logd 自己的 ring buffer 滚，不会撑爆存储 */
+    if (g_logf && g_log_max_kb > 0 && g_log_keep > 0) {
+        g_log_bytes += (long)n + 1;
+        if (g_log_bytes > g_log_max_kb * 1024) log_rotate();
+    }
 }
 
 /* ---------------- 配置 ---------------- */
@@ -75,6 +137,12 @@ void config_defaults(Config *c) {
     c->probe_timeout = 6;
     c->probe_interval = 60;
     c->log_level = LOG_INFO;
+    /* 日志落盘默认开：logd 的 ring buffer 只有 128 KB，排查"某时刻为何没重连"时
+     * 历史太短。256 KB × 3 份 = 最多 1 MB，对 1.7 GB 的 overlay 无压力，且不会涨。 */
+    snprintf(c->log_file, sizeof c->log_file, "/var/log/cnkrouter.log");
+    c->log_max_kb = 256;
+    c->log_keep = 3;
+    c->verify_ac = 1;   /* 探测成功后用 chkstatus 复核，防 DNS 劫持导致的"假在线" */
 }
 
 static void trim_inplace(char *s) {
@@ -134,6 +202,10 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
         else if (strcmp(key, "probe_interval") == 0) c->probe_interval = atoi(val);
         else if (strcmp(key, "bind_ip") == 0)    copy_field(c->bind_ip, sizeof c->bind_ip, val);
         else if (strcmp(key, "log_level") == 0)  c->log_level = atoi(val);
+        else if (strcmp(key, "log_file") == 0)   copy_field(c->log_file, sizeof c->log_file, val);
+        else if (strcmp(key, "log_max_kb") == 0) c->log_max_kb = atoi(val);
+        else if (strcmp(key, "log_keep") == 0)   c->log_keep = atoi(val);
+        else if (strcmp(key, "verify_ac") == 0)  c->verify_ac = atoi(val) ? 1 : 0;
         else log_write(LOG_WARN, "配置第 %d 行：未知键 '%s'（已忽略）", lineno, key);
     }
     fclose(f);
@@ -227,7 +299,9 @@ static int run_daemon(Config *c) {
         if (pr.state == NET_ONLINE) {
             if (stopped) log_write(LOG_INFO, "网络已恢复，解除停止状态");
             if (!ever_ok) log_write(LOG_INFO, "网络在线：%s", pr.message);
-            else log_write(LOG_DBG, "在线：%s", pr.message);
+            /* 提到 INFO：默认级别下也能看到每次探测（每行 ~60 字节，
+             * 60 秒一次 ≈ 86 KB/天，256 KB 轮转足够撑 3 天） */
+            else log_write(LOG_INFO, "在线：%s", pr.message);
             ever_ok = 1;
             stopped = 0;
             total = 0;
@@ -246,7 +320,7 @@ static int run_daemon(Config *c) {
             continue;
         }
         if (pr.state == NET_OFFLINE) {
-            log_write(LOG_DBG, "离线：%s", pr.message);
+            log_write(LOG_INFO, "离线：%s", pr.message);
             sleep_slices(3000);             /* 快速重探 */
             continue;
         }
@@ -446,7 +520,15 @@ int main(int argc, char **argv) {
     }
     if (user) snprintf(cfg.username, sizeof cfg.username, "%s", user);
     if (pass) snprintf(cfg.password, sizeof cfg.password, "%s", pass);
-    if (cfg.log_level != g_level) log_init(cfg.log_level, NULL);
+
+    /* 配置读到了再开文件日志：daemon 才落盘（一次性命令打到终端就够了，
+     * 避免 --probe 之类的临时调用污染服务日志）。 */
+    if (mode == 1) {
+        log_init(cfg.log_level, cfg.log_file);
+        log_set_rotate(cfg.log_max_kb, cfg.log_keep);
+    } else {
+        log_init(cfg.log_level, NULL);
+    }
 
     if (!cfg.username[0]) {
         log_write(LOG_ERR, "配置里没有账号（username=），请编辑 %s", config_path);

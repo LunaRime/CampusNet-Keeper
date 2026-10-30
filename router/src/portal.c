@@ -187,6 +187,41 @@ const char *net_state_name(NetState s) {
     }
 }
 
+/* 用认证服务器（AC）的视角复核本机是否在线。
+ *
+ * 为什么需要：2026-10-30 实测，本网把 captive.apple.com **DNS 劫持**到了
+ * *.download.ks-cdn.com（国内 CDN）。AC 会话失效后，那个域名**照样返回
+ * 200 + "Success"** —— 探测判定"在线"，守护进程于是不去重连，用户上不了网
+ * 而程序认为一切正常（当天实测持续了 9 小时，日志里一条记录都没有）。
+ *
+ * 返回：1=AC 认为在线，0=AC 明确说不在线，-1=查不出来
+ *      （接口不存在/超时/回包异常——此时**不能**据此判离线，否则会把
+ *       非 Dr.COM 环境全判成断网）。 */
+static int ac_says_online(const Config *c) {
+    char scheme[16], host[CNK_HOST_MAX], port[16], path[CNK_URL_MAX];
+    char origin[CNK_URL_MAX], url[CNK_URL_MAX * 2], err[128];
+    HttpResp resp;
+    long code = 0;
+    int verdict = -1;
+
+    if (!c->auth_url[0]) return -1;
+    if (url_split(c->auth_url, scheme, sizeof scheme, host, sizeof host,
+                  port, sizeof port, path, sizeof path) != 0)
+        return -1;
+    if (port[0]) snprintf(origin, sizeof origin, "%s://%s:%s", scheme, host, port);
+    else         snprintf(origin, sizeof origin, "%s://%s", scheme, host);
+
+    snprintf(url, sizeof url, "%s/drcom/chkstatus?callback=cnkwd&jsVersion=4.X&lang=zh", origin);
+
+    memset(&resp, 0, sizeof resp);
+    if (http_request("GET", url, NULL, NULL, c->bind_ip, 4000, &resp, err, sizeof err) != 0)
+        return -1;
+    if (resp.status == 200 && json_find_int(resp.body, "result", &code) == 0)
+        verdict = (code == 1) ? 1 : 0;
+    http_resp_free(&resp);
+    return verdict;
+}
+
 ProbeResult probe_once(const Config *c) {
     ProbeResult r;
     HttpResp resp;
@@ -241,6 +276,27 @@ ProbeResult probe_once(const Config *c) {
         const int has_expect = c->probe_expect[0] && has(resp.body, c->probe_expect);
         const int too_long = resp.body_len > 8192;
         if (has_expect && !too_long) {
+            /* 正文匹配成功也不能全信：本网的探测域名被 DNS 劫持到国内 CDN，
+             * AC 会话失效后它仍然回 Success（见 ac_says_online 的注释）。
+             * 让认证服务器自己说一句，只有它也认为在线才算在线。 */
+            if (c->verify_ac) {
+                int ac = ac_says_online(c);
+                if (ac == 0) {
+                    r.state = NET_OFFLINE;
+                    snprintf(r.message, sizeof r.message,
+                             "正文匹配但认证服务器判定不在线（AC 会话多半已失效）");
+                    http_resp_free(&resp);
+                    return r;
+                }
+                if (ac < 0) {
+                    /* 查不到就不改判，但要留痕：连续出现说明这台 AC 没有 chkstatus 接口 */
+                    snprintf(r.message, sizeof r.message,
+                             "正文匹配（AC 复核不可用，按在线处理）");
+                    r.state = NET_ONLINE;
+                    http_resp_free(&resp);
+                    return r;
+                }
+            }
             r.state = NET_ONLINE;
             snprintf(r.message, sizeof r.message, "正文匹配预期标识");
         } else {

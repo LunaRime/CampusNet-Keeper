@@ -30,6 +30,10 @@ render_config() {
 	config_get probe_interval main probe_interval 60
 	config_get bind_ip       main bind_ip       ""
 	config_get log_level     main log_level     2
+	config_get log_file      main log_file      "/var/log/cnkrouter.log"
+	config_get log_max_kb    main log_max_kb    256
+	config_get log_keep      main log_keep      3
+	config_get verify_ac     main verify_ac     1
 
 	if [ -z "$username" ] || [ -z "$password" ]; then
 		logger -t cnkrouter "未配置 username/password，服务不启动"
@@ -49,6 +53,10 @@ render_config() {
 		echo "probe_interval=$probe_interval"
 		echo "bind_ip=$bind_ip"
 		echo "log_level=$log_level"
+		echo "log_file=$log_file"
+		echo "log_max_kb=$log_max_kb"
+		echo "log_keep=$log_keep"
+		echo "verify_ac=$verify_ac"
 	} > $CONF_FILE
 	return 0
 }
