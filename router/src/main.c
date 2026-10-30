@@ -23,6 +23,14 @@ static FILE *g_logf  = NULL;
 static char  g_log_dir[CNK_PATH_MAX];   /* 空 = 不落盘 */
 static char  g_log_date[16];            /* 当前打开的文件对应哪天 */
 
+/* 这三个原来夹在日志变量和配置段之间，上一次整块替换日志模块时被我一起删掉了
+ * （CI 报 g_stop/g_reload/g_config_path undeclared）。它们不属于日志，必须留在这。 */
+static volatile sig_atomic_t g_stop = 0;
+static volatile sig_atomic_t g_reload = 0;
+/* SIGHUP 必须重载**同一个**文件：init 脚本用的是 /var/etc/cnkrouter.conf，
+ * 写死 /etc/cnkrouter.conf 会让热重载静默读到另一份（或读不到） */
+static char g_config_path[256] = "/etc/cnkrouter.conf";
+
 /* 配置里的目录名直接进 system()，防一手注入（配置文件本身 600，但别留口子） */
 static int path_is_safe(const char *p) {
     return p[0] && !strpbrk(p, "'\"`;$|&<>()\n");
