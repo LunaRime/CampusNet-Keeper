@@ -59,6 +59,13 @@ struct Scheduler::Impl {
     bool ever_succeeded = false;
     bool stop_retrying = false;
 
+    // 「会话被占 / 僵尸会话」的处置计数（2026-10-30）。
+    // 为什么要单独计数：这两种失败**重试无效**，只能靠「注销 → 重登」清理。
+    // 但注销也不能无限打（会打草惊蛇、也可能与门户的风控冲突），故限次 + 冷却，
+    // 到上限就停手并明确告诉用户去门户手动处理，绝不容许空转。
+    int inuse_logout_count = 0;
+    long long last_logout_unix = 0;
+
     Clock::time_point next_probe{};
     // 由网络监听线程置位、主线程在 Tick 中消费。
     // 跨线程通信只允许经由这两个 atomic（网络线程不得触碰普通成员，防数据竞争）。
@@ -103,6 +110,115 @@ struct Scheduler::Impl {
     void DoProbe();
     void DoLogin();
 
+    // 「终端已在线」型成功的复测次数与间隔：AC 数据面放行有秒级延迟，
+    // 单次探测不足以断定会话是死的。
+    static constexpr int kVerifyAttempts = 3;
+    static constexpr int kVerifyDelayMs = 1200;
+    // 注销的冷却与限次：60 秒内最多一次，连续 3 次没效果就停手交给人
+    static constexpr long long kLogoutCooldownSeconds = 60;
+    static constexpr int kMaxIneffectiveLogouts = 3;
+
+    bool VerifyOnline() {
+        const ProbeResult r = ProbeUntilOnline(
+            [this] { return ProbeOnce(cfg.settings); }, kVerifyAttempts, kVerifyDelayMs);
+        return r.state == NetState::Online;
+    }
+
+    void FinishOnline(const std::string& msg) {
+        state = RunState::Online;
+        message = msg;
+        last_success = NowUnix();
+        ever_succeeded = true;
+        consecutive_auth_failures = 0;
+        inuse_logout_count = 0;
+        backoff_index = 0;
+        ScheduleNext(cfg.settings.probe_interval_seconds);
+        ResetCache();
+    }
+
+    // 注销一次（受冷却与限次约束）。返回 true 表示**确实发了**注销请求。
+    bool TryLogout(IAuth& auth, const Profile& p) {
+        const long long now = NowUnix();
+        if (inuse_logout_count >= kMaxIneffectiveLogouts) return false;
+        if (last_logout_unix != 0 && now - last_logout_unix < kLogoutCooldownSeconds)
+            return false;
+        last_logout_unix = now;
+        ++inuse_logout_count;
+        std::string lmsg;
+        const bool accepted = auth.Logout(p, lmsg);
+        LogInfo(std::string("已发送注销请求（") + (accepted ? "接口接受" : "接口未接受") +
+                "）：" + lmsg);
+        return true;
+    }
+
+    // 「账号会话被占」：服务器说已在线、却没说是本终端。
+    // 处置：注销 → 立即重登一次（重登结果是唯一的真相来源）。
+    void HandleSessionConflict(IAuth& auth, const Profile& p, const NetContext& ctx) {
+        state = RunState::Disconnected;
+        if (TryLogout(auth, p)) {
+            const LoginResult again = auth.Login(p, ctx);
+            LogInfo(std::string("注销后重登：") + (again.success ? "成功" : "失败") +
+                    "，信息=" + RedactSecrets(again.message));
+            if (again.success && !again.terminal_online) {
+                FinishOnline("会话被占：已注销并重新登录");
+                return;
+            }
+            message = "会话被占：已注销并重登，仍未成功（" +
+                      std::to_string(inuse_logout_count) + "/" +
+                      std::to_string(kMaxIneffectiveLogouts) + "）";
+            ScheduleNext(15);
+            return;
+        }
+        if (inuse_logout_count >= kMaxIneffectiveLogouts) {
+            state = RunState::AuthFailed;
+            stop_retrying = true;
+            message = "账号会话一直被占用（已注销 " +
+                      std::to_string(kMaxIneffectiveLogouts) +
+                      " 次仍无效）：请到门户手动注销，或断开占用该账号的其它设备后重试";
+            LogWarn(message);
+            ScheduleNext(kStoppedProbeIntervalSeconds);
+            return;
+        }
+        // 冷却中：按退避等，别把注销打成连发
+        const int wait = CurrentBackoff();
+        AdvanceBackoff();
+        message = "账号会话被占用，等待服务器释放（" + std::to_string(wait) + " 秒后重试）";
+        ScheduleNext(wait);
+    }
+
+    // 「终端 IP 已在线」但复测不在线 = 僵尸会话（AC 记着在线、转发面已废）。
+    // 处置与上一条相同：注销 → 重登；不清掉那条记录，重试多少次都是同一句"已在线"。
+    void HandleZombieSession(IAuth& auth, const Profile& p, const NetContext& ctx) {
+        LogWarn("登录被判『终端已在线』但复测不在线：判定为僵尸会话，尝试注销后重登");
+        state = RunState::Disconnected;
+        if (TryLogout(auth, p)) {
+            const LoginResult again = auth.Login(p, ctx);
+            if (again.success && !again.terminal_online && VerifyOnline()) {
+                FinishOnline("僵尸会话已清理，重新登录成功");
+                return;
+            }
+            message = "僵尸会话未清理（已注销 " + std::to_string(inuse_logout_count) + "/" +
+                      std::to_string(kMaxIneffectiveLogouts) + "），稍后重试";
+            LogWarn(message);
+            ScheduleNext(30);
+            return;
+        }
+        if (inuse_logout_count >= kMaxIneffectiveLogouts) {
+            state = RunState::AuthFailed;
+            stop_retrying = true;
+            message = "服务器侧会话一直清不掉（已注销 " +
+                      std::to_string(kMaxIneffectiveLogouts) +
+                      " 次）：请在门户手动注销后重试";
+            LogWarn(message);
+            ScheduleNext(kStoppedProbeIntervalSeconds);
+            return;
+        }
+        const int wait = CurrentBackoff();
+        AdvanceBackoff();
+        message = "会话记录未清理，等待后重试（" + std::to_string(wait) + " 秒）";
+        ScheduleNext(wait);
+    }
+
     void Tick() {
         // 网络变更事件在主线程消费：重置退避与停止标志
         //（网络环境变了，之前的失败计数不再有参考价值）
@@ -111,6 +227,7 @@ struct Scheduler::Impl {
             total_auth_attempts = 0;
             consecutive_auth_failures = 0;
             backoff_index = 0;
+            inuse_logout_count = 0;   // 换了网络环境，"注销无效"的旧结论不再成立
             target_resolved = false;
         }
         if (probe_immediately.load() || Clock::now() >= next_probe) {
@@ -150,6 +267,7 @@ void Scheduler::Impl::DoProbe() {
         ever_succeeded = true;
         backoff_index = 0;
         consecutive_auth_failures = 0;
+        inuse_logout_count = 0;
         // 网络已恢复（可能是用户手动登录成功）：解除停止，恢复正常调度
         stop_retrying = false;
         total_auth_attempts = 0;
@@ -258,15 +376,21 @@ void Scheduler::Impl::DoLogin() {
             "，信息=" + RedactSecrets(lr.message));
     LogInfo("请求地址：" + RedactSecrets(lr.request_url));
 
+    if (!lr.success && lr.in_use) {
+        HandleSessionConflict(*auth, effective, ctx);
+        return;
+    }
+
     if (lr.success) {
-        state = RunState::Online;
-        message = "已重新登录";
-        last_success = NowUnix();
-        ever_succeeded = true;
-        consecutive_auth_failures = 0;
-        backoff_index = 0;
-        ScheduleNext(cfg.settings.probe_interval_seconds);
-        ResetCache();
+        // 「终端 IP 已在线」型成功**没有真正完成认证**：AC 里可能只是个僵尸会话
+        //（记着在线、转发面已废）。不复测就会每 5 秒记一次"已重连"、实际还是上不了网
+        //（2026-10-30 定位到的假死形态）。
+        if (lr.terminal_online && !VerifyOnline()) {
+            HandleZombieSession(*auth, effective, ctx);
+            return;
+        }
+        FinishOnline(lr.terminal_online ? "服务器报告该终端已在线（无需重新登录）"
+                                        : "已重新登录");
         return;
     }
 
@@ -322,6 +446,8 @@ void Scheduler::ForceReconnect() {
 void Scheduler::SetConfig(const AppConfig& cfg) {
     impl_->cfg = cfg;
     impl_->stop_retrying = false;
+    impl_->inuse_logout_count = 0;
+    impl_->last_logout_unix = 0;
     impl_->total_auth_attempts = 0;
     impl_->consecutive_auth_failures = 0;
     impl_->backoff_index = 0;

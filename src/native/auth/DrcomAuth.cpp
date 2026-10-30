@@ -1,6 +1,7 @@
 #include "auth/AuthFactory.h"
 #include "core/Http.h"
 #include "core/Encoding.h"
+#include "core/LocalIp.h"
 #include "core/Url.h"
 #include "core/Crypto.h"
 #include "core/Log.h"
@@ -35,6 +36,18 @@ int RandomInt(int lo, int hi) {
     }();
     (void)seeded;
     return lo + std::rand() % (hi - lo + 1);
+}
+
+// 注销应答是否**明显**表示失败。文案表没采齐，所以只在"有错误词且没有成功标记"
+// 时才判失败——判错了也不会造成误判：紧跟着的重登会如实反映会话到底还在不在。
+bool MentionsFailure(const std::string& body) {
+    if (body.find("\"result\":1") != std::string::npos) return false;
+    if (body.find("注销成功") != std::string::npos) return false;
+    if (body.find("成功") != std::string::npos) return false;
+    static const char* kBad[] = {"失败", "拒绝", "不存在", "error", "Error", "denied"};
+    for (const char* w : kBad)
+        if (body.find(w) != std::string::npos) return true;
+    return false;
 }
 
 // JSON 字符串值转义（仅处理 JSON 语法必需字符）
@@ -342,46 +355,10 @@ NewApiOutcome TryNewApi(const Profile& p, const std::string& account,
         // 保持缺省值；下面按「无有效 result」处理
     }
 
-    if (code == 1) {
-        out.result.success = true;
-        out.result.vendor_code = 1;
-        out.result.message = "服务器返回登录成功（Portal协议认证成功）";
-        return out;
-    }
-
-    // 服务器明确报「该终端 IP 已在线」（2026-10-16 本机线上实测原样响应：
-    // result=0、ret_code=2、msg="终端IP已在线！"；该判定先于凭据校验）。语义是
-    // 链路已通、无需重新登录，故按成功处理，且**不能**落到下面的凭据类启发式——
-    // 否则调度器会把「已在线」当成密码错误而停止重试（vendor_code=2）。
-    // 必须同时含「终端」：只有「终端 IP 已在线」才说明本机链路通了；
-    // 「该账号已在线」（账号在别处在线）不是本机可用的证据，不得判成功。
-    if (msg.find("已在线") != std::string::npos &&
-        msg.find("终端") != std::string::npos) {
-        out.result.success = true;
-        out.result.vendor_code = 1;  // 成功类；与 result=1 同族，保证 success⇒code≠2
-        out.result.message =
-            "服务器报告该终端已在线（无需重新登录）：" + RedactSecrets(msg);
-        return out;
-    }
-
-    out.result.success = false;
-    // 凭据类失败的启发式识别（新式接口的完整文案表尚未采齐）：必须**同时**出现
-    // 「凭据词」与「否定词」才算凭据错误。只看「账号/密码/用户」会把
-    // 「获取用户信息失败，请稍后重试」这类普通故障误判成密码错误，进而让调度器
-    // 永久停止自动重试（2026-10-16 审阅 P1）。
-    const bool mentions_cred = msg.find("密码") != std::string::npos ||
-                               msg.find("账号") != std::string::npos ||
-                               msg.find("用户名") != std::string::npos ||
-                               msg.find("用户") != std::string::npos;
-    const bool says_invalid = msg.find("错误") != std::string::npos ||
-                              msg.find("不正确") != std::string::npos ||
-                              msg.find("不存在") != std::string::npos ||
-                              msg.find("无效") != std::string::npos;
-    const bool cred_like = mentions_cred && says_invalid;
-    out.result.vendor_code = cred_like ? 2 : -1;
-    out.result.message =
-        "服务器返回登录失败：" + (msg.empty() ? std::string("（无消息）") : RedactSecrets(msg));
-    if (!ret_code.empty()) out.result.message += "（ret_code=" + ret_code + "）";
+    LoginResult classified = ClassifyDrcomReply(code, msg, ret_code);
+    classified.request_url = out.result.request_url;
+    classified.request_body = out.result.request_body;
+    out.result = std::move(classified);
     return out;
 }
 
@@ -431,9 +408,144 @@ public:
     }
 
     const char* Name() const override { return "DrcomAuth"; }
+
+    // 主动注销：把服务器侧那条会话杀掉。僵尸会话（AC 记着在线、转发面已废）
+    // 只能靠它清理；「账号在别处在线」也只能靠它把占位放掉。
+    //
+    // 端点不靠猜：门户页自己声明了注销参数（authlogoutport=801、
+    // authlogoutpath='/eportal/?c=ACSetting&a=Logout&ver=1.0'、authlogoutparam='url=drappall'，
+    // 见 docs/evidence/portal_a79_login_utf8.htm）。新式 API 一般另有
+    // /eportal/portal/logout，故两条都试，把两次响应的开头都记进日志——
+    // 哪个真有效只能在真机上验（`--logout` 就是为此准备的），不做"猜成功"。
+    bool Logout(const Profile& p, std::string& message) override {
+        message.clear();
+        std::string scheme_host, own_port;
+        if (!SplitHostPort(p.auth_url, scheme_host, own_port, "")) {
+            message = "认证网址格式不正确，无法注销";
+            return false;
+        }
+        const std::string api_port = own_port.empty() ? "801" : own_port;
+        const std::string api_base = scheme_host + ":" + api_port;
+        const std::string account = p.username + IspSuffix(p);
+        // 注销要带上"服务器认为的客户端 IP"。直连校园网时本地地址就是它；
+        // 若本机在 NAT 后面，这里会与门户看到的地址不一致（注销多半不生效，
+        // 但重登会如实反映出来，不会造成误判）。
+        const std::string client_ip = LocalIpForUrl(p.auth_url);
+
+        HttpRequest req;
+        req.method = "GET";
+        req.timeout_ms = 3000;
+        req.follow_redirects = false;
+
+        std::string evidence;
+        auto snippet = [](const std::string& s) {
+            if (s.empty()) return std::string("（空正文）");
+            const std::string head = s.size() > 120 ? s.substr(0, 120) + "…" : s;
+            return RedactSecrets(head);
+        };
+
+        // 候选 1（**首选**）：门户页自己声明的注销路径 —— 这是本网实测有效的那个
+        //（router 端 2026-10-30 现场确认：:801 /eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall）。
+        // 先试它，避免新式接口回一个 200 的错误页把人骗过去、白白漏掉唯一的有效端点。
+        {
+            req.url = api_base + "/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall";
+            HttpResponse resp;
+            std::string err;
+            if (HttpPerform(req, resp, err)) {
+                evidence += "老式 HTTP " + std::to_string(resp.status) + " " + snippet(resp.body);
+                if (resp.status == 200 && !MentionsFailure(resp.body)) {
+                    message = "已请求注销（" + evidence + "）";
+                    return true;
+                }
+            } else {
+                evidence += "老式请求失败：" + RedactSecrets(err);
+            }
+        }
+
+        // 候选 2：新式 API 的注销端点（未在本网验证过，留作别的部署的兜底）
+        {
+            req.url = api_base + "/eportal/portal/logout?callback=dr1004&login_method=1" +
+                      "&user_account=" + UrlEncode(account) +
+                      "&wlan_user_ip=" + UrlEncode(client_ip) +
+                      "&wlan_user_mac=000000000000&jsVersion=4.X&v=" +
+                      std::to_string(RandomInt(1000, 9999)) + "&lang=zh";
+            HttpResponse resp;
+            std::string err;
+            if (HttpPerform(req, resp, err)) {
+                evidence += "；新式 HTTP " + std::to_string(resp.status) + " " + snippet(resp.body);
+                if (resp.status == 200 && !MentionsFailure(resp.body)) {
+                    message = "已请求注销（" + evidence + "）";
+                    return true;
+                }
+            } else {
+                evidence += "；新式请求失败：" + RedactSecrets(err);
+            }
+        }
+
+        message = "注销请求均未成功（" + evidence + "）";
+        return false;
+    }
 };
 
 }  // namespace
+
+LoginResult ClassifyDrcomReply(int code, const std::string& msg,
+                               const std::string& ret_code) {
+    LoginResult r;
+
+    if (code == 1) {
+        r.success = true;
+        r.vendor_code = 1;
+        r.message = "服务器返回登录成功（Portal协议认证成功）";
+        return r;
+    }
+
+    const bool says_online = msg.find("已在线") != std::string::npos;
+    const bool says_terminal = msg.find("终端") != std::string::npos;
+
+    // 「该终端 IP 已在线」（2026-10-16 线上实测原样响应：result=0、ret_code=2、
+    // msg="终端IP已在线！"，该判定先于凭据校验）：链路已通、无需重登，按成功处理，
+    // 且**不能**落到下面的凭据类启发式，否则调度器会把「已在线」当密码错误而停摆。
+    // 但它没有真正完成一次认证 → 打 terminal_online，让调度器复测后再决定：
+    // AC 里可能只是僵尸会话（记着在线、转发面已废），那种情况下重试永远好不了。
+    if (says_online && says_terminal) {
+        r.success = true;
+        r.vendor_code = 1;  // 成功类；与 result=1 同族，保证 success ⇒ code≠2
+        r.terminal_online = true;
+        r.message = "服务器报告该终端已在线（无需重新登录）：" + RedactSecrets(msg);
+        return r;
+    }
+
+    // 「已在线」却没提终端：账号/会话被占用（含"该账号已在其他设备登录"）。
+    // 这句话重试一万次也不会变 —— 必须先注销再登。判成凭据错误会直接停摆，
+    // 判成普通失败就是空转，两者都是本项目踩过的坑，故单独标 in_use。
+    if (says_online) {
+        r.success = false;
+        r.vendor_code = -1;
+        r.in_use = true;
+        r.message = "账号会话被占用：" + RedactSecrets(msg);
+        return r;
+    }
+
+    r.success = false;
+    // 凭据类失败的启发式识别（新式接口的完整文案表尚未采齐）：必须**同时**出现
+    // 「凭据词」与「否定词」才算凭据错误。只看「账号/密码/用户」会把
+    // 「获取用户信息失败，请稍后重试」这类普通故障误判成密码错误，进而让调度器
+    // 永久停止自动重试（2026-10-16 审阅 P1）。
+    const bool mentions_cred = msg.find("密码") != std::string::npos ||
+                               msg.find("账号") != std::string::npos ||
+                               msg.find("用户名") != std::string::npos ||
+                               msg.find("用户") != std::string::npos;
+    const bool says_invalid = msg.find("错误") != std::string::npos ||
+                              msg.find("不正确") != std::string::npos ||
+                              msg.find("不存在") != std::string::npos ||
+                              msg.find("无效") != std::string::npos;
+    r.vendor_code = (mentions_cred && says_invalid) ? 2 : -1;
+    r.message =
+        "服务器返回登录失败：" + (msg.empty() ? std::string("（无消息）") : RedactSecrets(msg));
+    if (!ret_code.empty()) r.message += "（ret_code=" + ret_code + "）";
+    return r;
+}
 
 std::unique_ptr<IAuth> MakeDrcomAuth() { return std::make_unique<DrcomAuth>(); }
 

@@ -216,3 +216,48 @@ TEST_CASE("网络变更通知会立即触发探测，不等轮询周期") {
 
     srv.Stop();
 }
+
+// 这两条钉的都是「重试一万次也不会变」的假死形态：
+// 不注销就永远说着同一句话，调度器却以为自己在"努力重连"。
+TEST_CASE("账号会话被占时先注销再登录（不死循环重试）") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    o.in_use_until_logout = true;   // 只有收到注销才会放行
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
+    cfg.settings.probe_url = srv.BaseUrl() + "/sim_probe";   // 登录前算劫持，登录后在线
+    cfg.settings.probe_expect = "Microsoft NCSI";
+    cnk::Scheduler sch(cfg);
+    sch.ForceReconnect();
+    sch.Tick();
+
+    CHECK(srv.LogoutCount() >= 1);   // 必须真的去注销，而不是干等/空转
+    CHECK(srv.LoginCount() >= 2);    // 注销后必须重登一次
+    CHECK(sch.State() == cnk::RunState::Online);
+    srv.Stop();
+}
+
+TEST_CASE("僵尸会话（终端已在线但上不了网）会注销后重登") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    o.zombie_online = true;         // 嘴上说"终端已在线"，实际不放行
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
+    cfg.settings.probe_url = srv.BaseUrl() + "/sim_probe";
+    cfg.settings.probe_expect = "Microsoft NCSI";
+    cnk::Scheduler sch(cfg);
+    sch.ForceReconnect();
+    sch.Tick();   // 内部会复测 3 次（约 2.4s）后才判定僵尸
+
+    CHECK(srv.LogoutCount() >= 1);
+    CHECK(sch.State() == cnk::RunState::Online);
+    srv.Stop();
+}

@@ -554,8 +554,31 @@ const cnk::Profile* SelectProfileForCli(const cnk::AppConfig& cfg, const std::st
     return cnk::ActiveProfile(cfg);
 }
 
-int RunExportSecret(const cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
-    if (opts.secret_path.empty()) {
+// 主动注销：清掉服务器侧的会话（僵尸会话、账号被占都只能这么清）。
+// 单独做成命令的理由：注销端点在本部署到底哪个有效**只能真机验**，
+// 有了它就不必等下一次 inuse 才看得到结果。
+int RunLogout(cnk::AppConfig& cfg, const cnk::CliOptions& opts) {
+    const cnk::Profile* p = SelectProfileForCli(cfg, opts.user);
+    if (p == nullptr) {
+        PrintLine("找不到匹配的档案（可用 --user=账号 指定）。");
+        return 1;
+    }
+    if (p->username.empty()) {
+        PrintLine("该档案没有账号，无法注销。");
+        return 1;
+    }
+
+    // 注销只有 Dr.COM 实现了；别的厂商会返回「该认证方式不支持注销」
+    auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, *p);
+    std::string msg;
+    const bool ok = auth->Logout(*p, msg);
+    PrintLine(std::string("注销（策略=") + auth->Name() + "）：" + (ok ? "接口接受" : "未成功"));
+    PrintLine(msg);
+    PrintLine("提示：紧接着跑 --probe-now，若结论从「在线」变成「门户/离线」说明注销真的生效了。");
+    return ok ? 0 : 1;
+}
+
+int RunExportSecret(const cnk::AppConfig& cfg, const cnk::CliOptions& opts) {    if (opts.secret_path.empty()) {
         PrintLine("请用 --export-secret=<文件路径> 指定导出文件。");
         return 64;
     }
@@ -950,6 +973,7 @@ int WinMainEntry() {
         case cnk::CliMode::Detect:    rc = RunDetect(cfg); break;
         case cnk::CliMode::TestLogin: rc = RunTestLogin(cfg); break;
         case cnk::CliMode::SetPassword: rc = RunSetPassword(cfg, opts); break;
+        case cnk::CliMode::Logout:      rc = RunLogout(cfg, opts); break;
         case cnk::CliMode::ExportSecret: rc = RunExportSecret(cfg, opts); break;
         case cnk::CliMode::ImportSecret: rc = RunImportSecret(cfg, opts); break;
         case cnk::CliMode::Daemon:

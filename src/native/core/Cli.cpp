@@ -31,6 +31,7 @@ CliOptions ParseCli(const std::vector<std::string>& args) {
         if (a == "--probe-now")      { o.mode = CliMode::ProbeNow; continue; }
         if (a == "--test-login")     { o.mode = CliMode::TestLogin; continue; }
         if (a == "--detect")         { o.mode = CliMode::Detect; continue; }
+        if (a == "--logout")         { o.mode = CliMode::Logout; continue; }
         if (a == "--set-password")   { o.mode = CliMode::SetPassword; continue; }
         if (a == "--version" || a == "-v") { o.mode = CliMode::Version; continue; }
         if (a == "--help" || a == "-h" || a == "/?") {
@@ -84,6 +85,8 @@ std::string CliHelpText() {
         "  --probe-now           执行一次网络探测并输出结果，然后退出\n"
         "  --test-login          执行一次探测 + 登录尝试，输出完整请求（已脱敏）\n"
         "  --detect              只做厂商识别并输出结果\n"
+        "  --logout              主动向服务器注销当前会话（清僵尸会话/占位，\n"
+        "                        调试与自愈用；可配 --user=账号）\n"
         "  --set-password        为账号录入密码（环境变量 CNK_PASSWORD 或交互输入，\n"
         "                        DPAPI 加密保存；可配 --user=账号 指定目标）\n"
         "  --export-secret=<文件>  把当前档案的密码导出成可携带文件（口令加密，\n"

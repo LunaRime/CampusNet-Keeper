@@ -385,3 +385,35 @@ TEST_CASE("失败响应回显双标志登录页时返回 -1 不误判成功") {
     CHECK(r.vendor_code == -1);
     srv.Stop();
 }
+
+// 应答分类是纯函数，直接断言语义 —— 这三条都踩过坑：
+// 「终端已在线」判失败会让调度器停摆；「账号已在线」判普通失败就是死循环；
+// 普通故障判成凭据错误会让整个守护进程永久停手。
+TEST_CASE("Dr.COM 应答分类：终端已在线 / 会话被占 / 凭据错误 / 普通故障") {
+    using cnk::ClassifyDrcomReply;
+
+    const auto ok = ClassifyDrcomReply(1, "Portal协议认证成功！", "");
+    CHECK(ok.success);
+    CHECK_FALSE(ok.terminal_online);
+    CHECK_FALSE(ok.in_use);
+
+    const auto term = ClassifyDrcomReply(0, "终端IP已在线！", "2");
+    CHECK(term.success);          // 链路已通，按成功处理
+    CHECK(term.terminal_online);  // 但没真正认证 → 调用方必须复测
+    CHECK_FALSE(term.in_use);
+    CHECK(term.vendor_code != 2);  // 不能落进凭据类，否则调度器会停摆
+
+    const auto inuse = ClassifyDrcomReply(0, "该账号已在线，请勿重复登录", "2");
+    CHECK_FALSE(inuse.success);
+    CHECK(inuse.in_use);           // 会话被占 → 必须先注销再登
+    CHECK(inuse.vendor_code != 2);
+
+    const auto bad = ClassifyDrcomReply(0, "账号或密码错误", "1");
+    CHECK_FALSE(bad.success);
+    CHECK(bad.vendor_code == 2);   // 凭据错误 → 停手等用户改配置
+    CHECK_FALSE(bad.in_use);
+
+    const auto flaky = ClassifyDrcomReply(0, "获取用户信息失败，请稍后重试", "1");
+    CHECK_FALSE(flaky.success);
+    CHECK(flaky.vendor_code == -1);  // 普通故障：不得判成凭据错误
+}

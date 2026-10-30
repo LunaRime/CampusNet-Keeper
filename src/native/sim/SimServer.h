@@ -33,6 +33,14 @@ struct SimOptions {
 
     // 非空时，新式登录一律回 {"result":0,"msg":<该文案>,...}——用于钉住失败文案的分类。
     std::string new_api_fail_msg;
+
+    // true=登录先回「该账号已在线，请勿重复登录」（会话被占），**收到注销后恢复**。
+    // 用于钉住「inuse → 注销 → 重登」这条链路：不注销就永远进不去。
+    bool in_use_until_logout = false;
+
+    // true=登录回「终端IP已在线！」但**不真正放行**（探测仍判离线）——模拟僵尸会话：
+    // AC 记着在线、转发面已废。收到注销后转为正常登录。
+    bool zombie_online = false;
 };
 
 class SimServer {
@@ -55,6 +63,9 @@ public:
 
     int LoginCount() const;
     std::string LastLoginBody() const;
+
+    // 收到过几次注销请求（inuse/僵尸会话用例断言"客户端确实去注销了"）
+    int LogoutCount() const;
 
     // 深澜（vendor="srun"）最近一次 get_challenge 下发的令牌；未启用时为空。
     // 供测试**独立**复算 hmac-md5/info/chksum（不依赖产品代码的公式）。

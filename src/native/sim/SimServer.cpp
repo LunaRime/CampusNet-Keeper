@@ -232,6 +232,9 @@ struct SimServer::Impl {
     SimOptions opts;
     std::atomic<int> login_count{0};
     std::atomic<bool> logged_in{false};   // 登录成功即建立会话状态
+    // inuse / 僵尸会话用例：注销一次就把「占位」清掉
+    std::atomic<bool> session_cleared{false};
+    std::atomic<int>  logout_count{0};
     std::mutex body_mutex;
     std::string last_login_body;
     std::string last_challenge;  // 深澜：最近一次 get_challenge 下发的令牌
@@ -318,6 +321,14 @@ void SimServer::Impl::HandleClient(SOCKET client) {
             resp_body = BuildVendorPortalPage(opts);
             content_type = "text/html; charset=utf-8";
         }
+    } else if (path == "/eportal/portal/logout" ||
+               (path.rfind("/eportal", 0) == 0 &&
+                query.find("a=Logout") != std::string::npos)) {
+        // 注销：两个候选端点都要认（客户端会依次试），注销后「会话被占/僵尸」消失
+        ++logout_count;
+        session_cleared.store(true);
+        content_type = "application/javascript; charset=utf-8";
+        resp_body = JsonpWrap(query, "{\"result\":1,\"msg\":\"注销成功\"}");
     } else if (!opts.disable_new_api && path == "/eportal/portal/page/loadConfig") {
         // 免劫持清单只在这里下发，不在首页
         resp_body = BuildLoadConfig(port);
@@ -365,6 +376,15 @@ void SimServer::Impl::HandleClient(SOCKET client) {
                 resp_body = JsonpWrap(query,
                                       "{\"result\":0,\"msg\":\"当前页面已超时，请重新刷新页面\","
                                       "\"ret_code\":\"1\"}");
+            } else if (opts.in_use_until_logout && !session_cleared.load()) {
+                // 会话被占：没说"终端"，客户端必须判 in_use 并去注销
+                resp_body = JsonpWrap(
+                    query, "{\"result\":0,\"msg\":\"该账号已在线，请勿重复登录\",\"ret_code\":2}");
+            } else if (opts.zombie_online && !session_cleared.load()) {
+                // 僵尸会话：嘴上说终端已在线，但**不放行**（logged_in 不置位），
+                // 探测依旧判离线 —— 逼客户端走「复测 → 注销 → 重登」
+                resp_body = JsonpWrap(
+                    query, "{\"result\":0,\"msg\":\"终端IP已在线！\",\"ret_code\":2}");
             } else if (opts.already_online) {
                 // 线上实测原样：终端已在线的判定先于凭据校验（与真实服务器一致）
                 logged_in.store(true);
@@ -733,6 +753,8 @@ std::string SimServer::LoginPath() const {
 }
 
 int SimServer::LoginCount() const { return impl_->login_count.load(); }
+
+int SimServer::LogoutCount() const { return impl_->logout_count.load(); }
 
 std::string SimServer::LastLoginBody() const {
     std::lock_guard<std::mutex> lk(impl_->body_mutex);
