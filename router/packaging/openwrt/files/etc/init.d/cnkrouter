@@ -27,7 +27,7 @@ render_config() {
 	config_get probe_url     main probe_url     "http://captive.apple.com/hotspot-detect.html"
 	config_get probe_expect  main probe_expect  "Success"
 	config_get probe_timeout main probe_timeout 6
-	config_get probe_interval main probe_interval 60
+	config_get probe_interval main probe_interval 30
 	config_get bind_ip       main bind_ip       ""
 	config_get log_level     main log_level     2
 	config_get log_dir       main log_dir       "/mnt/data/log/cnkrouter"
