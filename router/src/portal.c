@@ -214,10 +214,21 @@ static int ac_says_online(const Config *c) {
     snprintf(url, sizeof url, "%s/drcom/chkstatus?callback=cnkwd&jsVersion=4.X&lang=zh", origin);
 
     memset(&resp, 0, sizeof resp);
-    if (http_request("GET", url, NULL, NULL, c->bind_ip, 4000, &resp, err, sizeof err) != 0)
+    if (http_request("GET", url, NULL, NULL, c->bind_ip, 4000, &resp, err, sizeof err) != 0) {
+        log_write(LOG_DBG, "AC 复核：请求失败（%s）", err);
         return -1;
-    if (resp.status == 200 && json_find_int(resp.body, "result", &code) == 0)
+    }
+    if (resp.status != 200) {
+        log_write(LOG_DBG, "AC 复核：HTTP %d", resp.status);
+    } else if (json_find_int(resp.body, "result", &code) == 1) {
+        /* json_find_int 成功返回 1、失败返回 0 —— 这里千万别写成 == 0
+         * （第一版就写反了，结果永远拿不到结果，一路降级成"复核不可用"） */
         verdict = (code == 1) ? 1 : 0;
+        log_write(LOG_DBG, "AC 复核：result=%ld → %s", code,
+                  verdict == 1 ? "在线" : "不在线");
+    } else {
+        log_write(LOG_DBG, "AC 复核：回包里取不到 result 字段");
+    }
     http_resp_free(&resp);
     return verdict;
 }
