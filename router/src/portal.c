@@ -176,6 +176,24 @@ static int has(const char *s, const char *needle) {
     return s && strstr(s, needle) != NULL;
 }
 
+/* 大小写不敏感的包含判断（只处理 ASCII）。
+ * 门户的 inuse 提示不只有小写一种写法（InUse / INUSE 都见过），
+ * 只按小写匹配等于埋一个"换个写法就漏判"的坑。 */
+static int has_i(const char *s, const char *needle) {
+    size_t i, n;
+    if (!s || !needle || !needle[0]) return 0;
+    n = strlen(needle);
+    for (i = 0; s[i]; ++i) {
+        size_t j = 0;
+        while (j < n && s[i + j] &&
+               tolower((unsigned char)s[i + j]) == tolower((unsigned char)needle[j])) {
+            ++j;
+        }
+        if (j == n) return 1;
+    }
+    return 0;
+}
+
 /* ---------------- 探测 ---------------- */
 
 const char *net_state_name(NetState s) {
@@ -668,6 +686,11 @@ LoginResult portal_login(const Config *c) {
     json_find_str(resp.body, "ret_code", ret_code, sizeof ret_code);
     http_resp_free(&resp);
 
+    /* 原始字段留证：以前只把解析后的结论写进日志，出现没见过的回包时无从判断。
+     * 这里不含任何凭据，只是 result / msg / ret_code 三个值。 */
+    log_write(LOG_DBG, "登录回包：result=%ld ret_code=%s msg=%s",
+              code, ret_code[0] ? ret_code : "-", msg[0] ? msg : "-");
+
     if (code == 1) {
         lr.ok = 1;
         snprintf(lr.message, sizeof lr.message, "Portal 协议认证成功");
@@ -682,6 +705,19 @@ LoginResult portal_login(const Config *c) {
         lr.ok = 1;
         lr.inuse = 1;
         snprintf(lr.message, sizeof lr.message, "服务器报告该终端已在线（inuse）");
+        return lr;
+    }
+
+    /* 英文变体：2026-11-01 真机实测拿到 "inuse, login again"。
+     * 以前只认中文，它就掉进"登录失败"分支 —— 会话明明已经存在，程序却一遍遍重试登录，
+     * 也永远进不了僵尸会话处置（用户早就要求过 inuse 必须有专门处理）。
+     * 依旧标 inuse 而不是单纯 ok：会话存在 ≠ 转发面可用，上层会复测，
+     * 复测不通才走注销/换 IP/换 MAC。
+     * 排除含"错误/不存在"的回包，避免把真正的失败当成已在线放过去。 */
+    if (has_i(msg, "inuse") && !has(msg, "错误") && !has(msg, "不存在")) {
+        lr.ok = 1;
+        lr.inuse = 1;
+        snprintf(lr.message, sizeof lr.message, "服务器报告该 IP 上已有会话（inuse）");
         return lr;
     }
 
