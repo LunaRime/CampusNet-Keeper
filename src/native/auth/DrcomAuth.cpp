@@ -6,6 +6,7 @@
 #include "core/Crypto.h"
 #include "core/Log.h"
 #include "json.hpp"
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -36,6 +37,16 @@ int RandomInt(int lo, int hi) {
     }();
     (void)seeded;
     return lo + std::rand() % (hi - lo + 1);
+}
+
+// ASCII 大小写不敏感的包含判断。门户的 inuse 提示不只有小写一种写法
+//（InUse / INUSE 都见过），只按小写匹配等于埋一个"换个写法就漏判"的坑。
+bool IcaseContains(const std::string& s, const std::string& needle) {
+    if (s.empty() || needle.empty()) return false;
+    return std::search(s.begin(), s.end(), needle.begin(), needle.end(),
+                       [](unsigned char a, unsigned char b) {
+                           return std::tolower(a) == std::tolower(b);
+                       }) != s.end();
 }
 
 // 注销应答是否**明显**表示失败。文案表没采齐，所以只在"有错误词且没有成功标记"
@@ -355,6 +366,12 @@ NewApiOutcome TryNewApi(const Profile& p, const std::string& account,
         // 保持缺省值；下面按「无有效 result」处理
     }
 
+    // 原始字段留证：以前只把解析后的结论写进日志，出现没见过的回包时无从判断。
+    // 这里不含凭据，只是 result / ret_code / msg 三个值（msg 仍套一层脱敏）。
+    LogDebug("登录回包：result=" + std::to_string(code) +
+             " ret_code=" + (ret_code.empty() ? std::string("-") : ret_code) +
+             " msg=" + (msg.empty() ? std::string("-") : RedactSecrets(msg)));
+
     LoginResult classified = ClassifyDrcomReply(code, msg, ret_code);
     classified.request_url = out.result.request_url;
     classified.request_body = out.result.request_body;
@@ -514,6 +531,30 @@ LoginResult ClassifyDrcomReply(int code, const std::string& msg,
         r.terminal_online = true;
         r.message = "服务器报告该终端已在线（无需重新登录）：" + RedactSecrets(msg);
         return r;
+    }
+
+    // 英文变体：2026-11-01 路由器端真机实测拿到 "inuse, login again"（已认证态再登录）。
+    // 以前只认中文，它同样会掉进"登录失败"分支 —— 会话明明已经存在，程序却一遍遍重试登录，
+    // 也永远进不了僵尸会话处置。这里标 terminal_online 而非单纯成功：会话存在 ≠ 转发面可用，
+    // 调度器会复测，复测不通才走注销。
+    // 排除含否定词的回包，避免把真正的失败当成已在线放过去——否定词中英文都要查
+    // （与 router 端 portal.c 保持同一集合，否则英文否定如 "inuse failed" 会漏判）。
+    {
+        const bool says_fail =
+            msg.find("错误") != std::string::npos ||
+            msg.find("不存在") != std::string::npos ||
+            msg.find("不正确") != std::string::npos ||
+            msg.find("无效") != std::string::npos ||
+            IcaseContains(msg, "error") || IcaseContains(msg, "fail") ||
+            IcaseContains(msg, "invalid") || IcaseContains(msg, "denied") ||
+            IcaseContains(msg, "not exist");
+        if (IcaseContains(msg, "inuse") && !says_fail) {
+            r.success = true;
+            r.vendor_code = 1;  // 成功类；与「终端已在线」同族
+            r.terminal_online = true;
+            r.message = "服务器报告该 IP 上已有会话（inuse）：" + RedactSecrets(msg);
+            return r;
+        }
     }
 
     // 「已在线」却没提终端：账号/会话被占用（含"该账号已在其他设备登录"）。

@@ -417,3 +417,30 @@ TEST_CASE("Dr.COM 应答分类：终端已在线 / 会话被占 / 凭据错误 /
     CHECK_FALSE(flaky.success);
     CHECK(flaky.vendor_code == -1);  // 普通故障：不得判成凭据错误
 }
+
+TEST_CASE("Dr.COM 应答分类：英文 inuse 变体判「终端已在线」，大小写不敏感") {
+    // 2026-11-01 路由器端真机实测：已认证态再登录，门户回英文 "inuse, login again"
+    //（ret_code=2）。以前只认中文「终端IP已在线」，英文变体会掉进失败分支 → 死循环重试。
+    using cnk::ClassifyDrcomReply;
+
+    const auto lo = ClassifyDrcomReply(0, "inuse, login again", "2");
+    CHECK(lo.success);          // 会话存在，按成功处理
+    CHECK(lo.terminal_online);  // 但没真正认证 → 调用方必须复测
+    CHECK_FALSE(lo.in_use);
+    CHECK(lo.vendor_code != 2); // 绝不可是「凭据错误→停止重试」那一类
+
+    // 大小写变体：只按小写匹配等于埋一个"换个写法就漏判"的坑
+    CHECK(ClassifyDrcomReply(0, "InUse", "2").terminal_online);
+    CHECK(ClassifyDrcomReply(0, "INUSE", "2").terminal_online);
+
+    // 含否定词的 inuse 回包不得误判为已在线（中英文都要查，与 router 端集合一致）
+    const auto err_inuse = ClassifyDrcomReply(0, "inuse 错误", "1");
+    CHECK_FALSE(err_inuse.success);
+    CHECK_FALSE(err_inuse.terminal_online);
+    const auto absent = ClassifyDrcomReply(0, "inuse 账号不存在", "1");
+    CHECK_FALSE(absent.success);
+    CHECK_FALSE(absent.terminal_online);
+    CHECK_FALSE(ClassifyDrcomReply(0, "inuse failed", "1").success);
+    CHECK_FALSE(ClassifyDrcomReply(0, "inuse, account not exist", "1").terminal_online);
+    CHECK_FALSE(ClassifyDrcomReply(0, "inuse: invalid session", "1").success);
+}
