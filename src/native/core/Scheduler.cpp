@@ -75,6 +75,9 @@ struct Scheduler::Impl {
     std::string local_ip;  // TODO：待接入网卡信息查询（GetAdaptersAddresses）后填充
     // 上一次写进日志的探测结论（-1 = 还没记过）：只在变化时记一行，避免刷屏
     int last_logged_probe_state = -1;
+    // 持续故障（offline/unknown）时上次记下的 message：message 变化也要记——
+    // 否则「DNS 失败」变「连接超时」这种故障层次迁移会被去重吞掉，事后只剩一行 offline。
+    std::string last_logged_fault_message;
     std::string cached_portal_body;
     std::string cached_portal_url;
     std::string cached_server_header;
@@ -247,11 +250,17 @@ void Scheduler::Impl::DoProbe() {
     ProbeResult pr = ProbeOnce(cfg.settings);
     last_probe_response = pr.response;
 
-    // 探测结论只在**变化时**记 INFO：出问题时能一眼看出是"根本没网"还是"被劫持"。
+    // 探测结论只在「状态变化」时记 INFO：出问题时能一眼看出是"根本没网"还是"被劫持"。
     // 2026-10-26 的事故就是缺这一行——日志里只有"网络变更事件"和"连接恢复"，
     // 中间 8 分钟既没网也连不上门户，事后完全看不出当时探测到的是什么。
-    if ((int)pr.state != last_logged_probe_state) {
+    // 额外规则：持续故障（offline/unknown）时，message 变化也要记——
+    // "DNS 失败"变"连接超时"是故障层次迁移，只按状态去重会把它吞掉。
+    const bool state_changed = (int)pr.state != last_logged_probe_state;
+    const bool faulting = pr.state == NetState::Offline || pr.state == NetState::Unknown;
+    const bool fault_msg_changed = faulting && pr.message != last_logged_fault_message;
+    if (state_changed || fault_msg_changed) {
         last_logged_probe_state = (int)pr.state;
+        if (faulting) last_logged_fault_message = pr.message;
         // 顺带记下「到门户时本机长什么样」：没有地址 / 链路本地 / 有地址但网关不通，
         // 这三种在日志里必须能区分开，否则"连不上"仍然是个黑盒。
         const Profile* active = ActiveProfile(cfg);
@@ -262,18 +271,28 @@ void Scheduler::Impl::DoProbe() {
     }
 
     if (pr.state == NetState::Online) {
-        state = RunState::Online;
-        message = "网络正常";
-        ever_succeeded = true;
-        backoff_index = 0;
-        consecutive_auth_failures = 0;
-        inuse_logout_count = 0;
-        // 网络已恢复（可能是用户手动登录成功）：解除停止，恢复正常调度
-        stop_retrying = false;
-        total_auth_attempts = 0;
-        ScheduleNext(cfg.settings.probe_interval_seconds);
-        ResetCache();
-        return;
+        // 第三层验证：探测页 200+"Success" 不证明真能出网——DNS 被劫持时探测页照样 200，
+        // 而实际打不开网页（2026-10-30 router 端实测僵尸会话持续 9 小时无人察觉）。
+        // 明确出不了网（有响应但内容不对）才降级离线、触发重连；判不出来维持在线。
+        if (CanReachInternet() == 0) {
+            LogWarn("探测判在线但实际出不了网（疑似僵尸会话/劫持），降级为离线");
+            pr.state = NetState::Offline;
+            pr.message = "探测页可通但实际出不了网（疑似僵尸会话）";
+            // 落到下面的 Offline 分支
+        } else {
+            state = RunState::Online;
+            message = "网络正常";
+            ever_succeeded = true;
+            backoff_index = 0;
+            consecutive_auth_failures = 0;
+            inuse_logout_count = 0;
+            // 网络已恢复（可能是用户手动登录成功）：解除停止，恢复正常调度
+            stop_retrying = false;
+            total_auth_attempts = 0;
+            ScheduleNext(cfg.settings.probe_interval_seconds);
+            ResetCache();
+            return;
+        }
     }
 
     // 终止态巡检：只确认网络是否恢复，不改写状态与消息——

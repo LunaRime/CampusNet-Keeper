@@ -120,4 +120,31 @@ ProbeResult ProbeOnce(const Settings& s) {
     return r;
 }
 
+int CanReachInternet() {
+    static const char* kUrls[] = {
+        "http://connect.rom.miui.com/generate_204",
+        "http://www.baidu.com/robots.txt",
+        nullptr
+    };
+    bool got_response = false;
+    for (int i = 0; kUrls[i]; ++i) {
+        HttpRequest req;
+        req.url = kUrls[i];
+        req.method = "GET";
+        req.timeout_ms = 5000;
+        req.follow_redirects = false;
+        HttpResponse resp;
+        std::string err;
+        if (!HttpPerform(req, resp, err)) continue;  // 目标不可达，试下一个
+        got_response = true;
+        if (resp.status == 204 ||
+            (resp.status == 200 && resp.body.find("User-agent") != std::string::npos)) {
+            return 1;
+        }
+        // 有响应但内容不对 → 多半被劫持到门户页，明确不通（继续试下一个，可能两个都这样）
+    }
+    // 有响应但都不对 = 确定出不去（判僵尸）；一个都没搭上 = 判不出来（目标可能被墙）
+    return got_response ? 0 : -1;
+}
+
 }  // namespace cnk

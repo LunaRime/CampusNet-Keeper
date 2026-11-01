@@ -5,6 +5,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
 #include <string>
 
 namespace cnk {
@@ -35,6 +36,31 @@ bool ResolveV4(const std::string& host, int port, sockaddr_in& out) {
     }
     WSACleanup();
     return ok;
+}
+
+// 查网关的邻居（ARP）状态：1=已解析（可达），0=未解析（二层断，网关不代答 ARP），
+// -1=查不到（无网关，或邻居表里没有这条，无从判断）。
+// 对应 router 端 link_gw_status：只有"网关 ARP 已解析"才说明三层通，
+// 否则「登录重试必然无效」——这正是 2026-11-01 那次二层故障的判据。
+int GatewayArpState(const std::string& gateway) {
+    if (gateway.empty()) return -1;
+
+    in_addr gw{};
+    if (inet_pton(AF_INET, gateway.c_str(), &gw) != 1) return -1;
+
+    PMIB_IPNET_TABLE2 table = nullptr;
+    if (GetIpNetTable2(AF_INET, &table) != NO_ERROR || !table) return -1;
+
+    int result = -1;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const MIB_IPNET_ROW2& row = table->Table[i];
+        if (row.Address.Ipv4.sin_addr.s_addr != gw.s_addr) continue;
+        // 未解析：Incomplete（正在解析但没结果）/ Unreachable（明确不可达）
+        result = (row.State == NlnsIncomplete || row.State == NlnsUnreachable) ? 0 : 1;
+        break;
+    }
+    FreeMibTable(table);
+    return result;
 }
 
 }  // namespace
@@ -151,6 +177,7 @@ LocalRoute RouteForUrl(const std::string& url) {
             if (inet_ntop(AF_INET, &gw, buf, (DWORD)sizeof buf)) r.gateway = buf;
         }
     }
+    r.gateway_arp = GatewayArpState(r.gateway);
     return r;
 }
 
@@ -168,6 +195,14 @@ std::string DescribeRoute(const LocalRoute& r) {
         s = "本机地址=" + r.ip;
     }
     s += r.gateway.empty() ? "，网关=直连（无下一跳）" : "，网关=" + r.gateway;
+    if (!r.gateway.empty()) {
+        if (r.gateway_arp == 1)
+            s += "（ARP 已解析）";
+        else if (r.gateway_arp == 0)
+            s += "（ARP 未解析：二层断，网关不代答）";
+        else
+            s += "（ARP 未知）";
+    }
     return s;
 }
 

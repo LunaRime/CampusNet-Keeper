@@ -30,6 +30,10 @@ std::string ResolveClientIp(const std::string& ctx_local_ip, const std::string& 
 struct LocalRoute {
     std::string ip;       // 本机会用的源地址；空 = 没有到该目标的路由
     std::string gateway;  // 下一跳；空 = 直连（或没有默认路由）
+    // 网关的邻居（ARP）状态：1=已解析（三层通），0=未解析（二层断，网关不代答），
+    // -1=查不到（无网关或表里没有这条，无从判断）。
+    // 有了它才能把"二层断"和"三层通但认证坏"区分开——只有 IP+网关看不出网关通不通。
+    int gateway_arp = -1;
 };
 
 // 按认证网址（或任意 http(s) 地址）取上面两个字段；解析失败时字段为空。

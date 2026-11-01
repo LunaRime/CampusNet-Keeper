@@ -20,6 +20,14 @@ struct ProbeResult {
 // 3xx 的 Location 是判定劫持的关键证据。
 ProbeResult ProbeOnce(const Settings& s);
 
+// 第三层验证：真的能出网吗？（对应 router 端 can_reach_internet）
+//   1  = 能出网（generate_204 回 204，或百度 robots.txt 回 200 且含 User-agent）
+//   0  = 明确不能（有响应但内容不对 → 疑似被劫持/僵尸会话，转发面已废）
+//  -1  = 判不出来（目标全不可达，别据此判离线）
+// 存在的理由：探测页 200+"Success" 不证明能出网——DNS 被劫持时探测页照样 200，
+// 而实际打不开任何网页（2026-10-30 实测僵尸会话持续 9 小时无人察觉，就是缺这层）。
+int CanReachInternet();
+
 // 通用轮询：每轮调用 probe()，一旦 stop(r) 为真立即返回；否则等待 delay_ms 后重试，
 // 用尽 attempts 次后返回最后一次结果（含 message，便于如实报告原因）。
 //
