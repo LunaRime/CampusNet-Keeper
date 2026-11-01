@@ -15,6 +15,7 @@ CONF_FILE=$CONF_DIR/cnkrouter.conf
 render_config() {
 	local enabled username password auth_url isp probe_url probe_expect
 	local probe_timeout probe_interval bind_ip log_level
+	local wan_iface link_recovery link_after link_cooldown
 
 	config_load cnkrouter
 	config_get_bool enabled main enabled 1
@@ -29,11 +30,15 @@ render_config() {
 	config_get probe_timeout main probe_timeout 6
 	config_get probe_interval main probe_interval 30
 	config_get bind_ip       main bind_ip       ""
-	config_get log_level     main log_level     2
+	config_get log_level     main log_level     3
 	config_get log_dir       main log_dir       "/mnt/data/log/cnkrouter"
 	config_get log_keep_days main log_keep_days 7
 	config_get verify_ac     main verify_ac     1
 	config_get inuse_action  main inuse_action  0
+	config_get wan_iface     main wan_iface     "wan"
+	config_get link_recovery main link_recovery 1
+	config_get link_after    main link_after    2
+	config_get link_cooldown main link_cooldown 900
 
 	if [ -z "$username" ] || [ -z "$password" ]; then
 		logger -t cnkrouter "未配置 username/password，服务不启动"
@@ -57,6 +62,10 @@ render_config() {
 		echo "log_keep_days=$log_keep_days"
 		echo "verify_ac=$verify_ac"
 		echo "inuse_action=$inuse_action"
+		echo "wan_iface=$wan_iface"
+		echo "link_recovery=$link_recovery"
+		echo "link_after=$link_after"
+		echo "link_cooldown=$link_cooldown"
 	} > $CONF_FILE
 	return 0
 }

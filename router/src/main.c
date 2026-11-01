@@ -133,6 +133,17 @@ void config_defaults(Config *c) {
     c->verify_ac = 1;   /* 探测成功后用 chkstatus 复核，防 DNS 劫持导致的"假在线" */
     /* 默认只记录：处置动作（尤其换 IP/换 MAC）会主动断网，误报的代价比漏报高得多 */
     c->inuse_action = 0;
+
+    /* 默认开 DEBUG：2026-11-01 排查时才发现 log_level=2 把 AC 复核、出网验证这些
+     * 关键判据全滤掉了，日志里只剩一句"域名解析失败"，根本定位不到故障层次。
+     * 一天也就一两 MB，而 /mnt/data 有 54 GB —— 证据比省空间重要。 */
+    c->log_level = LOG_DBG;
+    /* 链路层自愈：默认开。软拔插会断 5~10 秒，但它是实测唯一有效的手段，
+     * 且只在「门户 + 网关都不可达」这个明确条件下才动手。 */
+    snprintf(c->wan_iface, sizeof c->wan_iface, "wan");
+    c->link_recovery = 1;
+    c->link_after = 2;
+    c->link_cooldown = 900;
 }
 
 static void trim_inplace(char *s) {
@@ -151,6 +162,18 @@ static void trim_inplace(char *s) {
 
 static void copy_field(char *dst, size_t cap, const char *v) {
     snprintf(dst, cap, "%s", v);
+}
+
+/* 网卡名会拼进 system() 执行的命令行里。配置文件是 600，但仍然只放行
+ * 字母数字和 . _ - ：既防注入，也顺便挡掉拼错的怪名字。 */
+static int iface_name_ok(const char *s) {
+    size_t i;
+    if (!s || !s[0] || strlen(s) >= 16) return 0;
+    for (i = 0; s[i]; ++i) {
+        unsigned char ch = (unsigned char)s[i];
+        if (!(isalnum(ch) || ch == '_' || ch == '.' || ch == '-')) return 0;
+    }
+    return 1;
 }
 
 int config_load(const char *path, Config *c, char *err, size_t cap) {
@@ -196,12 +219,25 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
         else if (strcmp(key, "log_keep_days") == 0)  c->log_keep_days = atoi(val);
         else if (strcmp(key, "verify_ac") == 0)  c->verify_ac = atoi(val) ? 1 : 0;
         else if (strcmp(key, "inuse_action") == 0) c->inuse_action = atoi(val);
+        else if (strcmp(key, "wan_iface") == 0) {
+            copy_field(c->wan_iface, sizeof c->wan_iface, val);
+            /* 网卡名会拼进 system() 执行的命令里，只放行安全字符 */
+            if (!iface_name_ok(c->wan_iface)) {
+                log_write(LOG_WARN, "配置里的 wan_iface 不合法，回退为 wan");
+                snprintf(c->wan_iface, sizeof c->wan_iface, "wan");
+            }
+        }
+        else if (strcmp(key, "link_recovery") == 0) c->link_recovery = atoi(val) ? 1 : 0;
+        else if (strcmp(key, "link_after") == 0)    c->link_after = atoi(val);
+        else if (strcmp(key, "link_cooldown") == 0) c->link_cooldown = atoi(val);
         else log_write(LOG_WARN, "配置第 %d 行：未知键 '%s'（已忽略）", lineno, key);
     }
     fclose(f);
 
     if (c->probe_timeout <= 0 || c->probe_timeout > 60) c->probe_timeout = 6;
     if (c->probe_interval < 10) c->probe_interval = 60;
+    if (c->link_after < 1) c->link_after = 2;
+    if (c->link_cooldown < 60) c->link_cooldown = 900;
     return 0;
 }
 
@@ -360,6 +396,281 @@ static void handle_inuse(Config *c) {
     sleep_slices(300000);
 }
 
+/* ---------------- 链路层诊断与自愈 ----------------
+ *
+ * 起因是 2026-11-01 那次**有人在场、没拔网线**的完整故障现场（用户特意保留了现场）。
+ * 当时日志只有两种句子循环出现：
+ *     离线：探测失败：域名解析失败：captive.apple.com
+ *     登录：loadConfig 请求失败：连接失败（拒绝/不可达/超时）
+ * 循环 6 次，程序毫无办法；用户拔插网线后 1 秒内恢复。
+ *
+ * 现场实测（以下地址均为**脱敏占位符**，真实值不入库 —— 见 docs/evidence/audit_redaction.py）：
+ *   · WAN 有 IP（10.0.0.100/24）、链路 LOWER_UP、零错包零丢包
+ *   · DHCP 租约当天早些时候刚续过，还剩 3 天      → 不是 DHCP 到期
+ *   · ping 网关 10.0.0.1 = 100% 丢包
+ *   · ip neigh：网关 = INCOMPLETE（ARP 解析不出）
+ *   · RX 速率从历史 272 包/秒掉到 0.1 包/秒  → 上游端口基本不再转发
+ *   · 门户 10.0.0.9（同时也是 DNS 服务器）不可达
+ *
+ * 结论：故障在**二层**。登录、探测、重试全在三层以上，对一个被隔离的端口毫无作用，
+ * 所以「死循环重试」必然无效。而拔插网线会让交换机看到 link down/up 并重新放行。
+ *
+ * 软件版拔插网线 = ip link set dev wan down/up。本平台内核会真的把 PHY 拉低
+ * （dmesg 打出 "PHY Link is down" / "PHY Link up speed: 1000"），实测一次即恢复，
+ * 而且 DHCP 拿到了**新地址**（10.0.0.100 → 10.0.0.5）—— 续租拿的是同一个旧地址，
+ * 救不回来，这正是必须重新 DHCP 的原因。
+ */
+
+#ifndef _WIN32
+
+/* 从 /proc/net/route 取默认网关（Destination 为 00000000 的那行）。
+ * 注意 Gateway 列是**字节反序**的十六进制：192.168.1.1 显示成 0101A8C0。 */
+static int default_gateway(char *gw, size_t gwcap, char *iface, size_t icap) {
+    FILE *f;
+    char line[256];
+
+    f = fopen("/proc/net/route", "r");
+    if (!f) return -1;
+    while (fgets(line, sizeof line, f)) {
+        char ifc[32], dest[32], gwh[32], flg[32];
+        unsigned b[4];
+        if (sscanf(line, "%31s %31s %31s %31s", ifc, dest, gwh, flg) != 4) continue;
+        if (strcmp(dest, "00000000") != 0) continue;      /* 只要默认路由 */
+        if (strlen(gwh) != 8) continue;
+        if (sscanf(gwh, "%2x%2x%2x%2x", &b[0], &b[1], &b[2], &b[3]) != 4) continue;
+        snprintf(gw, gwcap, "%u.%u.%u.%u", b[3], b[2], b[1], b[0]);
+        if (iface && icap) snprintf(iface, icap, "%s", ifc);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    return -1;
+}
+
+/* 查某个 IP 的 ARP 状态：1 = 已解析出 MAC，0 = 未解析，-1 = 表里没有 */
+static int arp_state(const char *ip, const char *iface, char *mac, size_t cap) {
+    FILE *f;
+    char line[256];
+
+    f = fopen("/proc/net/arp", "r");
+    if (!f) return -1;
+    while (fgets(line, sizeof line, f)) {
+        char aip[64], hwtype[32], flg[32], amac[32], mask[32], dev[32];
+        unsigned flags;
+        if (sscanf(line, "%63s %31s %31s %31s %31s %31s",
+                   aip, hwtype, flg, amac, mask, dev) != 6) continue;
+        if (strcmp(aip, ip) != 0) continue;
+        if (iface && iface[0] && strcmp(dev, iface) != 0) continue;
+        flags = (unsigned)strtoul(flg, NULL, 16);
+        if (cap) snprintf(mac, cap, "%s", amac);
+        fclose(f);
+        /* ATF_COM = 0x2 表示条目完整；没解析出来时 flags 为 0 且 MAC 是全零 */
+        return (flags & 0x2) && strcmp(amac, "00:00:00:00:00:00") != 0 ? 1 : 0;
+    }
+    fclose(f);
+    return -1;
+}
+
+/* 网关的 IP + ARP 状态。1 = 通，0 = 不通（二层断了），-1 = 读不到（无从判断） */
+static int link_gw_status(char *gw, size_t gwcap, char *mac, size_t maccap) {
+    char dev[32] = "";
+    if (mac && maccap) mac[0] = '\0';
+    if (default_gateway(gw, gwcap, dev, sizeof dev) != 0) return -1;
+    return arp_state(gw, dev[0] ? dev : NULL, mac, maccap);
+}
+
+/* 本机实际用的上游 DNS。dnsmasq 自己监听 127.0.0.1，光看 /etc/resolv.conf
+ * 只能看到 127.0.0.1，真正的服务器在 DHCP 下发的那份里 —— 排查 DNS 故障时
+ * 这才是要写进日志的那个值。 */
+static int dns_server(char *out, size_t cap) {
+    static const char *files[] = {
+        "/tmp/resolv.conf.d/resolv.conf.auto", "/etc/resolv.conf", NULL
+    };
+    int i;
+
+    for (i = 0; files[i]; ++i) {
+        FILE *f = fopen(files[i], "r");
+        char line[256];
+        if (!f) continue;
+        while (fgets(line, sizeof line, f)) {
+            char ns[64];
+            if (sscanf(line, "nameserver %63s", ns) != 1) continue;
+            if (strncmp(ns, "127.", 4) == 0 || strcmp(ns, "::1") == 0) continue;
+            snprintf(out, cap, "%s", ns);
+            fclose(f);
+            return 0;
+        }
+        fclose(f);
+    }
+    return -1;
+}
+
+static int wan_ip_of(const char *iface, char *out, size_t cap) {
+    char cmd[160], line[256];
+    FILE *p;
+
+    if (!iface_name_ok(iface)) return -1;
+    snprintf(cmd, sizeof cmd, "ip -4 -o addr show dev %s 2>/dev/null", iface);
+    p = popen(cmd, "r");
+    if (!p) return -1;
+    if (fgets(line, sizeof line, p)) {
+        char *s = strstr(line, "inet ");
+        if (s) {
+            char *slash = strchr(s + 5, '/');
+            size_t n = slash ? (size_t)(slash - (s + 5)) : strlen(s + 5);
+            if (n && n < cap) {
+                memcpy(out, s + 5, n);
+                out[n] = '\0';
+                pclose(p);
+                return 0;
+            }
+        }
+    }
+    pclose(p);
+    return -1;
+}
+
+/* 门户还有反应吗？门户在**未认证**时也会回首页或 302 —— 它都不可达，
+ * 就说明故障在认证之下，登录再多次也没用。 */
+static int link_portal_reachable(const Config *c) {
+    HttpResp resp;
+    char err[128];
+    int rc;
+
+    memset(&resp, 0, sizeof resp);
+    rc = http_request("GET", c->auth_url, NULL, NULL, c->bind_ip, 3000,
+                      &resp, err, sizeof err);
+    if (rc != 0) {
+        log_write(LOG_DBG, "门户可达性：请求失败（%s）", err);
+        return 0;
+    }
+    log_write(LOG_DBG, "门户可达性：HTTP %d", resp.status);
+    http_resp_free(&resp);
+    return 1;
+}
+
+/* 软件版拔插网线：把 PHY 拉低再拉高。
+ * 本平台（nss-dp）对 ip link down 会真的断 PHY，dmesg 里有 "PHY Link is down"，
+ * 上游交换机看到链路变化后重新协商放行。 */
+static int link_wan_cycle(const char *iface) {
+    char cmd[160];
+
+    snprintf(cmd, sizeof cmd, "ip link set dev %s down 2>/dev/null", iface);
+    if (system(cmd) != 0) {
+        log_write(LOG_WARN, "软拔插失败：无法 down %s", iface);
+        return -1;
+    }
+    sleep_slices(3000);                 /* 让交换机明确看到链路断开 */
+    snprintf(cmd, sizeof cmd, "ip link set dev %s up 2>/dev/null", iface);
+    if (system(cmd) != 0) {
+        log_write(LOG_WARN, "软拔插失败：无法 up %s（接口可能停在 down 状态）", iface);
+        return -1;
+    }
+    return 0;
+}
+
+/* 等 WAN 重新拿到地址、网关 ARP 解析成功。最多等 wait_secs 秒 */
+static int link_wait_ready(int wait_secs) {
+    int i;
+    for (i = 0; i < wait_secs * 2; ++i) {
+        char gw[64], mac[32];
+        if (g_stop) return 0;
+        if (link_gw_status(gw, sizeof gw, mac, sizeof mac) == 1) return 1;
+        sleep_ms(500);
+    }
+    return 0;
+}
+
+/* 连续离线到门槛后调用：先分清故障层次，确认是二层问题才软拔插。
+ * 返回 1 表示已执行拔插（调用方应跳过本轮登录，直接重新探测）。 */
+static int handle_link_down(const Config *c) {
+    static time_t last = 0;
+    time_t now = time(NULL);
+    char gw[64], mac[32], dns[64], iface[32];
+    int gws;
+
+    gws = link_gw_status(gw, sizeof gw, mac, sizeof mac);
+    if (gws < 0) {
+        log_write(LOG_WARN, "链路诊断：读不到默认网关（WAN 还没起来），不做软拔插");
+        return 0;
+    }
+    if (dns_server(dns, sizeof dns) == 0)
+        log_write(LOG_WARN, "链路诊断：网关 %s（ARP %s），DNS 服务器 %s",
+                  gw, gws ? (mac[0] ? mac : "已解析") : "未解析", dns);
+    else
+        log_write(LOG_WARN, "链路诊断：网关 %s（ARP %s），取不到 DNS 服务器",
+                  gw, gws ? (mac[0] ? mac : "已解析") : "未解析");
+
+    if (gws == 0)
+        log_write(LOG_WARN, "链路诊断：网关不代答 ARP —— 故障在二层，登录重试必然无效");
+    else
+        log_write(LOG_WARN, "链路诊断：网关可达，可能是认证侧或门户侧的问题");
+
+    if (link_portal_reachable(c)) {
+        log_write(LOG_WARN, "门户 %s 可达 → 按认证问题处理，不做软拔插", c->auth_url);
+        return 0;
+    }
+    log_write(LOG_WARN, "门户 %s 不可达 → 故障在认证之下（登录再多次也没用）", c->auth_url);
+
+    if (c->link_recovery <= 0) {
+        log_write(LOG_WARN, "link_recovery=0，只记录不动作（要自动软拔插请设为 1）");
+        return 0;
+    }
+    if (now - last < (time_t)c->link_cooldown) {
+        log_write(LOG_WARN, "距上次软拔插不足 %d 秒，冷却中（防反复断网）", c->link_cooldown);
+        return 0;
+    }
+
+    /* 只动**真正承载默认路由**的那个口：配置里名字写错时不至于去 down 别人的接口，
+     * 也不会在开发环境（没有 wan 口）上误伤宿主网络。 */
+    {
+        char dev[32] = "";
+        if (default_gateway(gw, sizeof gw, dev, sizeof dev) != 0 || !dev[0]) {
+            log_write(LOG_WARN, "推断不出默认路由所在的网卡，跳过软拔插");
+            return 0;
+        }
+        if (c->wan_iface[0] && strcmp(c->wan_iface, dev) != 0)
+            log_write(LOG_WARN, "配置的 wan_iface=%s 与默认路由所在口 %s 不一致，以 %s 为准",
+                      c->wan_iface, dev, dev);
+        if (!iface_name_ok(dev)) {
+            log_write(LOG_WARN, "网卡名 %s 不合法，跳过软拔插", dev);
+            return 0;
+        }
+        snprintf(iface, sizeof iface, "%s", dev);
+    }
+
+    {
+        char old_ip[64] = "?", new_ip[64] = "?";
+        wan_ip_of(iface, old_ip, sizeof old_ip);
+        last = now;
+        log_write(LOG_WARN, "执行软拔插：ip link set dev %s down/up"
+                            "（等价于拔插网线，会断 5~10 秒）", iface);
+        if (link_wan_cycle(iface) != 0) return 0;
+
+        if (link_wait_ready(40)) {
+            wan_ip_of(iface, new_ip, sizeof new_ip);
+            log_write(LOG_INFO, "软拔插完成：WAN 已就绪，地址 %s → %s", old_ip, new_ip);
+        } else {
+            wan_ip_of(iface, new_ip, sizeof new_ip);
+            log_write(LOG_WARN, "软拔插后 40 秒内 WAN 仍未就绪（当前地址 %s）", new_ip);
+        }
+    }
+    return 1;
+}
+
+#else  /* _WIN32：这些能力只在路由器上有，Windows 上全部降级成"查不出来 / 不动作" */
+
+static int link_gw_status(char *gw, size_t gwcap, char *mac, size_t maccap) {
+    (void)gw; (void)gwcap; (void)mac; (void)maccap;
+    return -1;
+}
+static int handle_link_down(const Config *c) {
+    (void)c;
+    return 0;
+}
+
+#endif /* _WIN32 */
+
 static int run_daemon(Config *c) {
     static const int backoff[] = {15, 30, 60, 120, 300};
     int bidx = 0, total = 0, ever_ok = 0, stopped = 0, offline_streak = 0;
@@ -411,17 +722,39 @@ static int run_daemon(Config *c) {
             continue;
         }
         if (pr.state == NET_OFFLINE) {
+            char gw[64], mac[32];
+            int gws = link_gw_status(gw, sizeof gw, mac, sizeof mac);
+            int thr = c->link_after > 0 ? c->link_after : 2;
+
             ++offline_streak;
-            log_write(LOG_INFO, "离线：%s（连续 %d 次）", pr.message, offline_streak);
+            /* 每次离线都把网关状态带上。以前只写"域名解析失败"，
+             * 三种完全不同的故障（没认证 / 僵尸会话 / 二层断了）塌缩成同一句话，
+             * 排查时根本分不出来 —— 这是 2026-11-01 定位失败的直接原因。 */
+            if (gws == 0)
+                log_write(LOG_INFO, "离线：%s（连续 %d 次）｜网关 %s ARP 未解析",
+                          pr.message, offline_streak, gw);
+            else if (gws == 1)
+                log_write(LOG_INFO, "离线：%s（连续 %d 次）｜网关 %s 已解析到 %s",
+                          pr.message, offline_streak, gw, mac[0] ? mac : "?");
+            else
+                log_write(LOG_INFO, "离线：%s（连续 %d 次）｜无默认网关",
+                          pr.message, offline_streak);
+
             if (offline_streak < 2) {
                 sleep_slices(1500);         /* 快速重探：先排除瞬时抖动 */
                 continue;
             }
-            /* 连续 3 次都不通，就别再干等了：真断网时登录也会失败（有退避兜底），
-             * 但僵尸会话必须靠登录 → inuse → 处置 这条链才能恢复。
-             * 只重探不登录，就是"死循环重试"——正是用户遇到的那种假死。 */
-            log_write(LOG_WARN, "连续 %d 次离线，主动尝试登录（不再干等）", offline_streak);
+            if (offline_streak < thr) {
+                sleep_slices(1500);         /* 还没到动手门槛，继续数 */
+                continue;
+            }
             offline_streak = 0;
+            /* 关键一步：先分清是"没认证"还是"链路断了"，再决定要不要登录。
+             * 后者在二层，登录再多次也无效（2026-11-01 实测循环 6 次全败），
+             * 只有软拔插能恢复 —— 只重探不分层，就是用户遇到的那种假死。 */
+            log_write(LOG_WARN, "连续 %d 次离线，先判故障层次（不再干等）", thr);
+            if (handle_link_down(c)) continue;   /* 已软拔插，直接进下一轮探测 */
+            log_write(LOG_WARN, "层次判定：属认证问题，主动尝试登录");
         }
 
         log_write(LOG_INFO, "检测到门户劫持：%s", pr.message);
