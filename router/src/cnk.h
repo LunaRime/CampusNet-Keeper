@@ -102,6 +102,14 @@ void url_resolve(const char *base, const char *ref, char *out, size_t cap);
 int json_find_str(const char *json, const char *key, char *out, size_t cap);
 int json_find_int(const char *json, const char *key, long *out);
 
+/* ---------------- 字符串匹配 ---------------- */
+/* 子串包含（ASCII 大小写不敏感）。门户的 inuse 提示有 InUse/INUSE 等写法，
+ * 只按小写匹配等于埋一个"换个写法就漏判"的坑。暴露给 selftest 独立复算。 */
+int has_i(const char *s, const char *needle);
+/* 把 s 里出现的 secret 全部抹成 *（等长、原地安全），用于日志脱敏。
+ * 账号/密码绝不可落盘（学号属敏感信息，与密码同等对待）。 */
+void redact_secret(char *s, const char *secret);
+
 /* ---------------- 配置 ---------------- */
 typedef struct {
     char auth_url[CNK_URL_MAX];

@@ -253,6 +253,7 @@ static int sock_connect(const char *host, const char *port, const char *bind_ip,
                         int timeout_ms, sock_t *out, char *err, size_t errcap) {
     struct addrinfo hints, *res = NULL, *it;
     int rc;
+    int last_err = 0;   /* 最后一次连接尝试的具体错误码（errno / WSA 错误码） */
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -287,9 +288,11 @@ static int sock_connect(const char *host, const char *port, const char *bind_ip,
             ok = 1;
         } else {
 #ifdef _WIN32
-            if (WSAGetLastError() == WSAEWOULDBLOCK) {
+            int cerr = WSAGetLastError();
+            if (cerr == WSAEWOULDBLOCK) {
 #else
-            if (errno == EINPROGRESS || errno == EWOULDBLOCK) {
+            int cerr = errno;
+            if (cerr == EINPROGRESS || cerr == EWOULDBLOCK) {
 #endif
                 if (wait_fd(fd, 1, timeout_ms) == 0) {
                     int soerr = 0;
@@ -298,9 +301,19 @@ static int sock_connect(const char *host, const char *port, const char *bind_ip,
 #else
                     socklen_t sl = sizeof soerr;
 #endif
-                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&soerr, &sl) == 0 && soerr == 0)
-                        ok = 1;
+                    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char *)&soerr, &sl) == 0) {
+                        if (soerr == 0) ok = 1;
+                        else last_err = soerr;   /* 连接被拒/不可达：SO_ERROR 给出真实原因 */
+                    }
+                } else {
+#ifdef _WIN32
+                    last_err = WSAETIMEDOUT;     /* 等待可写超时：目标无响应 */
+#else
+                    last_err = ETIMEDOUT;
+#endif
                 }
+            } else {
+                last_err = cerr;                 /* connect 立即失败：拒绝/不可达等 */
             }
         }
         if (ok) {
@@ -311,7 +324,33 @@ static int sock_connect(const char *host, const char *port, const char *bind_ip,
         sock_close(fd);
     }
     freeaddrinfo(res);
-    set_err(err, errcap, "连接失败（拒绝/不可达/超时）");
+    /* 细分三种原因：拒绝(RST)/不可达(网关不通)/超时(黑洞)是三个不同层级，
+     * 塌缩成一句"连接失败"会让日志定位不到故障层次（与"域名解析失败"塌缩同类）。 */
+#ifdef _WIN32
+    if (last_err == WSAECONNREFUSED)
+        set_err(err, errcap, "连接被拒绝（目标端口未监听或被防火墙拒绝）");
+    else if (last_err == WSAETIMEDOUT)
+        set_err(err, errcap, "连接超时（目标无响应，疑似被丢包/黑洞）");
+    else if (last_err == WSAEHOSTUNREACH || last_err == WSAENETUNREACH)
+        set_err(err, errcap, "主机/网络不可达（网关不通或路由不可达）");
+    else {
+        char buf[160];
+        snprintf(buf, sizeof buf, "连接失败（错误码 %d）", last_err);
+        set_err(err, errcap, buf);
+    }
+#else
+    if (last_err == ECONNREFUSED)
+        set_err(err, errcap, "连接被拒绝（目标端口未监听或被防火墙拒绝）");
+    else if (last_err == ETIMEDOUT)
+        set_err(err, errcap, "连接超时（目标无响应，疑似被丢包/黑洞）");
+    else if (last_err == EHOSTUNREACH || last_err == ENETUNREACH)
+        set_err(err, errcap, "主机/网络不可达（网关不通或路由不可达）");
+    else {
+        char buf[160];
+        snprintf(buf, sizeof buf, "连接失败（错误码 %d）", last_err);
+        set_err(err, errcap, buf);
+    }
+#endif
     return -1;
 }
 

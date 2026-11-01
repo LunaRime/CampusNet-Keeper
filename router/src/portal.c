@@ -178,8 +178,9 @@ static int has(const char *s, const char *needle) {
 
 /* 大小写不敏感的包含判断（只处理 ASCII）。
  * 门户的 inuse 提示不只有小写一种写法（InUse / INUSE 都见过），
- * 只按小写匹配等于埋一个"换个写法就漏判"的坑。 */
-static int has_i(const char *s, const char *needle) {
+ * 只按小写匹配等于埋一个"换个写法就漏判"的坑。
+ * 非 static：暴露给 selftest 独立复算（见 main.c），避免"只改函数不测函数"。 */
+int has_i(const char *s, const char *needle) {
     size_t i, n;
     if (!s || !needle || !needle[0]) return 0;
     n = strlen(needle);
@@ -192,6 +193,19 @@ static int has_i(const char *s, const char *needle) {
         if (j == n) return 1;
     }
     return 0;
+}
+
+/* 把 s 里出现的 secret 全部抹成 *（等长、原地安全），用于日志脱敏。
+ * 账号/密码绝不可落盘：msg 是服务器回包、启动日志里的账号，都不能明文。 */
+void redact_secret(char *s, const char *secret) {
+    char *p;
+    size_t n;
+    if (!s || !secret) return;
+    n = strlen(secret);
+    if (n == 0) return;
+    for (p = s; (p = strstr(p, secret)) != NULL; p += n) {
+        memset(p, '*', n);
+    }
 }
 
 /* ---------------- 探测 ---------------- */
@@ -687,9 +701,15 @@ LoginResult portal_login(const Config *c) {
     http_resp_free(&resp);
 
     /* 原始字段留证：以前只把解析后的结论写进日志，出现没见过的回包时无从判断。
-     * 这里不含任何凭据，只是 result / msg / ret_code 三个值。 */
-    log_write(LOG_DBG, "登录回包：result=%ld ret_code=%s msg=%s",
-              code, ret_code[0] ? ret_code : "-", msg[0] ? msg : "-");
+     * msg 是服务器回包、文案表未采齐，落盘前先抹掉账号/密码（防回显学号）。 */
+    {
+        char msg_log[CNK_MSG_MAX];
+        snprintf(msg_log, sizeof msg_log, "%s", msg);
+        redact_secret(msg_log, c->username);
+        redact_secret(msg_log, c->password);
+        log_write(LOG_DBG, "登录回包：result=%ld ret_code=%s msg=%s",
+                  code, ret_code[0] ? ret_code : "-", msg_log[0] ? msg_log : "-");
+    }
 
     if (code == 1) {
         lr.ok = 1;
@@ -713,12 +733,20 @@ LoginResult portal_login(const Config *c) {
      * 也永远进不了僵尸会话处置（用户早就要求过 inuse 必须有专门处理）。
      * 依旧标 inuse 而不是单纯 ok：会话存在 ≠ 转发面可用，上层会复测，
      * 复测不通才走注销/换 IP/换 MAC。
-     * 排除含"错误/不存在"的回包，避免把真正的失败当成已在线放过去。 */
-    if (has_i(msg, "inuse") && !has(msg, "错误") && !has(msg, "不存在")) {
-        lr.ok = 1;
-        lr.inuse = 1;
-        snprintf(lr.message, sizeof lr.message, "服务器报告该 IP 上已有会话（inuse）");
-        return lr;
+     * 排除含否定词的回包，避免把真正的失败当成已在线放过去——否定词中英文都要查，
+     * 否则英文否定（"inuse failed" / "account not exist"）会漏过去。 */
+    {
+        const int says_fail = has(msg, "错误") || has(msg, "不存在") ||
+                              has(msg, "不正确") || has(msg, "无效") ||
+                              has_i(msg, "error") || has_i(msg, "fail") ||
+                              has_i(msg, "invalid") || has_i(msg, "denied") ||
+                              has_i(msg, "not exist");
+        if (has_i(msg, "inuse") && !says_fail) {
+            lr.ok = 1;
+            lr.inuse = 1;
+            snprintf(lr.message, sizeof lr.message, "服务器报告该 IP 上已有会话（inuse）");
+            return lr;
+        }
     }
 
     if (ret_code[0])

@@ -125,7 +125,10 @@ void config_defaults(Config *c) {
     snprintf(c->probe_expect, sizeof c->probe_expect, "Success");
     c->probe_timeout = 6;
     c->probe_interval = 30;
-    c->log_level = LOG_INFO;
+    /* 默认开 DEBUG：2026-11-01 排查时才发现 log_level=2 把 AC 复核、出网验证这些
+     * 关键判据全滤掉了，日志里只剩一句"域名解析失败"，根本定位不到故障层次。
+     * 一天也就一两 MB，而 /mnt/data 有 54 GB —— 证据比省空间重要。 */
+    c->log_level = LOG_DBG;
     /* 日志落到数据盘、按天分文件：/mnt/data 有 54 GB，一天一百多 KB 根本不用省；
      * 排查故障时"哪一天"比"文件多大"重要。旧文件由 cnk-cleanup 清理。 */
     snprintf(c->log_dir, sizeof c->log_dir, "/mnt/data/log/cnkrouter");
@@ -134,10 +137,6 @@ void config_defaults(Config *c) {
     /* 默认只记录：处置动作（尤其换 IP/换 MAC）会主动断网，误报的代价比漏报高得多 */
     c->inuse_action = 0;
 
-    /* 默认开 DEBUG：2026-11-01 排查时才发现 log_level=2 把 AC 复核、出网验证这些
-     * 关键判据全滤掉了，日志里只剩一句"域名解析失败"，根本定位不到故障层次。
-     * 一天也就一两 MB，而 /mnt/data 有 54 GB —— 证据比省空间重要。 */
-    c->log_level = LOG_DBG;
     /* 链路层自愈：默认开。软拔插会断 5~10 秒，但它是实测唯一有效的手段，
      * 且只在「门户 + 网关都不可达」这个明确条件下才动手。 */
     snprintf(c->wan_iface, sizeof c->wan_iface, "wan");
@@ -247,6 +246,15 @@ const char *isp_suffix(const Config *c) {
     if (strcmp(c->isp, "telecom") == 0) return "@dx";
     if (strcmp(c->isp, "unicom") == 0)  return "@lt";
     return "";
+}
+
+/* 启动日志用的脱敏账号：学号抹成 *，只留运营商后缀。
+ * 排查"配置对不对"主要看后缀（@cmcc/@dx/@lt），账号本身用户自己知道，不必明文落盘。 */
+static const char *masked_account(const Config *c) {
+    static char buf[CNK_USER_MAX + 16];
+    snprintf(buf, sizeof buf, "%s%s", c->username, isp_suffix(c));
+    redact_secret(buf, c->username);
+    return buf;
 }
 
 /* ---------------- 复测 ---------------- */
@@ -584,13 +592,18 @@ static int link_wait_ready(int wait_secs) {
 /* 连续离线到门槛后调用：先分清故障层次，确认是二层问题才软拔插。
  * 返回 1 表示已执行拔插（调用方应跳过本轮登录，直接重新探测）。 */
 static int handle_link_down(const Config *c) {
-    static time_t last = 0;
-    time_t now = time(NULL);
+    /* 冷却用单调时钟（now_ms 走 CLOCK_MONOTONIC）：NTP 校时把墙上时间回拨时，
+     * time(NULL) 会让"距上次软拔插不足 N 秒"的判断失效、进而反复断网。 */
+    static long long last_ms = 0;
+    long long now = now_ms() / 1000;
     char gw[64], mac[32], dns[64], iface[32];
     int gws;
 
     gws = link_gw_status(gw, sizeof gw, mac, sizeof mac);
     if (gws < 0) {
+        /* 读不到默认网关 = WAN 没拿到 IP / 没路由。此时软拔插无的放矢：
+         * 接口很可能还没起来（开机 / DHCP 未完成），down/up 反而可能打断 DHCP 协商；
+         * 且软拔插的触发前提「门户 + 网关都不可达」在此无从判断，故只记录、交上层继续探测。 */
         log_write(LOG_WARN, "链路诊断：读不到默认网关（WAN 还没起来），不做软拔插");
         return 0;
     }
@@ -616,7 +629,7 @@ static int handle_link_down(const Config *c) {
         log_write(LOG_WARN, "link_recovery=0，只记录不动作（要自动软拔插请设为 1）");
         return 0;
     }
-    if (now - last < (time_t)c->link_cooldown) {
+    if (now - last_ms < (long long)c->link_cooldown) {
         log_write(LOG_WARN, "距上次软拔插不足 %d 秒，冷却中（防反复断网）", c->link_cooldown);
         return 0;
     }
@@ -642,7 +655,7 @@ static int handle_link_down(const Config *c) {
     {
         char old_ip[64] = "?", new_ip[64] = "?";
         wan_ip_of(iface, old_ip, sizeof old_ip);
-        last = now;
+        last_ms = now;
         log_write(LOG_WARN, "执行软拔插：ip link set dev %s down/up"
                             "（等价于拔插网线，会断 5~10 秒）", iface);
         if (link_wan_cycle(iface) != 0) return 0;
@@ -675,8 +688,8 @@ static int run_daemon(Config *c) {
     static const int backoff[] = {15, 30, 60, 120, 300};
     int bidx = 0, total = 0, ever_ok = 0, stopped = 0, offline_streak = 0;
 
-    log_write(LOG_INFO, "cnkrouter %s 启动：账号=%s%s 认证地址=%s 探测间隔=%ds",
-              CNK_VERSION, c->username, isp_suffix(c), c->auth_url, c->probe_interval);
+    log_write(LOG_INFO, "cnkrouter %s 启动：账号=%s 认证地址=%s 探测间隔=%ds",
+              CNK_VERSION, masked_account(c), c->auth_url, c->probe_interval);
 
     while (!g_stop) {
         ProbeResult pr;
@@ -882,6 +895,35 @@ static int selftest(void) {
             log_write(LOG_ERR, "自检失败：\\uXXXX 解码（得到 '%s'）", v);
             ++fails;
         }
+    }
+
+    /* has_i：ASCII 大小写不敏感包含（inuse 分类的核心，2026-11-01 真机踩过 InUse 写法） */
+    {
+        int ok = 1;
+        ok &= has_i("inuse, login again", "inuse");
+        ok &= has_i("InUse", "inuse");
+        ok &= has_i("INUSE", "inuse");
+        ok &= has_i("xxInUseyy", "inuse");
+        ok &= !has_i("login again", "inuse");  /* 不应命中 */
+        ok &= !has_i("", "inuse");             /* 空串 */
+        ok &= !has_i("inuse", "");             /* 空 needle */
+        if (!ok) { log_write(LOG_ERR, "自检失败：has_i 大小写不敏感匹配"); ++fails; }
+        else log_write(LOG_INFO, "自检通过：has_i（大小写不敏感包含）");
+    }
+
+    /* iface_name_ok：网卡名白名单（会拼进 system() 命令，防注入） */
+    {
+        int ok = 1;
+        ok &= iface_name_ok("wan");
+        ok &= iface_name_ok("eth0.1");
+        ok &= iface_name_ok("br-lan");
+        ok &= iface_name_ok("veth_a-1");
+        ok &= !iface_name_ok("");                     /* 空 */
+        ok &= !iface_name_ok("wan; rm -rf /");        /* 注入 */
+        ok &= !iface_name_ok("wan`reboot`");          /* 反引号 */
+        ok &= !iface_name_ok("a very long interface name");  /* 超长 */
+        if (!ok) { log_write(LOG_ERR, "自检失败：iface_name_ok 白名单"); ++fails; }
+        else log_write(LOG_INFO, "自检通过：iface_name_ok（网卡名白名单）");
     }
 
     if (fails) log_write(LOG_ERR, "自检未通过：%d 项失败", fails);
