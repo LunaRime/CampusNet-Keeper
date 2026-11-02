@@ -17,6 +17,9 @@
 #include <stdarg.h>
 #include <signal.h>
 #include <time.h>
+#ifndef _WIN32
+#include <unistd.h>   /* unlink：软拔插标记文件（见 replug_flag_*） */
+#endif
 
 static int   g_level = LOG_INFO;
 static FILE *g_logf  = NULL;
@@ -557,6 +560,22 @@ static int link_portal_reachable(const Config *c) {
     return 1;
 }
 
+/* 软拔插标记：告诉 hotplug 钩子"这次 ifup 是我们自己拉起来的"。
+ *
+ * 为什么需要：原来自家软拔插一 up，netifd 就发 ifup → hotplug 重启服务 →
+ * 正在 link_wait_ready() 里等的进程被 SIGTERM 打断，日志却写成
+ * 「40 秒内 WAN 仍未就绪」（实际只等了 10 秒，2026-11-02 00:01 实测）。
+ * 更糟的是这次重启会把"重试"的机会一起掐掉：WAN 没起来时重启进程毫无意义，
+ * 再拉一次 PHY 才有用。所以软拔插期间抑制重启，让恢复逻辑在本进程里跑完。 */
+#define REPLUG_FLAG_PATH "/tmp/cnkrouter.replug"
+
+static void replug_flag_set(void) {
+    FILE *f = fopen(REPLUG_FLAG_PATH, "w");
+    if (f) fclose(f);
+}
+
+static void replug_flag_clear(void) { unlink(REPLUG_FLAG_PATH); }
+
 /* 软件版拔插网线：把 PHY 拉低再拉高。
  * 本平台（nss-dp）对 ip link down 会真的断 PHY，dmesg 里有 "PHY Link is down"，
  * 上游交换机看到链路变化后重新协商放行。 */
@@ -654,19 +673,51 @@ static int handle_link_down(const Config *c) {
 
     {
         char old_ip[64] = "?", new_ip[64] = "?";
+        long long t0;
+        int attempt = 0, done = 0, interrupted = 0;
         wan_ip_of(iface, old_ip, sizeof old_ip);
         last_ms = now;
-        log_write(LOG_WARN, "执行软拔插：ip link set dev %s down/up"
-                            "（等价于拔插网线，会断 5~10 秒）", iface);
-        if (link_wan_cycle(iface) != 0) return 0;
+        t0 = now_ms();
 
-        if (link_wait_ready(40)) {
+        /* 第一次不成就再拉一次 PHY：二层故障常常一次不放过（DHCP 还没谈完、
+         * 上游端口还在重新协商），盲等 40 秒不如再断一次链路。最多两次，
+         * 再多就成"替用户反复断网"了。 */
+        for (attempt = 1; attempt <= 2; ++attempt) {
+            log_write(LOG_WARN, "执行软拔插（第 %d/2 次）：ip link set dev %s down/up"
+                                "（等价于拔插网线，会断 5~10 秒）", attempt, iface);
+            replug_flag_set();
+            if (link_wan_cycle(iface) != 0) break;
+            if (link_wait_ready(40)) { done = 1; break; }
+            if (g_stop) {
+                /* 被 procd 重启打断 ≠ WAN 未就绪。前者是外部动作（init 重启/关机），
+                 * 后者才需要再拉一次；混在一起会让日志骗人。 */
+                interrupted = 1;
+                log_write(LOG_WARN, "软拔插等待被服务重启打断（非 WAN 未就绪）");
+                break;
+            }
             wan_ip_of(iface, new_ip, sizeof new_ip);
-            log_write(LOG_INFO, "软拔插完成：WAN 已就绪，地址 %s → %s", old_ip, new_ip);
-        } else {
-            wan_ip_of(iface, new_ip, sizeof new_ip);
-            log_write(LOG_WARN, "软拔插后 40 秒内 WAN 仍未就绪（当前地址 %s）", new_ip);
+            log_write(LOG_WARN, "第 %d 次软拔插后 40 秒 WAN 仍未就绪（当前地址 %s）",
+                      attempt, new_ip);
         }
+        wan_ip_of(iface, new_ip, sizeof new_ip);
+        /* 一条结构化记录，`grep 链路自愈` 就是完整的"链路健康"时间线：
+         * 什么时候、断在哪一层、动了几次、换没换地址、花了多久。 */
+        if (done)
+            log_write(LOG_INFO,
+                      "链路自愈：动作=软拔插 原因=网关ARP未解析 尝试=%d/2 结果=成功 "
+                      "地址=%s→%s 耗时=%llds",
+                      attempt, old_ip, new_ip, (now_ms() - t0) / 1000);
+        else if (interrupted)
+            log_write(LOG_WARN,
+                      "链路自愈：动作=软拔插 原因=网关ARP未解析 尝试=%d/2 结果=中断(服务重启) "
+                      "地址=%s 耗时=%llds",
+                      attempt, new_ip, (now_ms() - t0) / 1000);
+        else
+            log_write(LOG_WARN,
+                      "链路自愈：动作=软拔插 原因=网关ARP未解析 尝试=%d/2 结果=失败(WAN未就绪) "
+                      "地址=%s 耗时=%llds",
+                      attempt > 2 ? 2 : attempt, new_ip, (now_ms() - t0) / 1000);
+        replug_flag_clear();
     }
     return 1;
 }

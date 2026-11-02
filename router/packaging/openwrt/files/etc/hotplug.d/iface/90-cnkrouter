@@ -9,5 +9,16 @@
 [ "$INTERFACE" = "wan" ] || exit 0
 
 [ -x /etc/init.d/cnkrouter ] || exit 0
+
+# 自家软拔插拉起来的 ifup：**不要重启**。
+# 守护进程此刻正在 link_wait_ready() 里等 WAN 就绪，重启会：
+#   ① 把它正在进行的"再拉一次 PHY"掐断；② 让日志把"被打断"误记成"WAN 未就绪"。
+# 标记是一次性的（谁看见谁删），所以真正的开机 ifup 仍会照常重启。
+if [ -f /tmp/cnkrouter.replug ]; then
+	rm -f /tmp/cnkrouter.replug
+	logger -t cnkrouter "WAN ifup 由软拔插触发，跳过重启（守护进程自行复探）"
+	exit 0
+fi
+
 /etc/init.d/cnkrouter enabled && /etc/init.d/cnkrouter restart >/dev/null 2>&1
 exit 0
