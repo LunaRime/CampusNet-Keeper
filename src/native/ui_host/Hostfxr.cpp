@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cwctype>
 #include <exception>
 #include <filesystem>
 #include <mutex>
@@ -49,6 +50,12 @@ enum hostfxr_delegate_type {
 
 using hostfxr_initialize_for_runtime_config_fn = int32_t(__cdecl*)(
     const wchar_t* runtime_config_path,
+    const hostfxr_initialize_parameters* parameters, hostfxr_handle* host_context_handle);
+// 自包含载荷必须走这条：hostfxr_initialize_for_runtime_config 明确不支持自包含组件
+//（实测 rc=0x80008093「Initialization for self-contained components is not supported」）。
+// 参数形态与 `dotnet CampusNet.UI.dll` 一致，拿到的 host_context 同样能给运行时委托。
+using hostfxr_initialize_for_dotnet_command_line_fn = int32_t(__cdecl*)(
+    int argc, const wchar_t* const* argv,
     const hostfxr_initialize_parameters* parameters, hostfxr_handle* host_context_handle);
 using hostfxr_get_runtime_delegate_fn = int32_t(__cdecl*)(
     hostfxr_handle host_context_handle, hostfxr_delegate_type type, void** delegate);
@@ -328,21 +335,44 @@ int RunUiModeImpl() {
     params.size = sizeof(params);
     const std::wstring host_path = Utf8ToWide(ExecutablePath());
     params.host_path = host_path.empty() ? nullptr : host_path.c_str();
+    // 自包含载荷（运行时随包发布）的标志：目录里有 hostpolicy.dll。
+    // 它同时决定两件事：运行时根目录、以及用哪条 hostfxr 初始化 API（见下）。
+    const bool self_contained = fs::is_regular_file(ui_path / L"hostpolicy.dll", ec);
     std::wstring dotnet_root;
-    if (fs::is_regular_file(ui_path / L"hostpolicy.dll", ec)) {
-        dotnet_root = ui_path.wstring();        // 自包含载荷：运行时就在载荷目录里
+    if (self_contained) {
+        dotnet_root = ui_path.wstring();             // 运行时就在载荷目录里
     } else {
         dotnet_root = DeriveDotnetRoot(hostfxr_w);   // 机器安装：从 hostfxr 路径反推
     }
     params.dotnet_root = dotnet_root.empty() ? nullptr : dotnet_root.c_str();
 
     hostfxr_handle ctx = nullptr;
+    // 自包含载荷走"运行应用"式初始化；框架依赖走组件式初始化。
+    // 两条路拿到的都是同一个运行时委托（hdt_load_assembly_and_get_function_pointer）。
+    int rc = -1;
+    if (self_contained) {
+        const auto init_cmd = (hostfxr_initialize_for_dotnet_command_line_fn)
+            GetProcAddress(lib, "hostfxr_initialize_for_dotnet_command_line");
+        if (!init_cmd) {
+            LogError("自包含载荷需要 hostfxr_initialize_for_dotnet_command_line，但该 hostfxr 没有此导出");
+            ShowError(L"这个 .NET 宿主版本不支持自包含载荷。\n\n"
+                      L"请改用框架依赖版本，或更新 .NET 运行时后重试。");
+            return 1;
+        }
+        const std::wstring app_dll = asm_path.wstring();
+        const wchar_t* argv[] = {app_dll.c_str()};
+        rc = init_cmd(1, argv, &params, &ctx);
+    } else {
+        rc = init_cfg(config_path.wstring().c_str(), &params, &ctx);
+    }
     // 0 = 成功；1 = Success_HostAlreadyInitialized；2 = Success_DifferentRuntimeProperties
-    const int rc = init_cfg(config_path.wstring().c_str(), &params, &ctx);
     if (rc != 0 && rc != 1 && rc != 2) {
         const std::string host_detail = TakeHostfxrErrors();
         if (ctx) close_cfg(ctx);
-        std::string log = "hostfxr_initialize_for_runtime_config 失败，rc=" + RcHex(rc);
+        std::string log = std::string(self_contained
+                                          ? "hostfxr_initialize_for_dotnet_command_line 失败，rc="
+                                          : "hostfxr_initialize_for_runtime_config 失败，rc=") +
+                          RcHex(rc);
         if (!host_detail.empty()) log += "；宿主报错：" + host_detail;
         LogError(log);
         std::wstring hint =
@@ -396,12 +426,73 @@ int RunUiModeImpl() {
     return ui_rc;
 }
 
+// 把已经打开的设置界面提到前台。
+//
+// 怎么找到那个窗口：**按进程映像路径**枚举顶层窗口，而不是按标题 FindWindow。
+// 标题是 UI 文案的一部分（改一个字、做本地化就失效），而 exe 路径是稳定的。
+// 为什么从**本进程**调 SetForegroundWindow：用户刚点了托盘/命令，前台权在本进程手上；
+// 由后台进程去抢前台会被系统的前台锁直接吞掉（窗口只在任务栏闪一下）。
+struct FindUiWindowCtx {
+    std::wstring exe_lower;   // 已转小写，Windows 路径比较不区分大小写
+    DWORD self_pid = 0;
+    HWND found = nullptr;
+};
+
+BOOL CALLBACK EnumUiWindowsProc(HWND hwnd, LPARAM lp) {
+    auto* ctx = reinterpret_cast<FindUiWindowCtx*>(lp);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0 || pid == ctx->self_pid) return TRUE;
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    if (GetWindow(hwnd, GW_OWNER) != nullptr) return TRUE;  // 跳过工具窗口/被拥有的对话框
+    if (GetWindowTextLengthW(hwnd) == 0) return TRUE;
+
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) return TRUE;
+    wchar_t path[MAX_PATH * 2] = {};
+    DWORD len = (DWORD)(sizeof(path) / sizeof(path[0]));
+    bool same_exe = false;
+    if (QueryFullProcessImageNameW(proc, 0, path, &len)) {
+        std::wstring other(path, len);
+        std::transform(other.begin(), other.end(), other.begin(),
+                       [](wchar_t c) { return (wchar_t)towlower(c); });
+        same_exe = (other == ctx->exe_lower);
+    }
+    CloseHandle(proc);
+    if (!same_exe) return TRUE;
+
+    ctx->found = hwnd;
+    return FALSE;   // 找到一个就停
+}
+
+bool ActivateExistingUiWindow() {
+    const std::string exe = ExecutablePath();
+    if (exe.empty()) return false;
+    FindUiWindowCtx ctx;
+    ctx.exe_lower = Utf8ToWide(exe);
+    std::transform(ctx.exe_lower.begin(), ctx.exe_lower.end(), ctx.exe_lower.begin(),
+                   [](wchar_t c) { return (wchar_t)towlower(c); });
+    ctx.self_pid = GetCurrentProcessId();
+
+    EnumWindows(EnumUiWindowsProc, reinterpret_cast<LPARAM>(&ctx));
+    if (!ctx.found) return false;
+
+    // 最小化的先还原，隐藏的（理论上没有）也拉出来
+    ShowWindow(ctx.found, IsIconic(ctx.found) ? SW_RESTORE : SW_SHOW);
+    const BOOL ok = SetForegroundWindow(ctx.found);
+    LogInfo(std::string("已请求把设置界面切换到前台：") +
+            (ok ? "成功" : "系统拒绝（窗口已在任务栏闪烁）"));
+    return true;
+}
+
 }  // namespace
 
 int RunUiMode() {
-    // 已经有一个界面在跑就不再开第二个：托盘被连点时不该堆出一串窗口
+    // 已经有一个界面在跑就不再开第二个：托盘被连点时不该堆出一串窗口。
+    // 但也不能什么都不做——用户点托盘就是"我要看那个窗口"，所以把它提到前台。
     if (!AcquireUiWindowMutex()) {
-        LogInfo("已有设置界面在运行，本次不再打开新窗口");
+        if (!ActivateExistingUiWindow())
+            LogInfo("已有设置界面在运行，但没有找到它的窗口（本次不再打开新窗口）");
         return 0;
     }
     try {
