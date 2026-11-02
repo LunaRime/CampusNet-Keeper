@@ -247,8 +247,23 @@ int RunDetect(cnk::AppConfig& cfg) {
         PrintLine("免劫持地址清单:");
         for (const auto& b : bl) PrintLine("  " + b);
         cnk::ProbeTarget t;
-        if (cnk::SelectProbeTarget(bl, t))
+        if (cnk::SelectProbeTarget(bl, t)) {
             PrintLine("建议探测地址: " + t.url + "  （期望正文: " + t.expect + "）");
+            // 清单只说「这些地址免劫持」，**没说它们一定可达**——本网实测 msftncsi
+            // 曾 0/4，照抄进配置就会把「在线」永久判成「离线」。所以这里真的打一次：
+            //   在线 → 可用；被劫持（PortalDetected）→ 也可用（正是触发登录的形态）；
+            //   离线 → 不可用，直接换成内置默认地址，别让用户抄一个坑回去。
+            cnk::Settings probe = cfg.settings;
+            probe.probe_url = t.url;
+            probe.probe_expect = t.expect;
+            const cnk::ProbeResult vr = cnk::ProbeOnce(probe);
+            if (vr.state == cnk::NetState::Offline) {
+                const cnk::ProbeTarget def = cnk::DefaultProbeTarget();
+                PrintLine("  实测不通（" + vr.message + "）→ 不要采用，改用内置地址: " + def.url);
+            } else {
+                PrintLine(std::string("  实测可用（当前判定: ") + StateText(vr.state) + "）");
+            }
+        }
     } else {
         PrintLine("服务器未下发免劫持地址清单");
     }

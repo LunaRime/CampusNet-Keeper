@@ -3,7 +3,6 @@
 #include "core/Encoding.h"
 #include "core/LocalIp.h"
 #include "core/PortalPage.h"
-#include "core/ProbeTarget.h"
 #include "auth/AuthFactory.h"
 #include "auth/Carrier.h"
 #include <atomic>
@@ -101,8 +100,6 @@ struct Scheduler::Impl {
     std::string cached_portal_body;
     std::string cached_portal_url;
     std::string cached_server_header;
-    ProbeTarget target;
-    bool target_resolved = false;
 
     HttpResponse last_probe_response;   // DoProbe 中赋值，DoLogin 读取
 
@@ -257,7 +254,6 @@ struct Scheduler::Impl {
             consecutive_auth_failures = 0;
             backoff_index = 0;
             inuse_logout_count = 0;   // 换了网络环境，"注销无效"的旧结论不再成立
-            target_resolved = false;
             // 地址/网关/ARP 一定变了，下一轮探测重算；AC 复核也重置（换了网就该立刻问一次）
             local_ip.clear();
             local_route = LocalRoute{};
@@ -404,18 +400,15 @@ void Scheduler::Impl::DoProbe() {
     cached_portal_body = DecodeBody(pp.response);
     last_probe_response = pp.response;  // DoLogin 的识别输入 = Portal 页面响应
 
-    // 从门户页面里取运营商与探测地址（仅首次或页面变化时）
-    if (!target_resolved) {
-        std::vector<std::string> blacklist;
-        if (ParseVisitBlacklist(cached_portal_body, blacklist)) {
-            ProbeTarget t;
-            if (SelectProbeTarget(blacklist, t)) {
-                target = t;
-                target_resolved = true;
-                LogInfo("采用服务器下发的探测地址：" + t.url);
-            }
-        }
-    }
+    // 服务器下发的免劫持清单：只作为诊断信息（`--detect` 输出），不自动改探测地址。
+    // 原因（2026-11-02 复核）：
+    //   ① 这段以前的代码是"记一条『采用服务器下发的探测地址』然后继续用旧地址"——
+    //      日志在说谎，实际探测一直用 cfg.settings.probe_url；
+    //   ② 真要采用也不安全：清单只说明"这些地址免劫持"，不等于"一定可达"（本网实测
+    //      msftncsi 曾 0/4）。而自动登录的触发条件是"探测到门户"，若清单里的地址
+    //      在未认证时被 AC 直接黑洞掉，探测就只会得到"离线"，永远走不到登录；
+    //   ③ 换探测地址等于换判定基准，必须带可验证的失败回退才有资格上线。
+    // 需要建议地址时用 `--detect`，那里会真的打一次再给出结论。
 
     DoLogin();
 }
@@ -523,7 +516,6 @@ void Scheduler::ForceReconnect() {
     impl_->total_auth_attempts = 0;
     impl_->consecutive_auth_failures = 0;
     impl_->backoff_index = 0;
-    impl_->target_resolved = false;
     // 用户主动点「立即重连」：AC 复核也立刻重问一次，别让 30 秒节流把第一次判定吃掉
     impl_->last_ac_check = Clock::time_point{};
     impl_->last_ac_verdict = -1;
@@ -537,7 +529,6 @@ void Scheduler::SetConfig(const AppConfig& cfg) {
     impl_->total_auth_attempts = 0;
     impl_->consecutive_auth_failures = 0;
     impl_->backoff_index = 0;
-    impl_->target_resolved = false;
     impl_->probe_immediately.store(true);
     // 换了配置（可能连门户地址都改了）：AC 复核重新问一次
     impl_->last_ac_check = Clock::time_point{};

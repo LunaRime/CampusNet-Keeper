@@ -10,14 +10,18 @@ struct Candidate {
     const char* expect;
 };
 
-// 优先级顺序即数组顺序：先域名型候选（msftncsi / firefox），
-// 再路径型候选作为清单只给路径时的兜底，最后 captive.apple。
+// 优先级顺序即数组顺序。排序依据是**本网实测**（2026-11-02，已认证态各测 2 次）：
+//   captive.apple  200 / 134–204ms  ← 最快，且未认证时会给出可判读的劫持响应
+//   detectportal   200 / ~945ms
+//   msftncsi       200 / ~880ms     ← 历史上曾 0/4 不可达（M1 假失败根因），放最后
+// 注意：清单只说明"这些地址免劫持"，**不保证可达**。所以 Scheduler 不拿它去改探测
+// 地址（见 DoProbe 里的说明），只有 `--detect` 会给建议，且建议前会真的打一次。
 const Candidate kCandidates[] = {
-    {"msftncsi",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
-    {"detectportal",  "http://detectportal.firefox.com/success.txt",   "success"},
-    {"ncsi.txt",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
-    {"success.txt",   "http://detectportal.firefox.com/success.txt",   "success"},
     {"captive.apple", "http://captive.apple.com/hotspot-detect.html",  "Success"},
+    {"detectportal",  "http://detectportal.firefox.com/success.txt",   "success"},
+    {"success.txt",   "http://detectportal.firefox.com/success.txt",   "success"},
+    {"msftncsi",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
+    {"ncsi.txt",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
 };
 
 // 域名/标识符边界匹配：needle 必须位于串首或 '.'、'/' 之后，且后随 '.' 或串尾。

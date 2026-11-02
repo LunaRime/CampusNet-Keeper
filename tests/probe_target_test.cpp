@@ -22,8 +22,10 @@ TEST_CASE("解析实测 loadConfig 的 JSONP 黑名单") {
     CHECK(bl.size() == 15);
     cnk::ProbeTarget t;
     REQUIRE(cnk::SelectProbeTarget(bl, t));
-    CHECK(t.url == "http://www.msftncsi.com/ncsi.txt");
-    CHECK(t.expect == "Microsoft NCSI");
+    // 清单里同时有 msftncsi 与 captive.apple：按实测优先级选 Apple 那页
+    //（2026-11-02 实测 134–204ms；msftncsi 历史上曾 0/4 不可达）
+    CHECK(t.url == "http://captive.apple.com/hotspot-detect.html");
+    CHECK(t.expect == "Success");
     CHECK(t.url.find("connect.rom.miui.com") == std::string::npos);
 }
 
@@ -34,23 +36,31 @@ TEST_CASE("解析 visit_blacklist") {
     CHECK(std::find(bl.begin(), bl.end(), "www.msftncsi.com") != bl.end());
 }
 
-TEST_CASE("优先选中 msftncsi 而非黑名单外地址") {
-    std::vector<std::string> bl;
-    REQUIRE(cnk::ParseVisitBlacklist(kPage, bl));
+TEST_CASE("优先选中实测最快的 captive.apple，而非黑名单外地址") {
+    // 同一份清单里同时给三个候选时，按实测优先级取 Apple 那页
+    std::vector<std::string> bl = {"www.msftncsi.com", "detectportal.firefox.com",
+                                  "captive.apple.com", "ncsi.txt", "success.txt"};
     cnk::ProbeTarget t;
     REQUIRE(cnk::SelectProbeTarget(bl, t));
-    CHECK(t.url.find("www.msftncsi.com") != std::string::npos);
-    CHECK(t.expect == "Microsoft NCSI");
+    CHECK(t.url == "http://captive.apple.com/hotspot-detect.html");
+    CHECK(t.expect == "Success");
     // 关键：绝不能选出 connect.rom.miui.com 之类不在清单内的地址
     CHECK(t.url.find("connect.rom.miui.com") == std::string::npos);
 }
 
-TEST_CASE("无 msftncsi 时回落到 firefox") {
-    std::vector<std::string> bl = {"detectportal.firefox.com", "ncsi.txt"};
+TEST_CASE("清单没有 captive.apple 时按 firefox → msftncsi 回落") {
+    std::vector<std::string> bl;
+    REQUIRE(cnk::ParseVisitBlacklist(kPage, bl));   // kPage 里没有 captive.apple
     cnk::ProbeTarget t;
     REQUIRE(cnk::SelectProbeTarget(bl, t));
     CHECK(t.url.find("detectportal.firefox.com") != std::string::npos);
     CHECK(t.expect == "success");
+
+    // 连 firefox 也没有时，最后才轮到 msftncsi（历史 0/4 不可达，放队尾）
+    cnk::ProbeTarget t2;
+    REQUIRE(cnk::SelectProbeTarget({"www.msftncsi.com"}, t2));
+    CHECK(t2.url.find("www.msftncsi.com") != std::string::npos);
+    CHECK(t2.expect == "Microsoft NCSI");
 }
 
 TEST_CASE("清单为空时返回 false") {
