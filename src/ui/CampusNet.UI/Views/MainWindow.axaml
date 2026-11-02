@@ -187,6 +187,9 @@
             <TextBlock Classes="caption">
               <Run Text="本机 IP："/><Run Text="{Binding LocalIp}"/>
             </TextBlock>
+            <TextBlock Classes="caption" ToolTip.Tip="ARP 未解析 = 网关不代答，属于二层断，重试登录无效">
+              <Run Text="网关："/><Run Text="{Binding GatewayText}"/>
+            </TextBlock>
             <TextBlock Classes="caption">
               <Run Text="上次登录："/><Run Text="{Binding LastSuccessText}"/>
             </TextBlock>

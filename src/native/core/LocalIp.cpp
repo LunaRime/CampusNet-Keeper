@@ -65,6 +65,22 @@ int GatewayArpState(const std::string& gateway) {
 
 }  // namespace
 
+std::string LocalIpForPortal(const std::string& portal_url) {
+    // 先按门户地址取：字面 IP 不查 DNS，域名只有在第一次取值时才解析一次
+    //（调度器缓存结果，只在网络变化后重取）。这样多网卡时取到的正是认证会用的源地址。
+    const std::string direct = LocalIpForUrl(portal_url);
+    if (!direct.empty()) return direct;
+    // 门户地址解析不出来（DNS 挂了 / 没配门户）：退回默认路由。
+    // 宁可给一个"大概是它"的地址，也不要让诊断字段全空。
+    return LocalIpFor("1.1.1.1", 53);
+}
+
+const char* ArpStateName(int gateway_arp) {
+    if (gateway_arp == 1) return "resolved";
+    if (gateway_arp == 0) return "unresolved";
+    return "unknown";
+}
+
 std::string LocalIpFor(const std::string& host, int port) {
     if (host.empty() || port <= 0 || port > 65535) return {};
 
@@ -164,7 +180,16 @@ LocalRoute RouteForUrl(const std::string& url) {
     }
 
     sockaddr_in dest{};
-    if (!ResolveV4(host, port, dest)) return r;
+    if (!ResolveV4(host, port, dest)) {
+        // 解析不了门户主机——这正是 2026-11-01 的现场：门户兼做 DNS，网关一断，
+        // 域名解析和门户一起挂，日志里只剩一句「域名解析失败」，看不出是哪一层。
+        // 退回默认路由（dest=0.0.0.0）问一次：本机地址、网关、网关 ARP 这三样
+        // 恰恰是判层次的关键，不能因为解析失败就整段丢掉。
+        dest = sockaddr_in{};
+        dest.sin_family = AF_INET;
+        dest.sin_addr.s_addr = 0;   // 0 = 交给系统选默认路由
+        if (r.ip.empty()) r.ip = LocalIpFor("1.1.1.1", 53);
+    }
 
     // 问系统：去这个目标会走哪条路由、下一跳是谁。
     // GetBestRoute 已废弃但仍可用（不需要管理员权限，也不会触发流量）。

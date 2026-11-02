@@ -1,6 +1,8 @@
 #include "doctest.h"
 #include "core/Scheduler.h"
+#include "ipc/DaemonCommands.h"
 #include "sim/SimServer.h"
+#include "json.hpp"
 #include <chrono>
 #include <thread>
 
@@ -28,15 +30,37 @@ cnk::AppConfig MakeConfig(const std::string& portal, const std::string& user,
 
 }  // namespace
 
-TEST_CASE("探测在线时进入 Online") {
+TEST_CASE("探测在线时进入 Online，且本机 IP 留在状态里") {
     cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.session_active = true;   // 已有会话：否则 AC 复核会判「会话失效」→ 离线
     std::string err;
-    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+    REQUIRE(srv.Start(o, err));
 
     cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
     sch.ForceReconnect();
     sch.Tick();
     CHECK(sch.State() == cnk::RunState::Online);
+    // get_status.local_ip 此前恒空：没有赋值来源，且在线分支的 ResetCache 还会把它清掉
+    CHECK(sch.LocalIp() == "127.0.0.1");
+    srv.Stop();
+}
+
+TEST_CASE("AC 说不在线时，探测页成功也判离线（DNS 劫持假在线）") {
+    // 2026-10-30 真机形态：探测域名被劫持，AC 会话早没了，探测页却回 200+Success。
+    // 只靠探测会认定"在线"，于是永远不去重连，用户实际打不开任何网页。
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));   // session_active 默认 false
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
+    sch.ForceReconnect();
+    sch.Tick();
+
+    CHECK(sch.State() == cnk::RunState::Disconnected);
+    CHECK(sch.LastMessage().find("认证服务器判定不在线") != std::string::npos);
+    // 判离线后走的是离线分支（3 秒后重探），不该立刻拿账号去撞登录接口
+    CHECK(srv.LoginCount() == 0);
     srv.Stop();
 }
 
@@ -119,10 +143,32 @@ TEST_CASE("从未成功且反复失败时进入 NotCampusNetwork 并停止重试
     srv.Stop();
 }
 
-TEST_CASE("ForceReconnect 立即触发探测而不等待间隔") {
+TEST_CASE("AC 判不在线的结论在节流期内被复用，不会下一轮又判回在线") {
+    // 节流（30 秒问一次 AC）不能把「查不出来」和「明确不在线」混为一谈：
+    // 丢掉结论就会退回只靠出网验证，而那个判据在 DNS 劫持下正是失效的那个。
     cnk::SimServer srv;
     std::string err;
     REQUIRE(srv.Start(cnk::SimOptions{}, err));
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
+    sch.ForceReconnect();
+    sch.Tick();
+    REQUIRE(sch.State() == cnk::RunState::Disconnected);
+
+    // 第二轮：探测页依然回 "Microsoft NCSI"（假在线），AC 本轮不再询问（节流中）
+    std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+    sch.Tick();
+    CHECK(sch.State() == cnk::RunState::Disconnected);
+    CHECK(sch.LastMessage().find("认证服务器判定不在线") != std::string::npos);
+    srv.Stop();
+}
+
+TEST_CASE("ForceReconnect 立即触发探测而不等待间隔") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.session_active = true;
+    std::string err;
+    REQUIRE(srv.Start(o, err));
 
     cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
     cfg.settings.probe_interval_seconds = 3600;  // 一小时内不该再自动探测
@@ -190,8 +236,10 @@ TEST_CASE("裸 302 劫持（无指纹）时抓取门户页识别并完成登录�
 TEST_CASE("网络变更通知会立即触发探测，不等轮询周期") {
     // 对应 Review Focus 第 4 条：睡眠唤醒 / 切换网络后必须立刻探测
     cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.session_active = true;
     std::string err;
-    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+    REQUIRE(srv.Start(o, err));
 
     cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
     cfg.settings.probe_interval_seconds = 3600;  // 一小时内不会自动再探测
@@ -259,5 +307,36 @@ TEST_CASE("僵尸会话（终端已在线但上不了网）会注销后重登") 
 
     CHECK(srv.LogoutCount() >= 1);
     CHECK(sch.State() == cnk::RunState::Online);
+    srv.Stop();
+}
+
+TEST_CASE("get_status 真的带出本机 IP / 网关 / ARP 状态") {
+    // 只测 Scheduler::LocalIp() 不够：界面拿的是 get_status 的 JSON。
+    // 字段名写错、漏拼、被 RedactSecrets 吃掉，函数测试全绿也照样空白
+    //（2026-10-30 的教训：测了函数没测真正发出的报文）。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.session_active = true;
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
+    sch.ForceReconnect();
+    sch.Tick();
+    REQUIRE(sch.State() == cnk::RunState::Online);
+
+    cnk::IpcRequest req;
+    req.id = 1;
+    req.cmd = "get_status";
+    const cnk::IpcResponse resp = cnk::HandleDaemonCommand(req, sch);
+    REQUIRE(resp.ok);
+
+    const nlohmann::json j = nlohmann::json::parse(resp.data_json);
+    CHECK(j["local_ip"] == "127.0.0.1");
+    // 回环没有下一跳：网关为空、ARP 判不出来——但字段必须存在且语义正确，
+    // 否则界面拿不到值会退化成「—」，把「直连」和「没联网」混为一谈。
+    CHECK(j.contains("gateway"));
+    CHECK(j["gateway"] == "");
+    CHECK(j["gateway_arp"] == "unknown");
     srv.Stop();
 }

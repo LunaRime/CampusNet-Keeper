@@ -21,6 +21,26 @@ TEST_CASE("LocalIpForUrl 按 scheme 缺省端口解析认证网址") {
     CHECK(cnk::LocalIpForUrl("not-a-url").empty());
 }
 
+TEST_CASE("LocalIpForPortal：字面 IP 按门户取，不查 DNS") {
+    CHECK(cnk::LocalIpForPortal("http://127.0.0.1:18080/") == "127.0.0.1");
+    CHECK(cnk::LocalIpForPortal("http://127.0.0.1/") == "127.0.0.1");
+}
+
+TEST_CASE("LocalIpForPortal：域名/空串不崩，取不到就退回默认路由") {
+    // 域名先解析一次、解析不出来退回默认路由；具体值取决于运行环境，只断言形态。
+    for (const char* u : {"http://portal.example.com/", "", "not-a-url"}) {
+        const std::string v = cnk::LocalIpForPortal(u);
+        CHECK((v.empty() || v.find('.') != std::string::npos));
+    }
+}
+
+TEST_CASE("ArpStateName 的三态口径") {
+    CHECK(std::string(cnk::ArpStateName(1)) == "resolved");
+    CHECK(std::string(cnk::ArpStateName(0)) == "unresolved");
+    CHECK(std::string(cnk::ArpStateName(-1)) == "unknown");
+    CHECK(std::string(cnk::ArpStateName(42)) == "unknown");  // 非法值不猜
+}
+
 TEST_CASE("ResolveClientIp 优先级：上下文 → 现算 → 默认路由 → 0.0.0.0 兜底") {
     // 上层给了就用上层的
     CHECK(cnk::ResolveClientIp("10.1.2.3", "http://127.0.0.1/") == "10.1.2.3");

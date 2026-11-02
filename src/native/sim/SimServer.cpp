@@ -336,10 +336,14 @@ void SimServer::Impl::HandleClient(SOCKET client) {
     } else if (!opts.disable_new_api && path == "/drcom/chkstatus") {
         // 新式：客户端校园网 IP 探测（实机与门户同源）。真实响应为 JSONP，
         // 模拟器以回环地址作答（客户端仅取 v46ip 透传给登录载荷）。
+        // result 必须与会话状态一致（1=会话在，0=没有）：它是 AC 复核唯一的判据，
+        // 恒回 0 会让"已在线"的客户端被复核成离线。
         content_type = "application/javascript; charset=utf-8";
         resp_body = JsonpWrap(query,
-                              "{\"result\":0,\"v46ip\":\"127.0.0.1\",\"myv6ip\":\"\","
-                              "\"domain\":\"[::]\",\"ss5\":\"127.0.0.1\",\"ss6\":\"127.0.0.1\"}");
+                              std::string("{\"result\":") +
+                                  (logged_in.load() ? "1" : "0") +
+                                  ",\"v46ip\":\"127.0.0.1\",\"myv6ip\":\"\","
+                                  "\"domain\":\"[::]\",\"ss5\":\"127.0.0.1\",\"ss6\":\"127.0.0.1\"}");
     } else if (!opts.disable_new_api && !opts.new_api_login_broken &&
                path == "/eportal/portal/login") {
         // 新式登录（2026-10-16 实测）：params = AES-128-ECB+PKCS7+Base64 的 JSON。
@@ -657,6 +661,9 @@ bool SimServer::Start(const SimOptions& opts, std::string& error) {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 
     impl_->opts = opts;
+    // 「启动时已有会话」是真实环境的常态（用户先手动登录过），也让 chkstatus 的
+    // result 与探测结论保持一致：没有这条，模拟器会同时宣称"在线"和"没会话"。
+    impl_->logged_in.store(opts.session_active);
     impl_->listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (impl_->listen_sock == INVALID_SOCKET) {
         error = "socket() failed";

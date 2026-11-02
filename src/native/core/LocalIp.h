@@ -18,6 +18,18 @@ std::string LocalIpFor(const std::string& host, int port);
 // 解析失败返回空串。
 std::string LocalIpForUrl(const std::string& url);
 
+// 本机在「去往门户」方向上的源地址：
+//   - 门户是字面 IPv4（本部署就是）时按它取值，不查 DNS；
+//   - 门户是域名时解析一次（为的是多网卡下取到认证真正会用的那张网卡的地址）；
+//   - 解析不出来就退回默认路由（UDP connect 到 1.1.1.1:53，不发包）。
+// 取值不贵，但调用方仍应缓存：只在网络环境变化后重取（调度器就是这么做的）。
+// 三种路径都取不到（没插网线 / 没拿到地址 / 无默认路由）返回空串。
+std::string LocalIpForPortal(const std::string& portal_url);
+
+// ARP 状态的展示名：1=已解析→"resolved"，0=未解析→"unresolved"，其余→"unknown"。
+// 界面与 IPC 用它，避免把 1/0/-1 的语义散落到各处再各自解释一遍。
+const char* ArpStateName(int gateway_arp);
+
 // 认证策略用：提交给服务器的客户端 IP（如 wlan_user_ip / ip 字段）。
 // 顺序：上层给的 ctx_local_ip → 按 auth_url 现算 → "0.0.0.0" 兜底。
 // 之所以需要现算：M1 的调度器尚未给 NetContext.local_ip 赋值（历史 TODO），

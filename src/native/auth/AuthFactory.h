@@ -22,4 +22,13 @@ std::unique_ptr<IAuth> CreateAuth(Vendor detected, const Profile& profile);
 LoginResult ClassifyDrcomReply(int code, const std::string& msg,
                                const std::string& ret_code);
 
+// 用认证服务器（AC）的视角复核会话（对应 router 端 ac_says_online）：
+// 探测页 200+"Success" 不证明会话还在——本网 DNS 被劫持时探测域名照样回 Success，
+// 而 AC 那边早已没有这条会话。只有问 AC 自己才分得清。
+//   1 = AC 认为本机在线
+//   0 = AC 明确说不在线（会话失效）
+//  -1 = 查不出来（门户不是 http / 接口不存在 / 超时 / 回包不是 JSONP / 没有 result）
+// 返回 -1 时调用方**不得**据此判离线：非 Dr.COM 部署与临时故障都会落到这里。
+int DrcomAcSessionState(const Profile& p);
+
 }  // namespace cnk

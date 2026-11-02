@@ -5,6 +5,7 @@
 #include "auth/Detector.h"
 #include "core/ConfigForUi.h"
 #include "core/Encoding.h"
+#include "core/LocalIp.h"
 #include "core/Log.h"
 #include "core/Probe.h"
 #include "store/Config.h"
@@ -59,6 +60,11 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
         d["state"] = RunStateName(sch.State());
         d["message"] = sch.LastMessage();
         d["local_ip"] = sch.LocalIp();
+        // 「本机长什么样」的第二、三个字段：网关与它的 ARP 状态。
+        // 只有 local_ip 时，界面无法区分「网关不通（二层断）」和「网关通但认证坏」——
+        // 2026-11-01 那次故障就卡在这个层次上（ARP INCOMPLETE，但地址看起来一切正常）。
+        d["gateway"] = sch.Gateway();
+        d["gateway_arp"] = ArpStateName(sch.GatewayArpState());
         // 真实的"上次登录成功时间"（Scheduler::LastSuccessUnix 一直存在；此前误判为缺失）
         d["last_success"] = sch.LastSuccessUnix();
         return Ok(req, d.dump());

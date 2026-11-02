@@ -38,6 +38,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _state = "unknown";
     [ObservableProperty] private bool _daemonRunning;
     [ObservableProperty] private string _localIp = "—";
+    /// <summary>网关 + 它的 ARP 状态。与「本机 IP」一起才能区分「网关不通」和「认证坏」。</summary>
+    [ObservableProperty] private string _gatewayText = "—";
     [ObservableProperty] private string _lastSuccessText = "从未";
     [ObservableProperty] private bool _showAdvanced;
     [ObservableProperty] private string? _lastError;
@@ -173,6 +175,7 @@ public partial class MainViewModel : ObservableObject
                 State = "offline";
                 StatusText = "守护进程未运行";
                 LocalIp = "—";
+                GatewayText = "—";
                 return;
             }
 
@@ -187,7 +190,9 @@ public partial class MainViewModel : ObservableObject
             var data = status["data"];
             State = data?["state"]?.GetValue<string>() ?? "unknown";
             StatusText = data?["message"]?.GetValue<string>() ?? StateText(State);
-            LocalIp = data?["local_ip"]?.GetValue<string>() ?? "—";
+            LocalIp = OrDash(data?["local_ip"]?.GetValue<string>());
+            GatewayText = FormatGateway(data?["gateway"]?.GetValue<string>(),
+                                        data?["gateway_arp"]?.GetValue<string>());
             LastSuccessText = FormatUnix(data?["last_success"]?.GetValue<long>() ?? 0);
 
             var cfgResp = await _ipc.SendAsync("get_config");
@@ -489,5 +494,24 @@ public partial class MainViewModel : ObservableObject
         if (seconds <= 0) return "从未";
         return DateTimeOffset.FromUnixTimeSeconds(seconds).ToLocalTime()
             .ToString("yyyy-MM-dd HH:mm:ss");
+    }
+
+    /// <summary>空串/空值统一显示为「—」，否则界面上会出现「本机 IP：」后面什么都没有。</summary>
+    private static string OrDash(string? s) => string.IsNullOrEmpty(s) ? "—" : s;
+
+    /// <summary>
+    /// 网关 + ARP 状态。只有 IP 看不出「网关根本不通」：
+    /// ARP 未解析意味着二层断（2026-11-01 真实故障形态），此时重试登录必然无效。
+    /// </summary>
+    private static string FormatGateway(string? gateway, string? arpState)
+    {
+        if (string.IsNullOrEmpty(gateway)) return "—";
+        var arp = arpState switch
+        {
+            "resolved" => "ARP 已解析",
+            "unresolved" => "ARP 未解析，二层可能断",
+            _ => "ARP 未知",
+        };
+        return $"{gateway}（{arp}）";
     }
 }

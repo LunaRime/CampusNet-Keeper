@@ -48,6 +48,15 @@ TEST_CASE("DescribeRoute：有地址但没有下一跳") {
     CHECK(s.find("网关=直连") != std::string::npos);
 }
 
+TEST_CASE("RouteForUrl：主机名解析失败时退回默认路由，不整段丢诊断信息") {
+    // .invalid 是 RFC 2606 保留 TLD，正常情况下必然解析不出来（不依赖外网可达性）。
+    // 关键是：解析失败不等于「没有到门户的路由」，本机地址/网关/ARP 仍应尽力取到——
+    // 2026-11-01 的故障现场就是「门户兼做 DNS，网关一断连域名都解析不了」。
+    const cnk::LocalRoute r = cnk::RouteForUrl("http://portal.invalid/");
+    CHECK((r.ip.empty() || r.ip.find('.') != std::string::npos));
+    CHECK((r.gateway.empty() || r.gateway.find('.') != std::string::npos));
+}
+
 TEST_CASE("DescribeRoute：回环地址单独标注") {
     cnk::LocalRoute r;
     r.ip = "127.0.0.1";

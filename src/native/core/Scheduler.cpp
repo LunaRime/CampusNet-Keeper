@@ -32,6 +32,15 @@ const char* NetStateName(NetState s) {
     }
 }
 
+// AC 复核（第 2 层）只对 Dr.COM 有意义：其它厂商的门户没有 /drcom/chkstatus，
+// 多发一次请求只会白白拖慢探测（接口不存在时自然返回 -1，不干预判定）。
+// vendor="auto" 按 Dr.COM 处理——口径与 IspSuffix 一致，否则本部署（vendor=auto）
+// 永远走不到复核这一步。
+bool WantsAcRecheck(const Profile& p) {
+    if (p.auth_url.empty()) return false;
+    return p.vendor.empty() || p.vendor == "auto" || p.vendor == "drcom";
+}
+
 }  // namespace
 
 const char* RunStateName(RunState s) {
@@ -67,12 +76,23 @@ struct Scheduler::Impl {
     long long last_logout_unix = 0;
 
     Clock::time_point next_probe{};
+    // 上次向 AC（认证服务器）复核会话的结果与时间。探测默认 5 秒一轮，但没必要每 5 秒
+    // 都问一次门户；询问频率对齐 router 端（那边一轮探测 30 秒）。
+    // ⚠ 节流期间必须**复用上次结论**，不能当「查不出来」：AC 说会话没了是确定性结论，
+    // 丢掉它就会在下一轮退回只靠出网验证，把刚判死的会话又判回在线。
+    // 登录成功/网络变更/用户手动重连时无条件失效，避免旧结论压住新状态。
+    Clock::time_point last_ac_check{};
+    int last_ac_verdict = -1;   // -1=未知 1=在线 0=不在线
+    static constexpr int kAcRecheckIntervalSeconds = 30;
     // 由网络监听线程置位、主线程在 Tick 中消费。
     // 跨线程通信只允许经由这两个 atomic（网络线程不得触碰普通成员，防数据竞争）。
     std::atomic<bool> probe_immediately{true};
     std::atomic<bool> network_changed{false};
 
-    std::string local_ip;  // TODO：待接入网卡信息查询（GetAdaptersAddresses）后填充
+    // 本机到门户方向的源地址与下一跳。由 DoProbe 在「结论变化 / 还没有值」时重算，
+    // 供 get_status 与认证载荷使用（此前是永远为空的 TODO，界面「本机 IP」一直是空白）。
+    std::string local_ip;
+    LocalRoute local_route;
     // 上一次写进日志的探测结论（-1 = 还没记过）：只在变化时记一行，避免刷屏
     int last_logged_probe_state = -1;
     // 持续故障（offline/unknown）时上次记下的 message：message 变化也要记——
@@ -87,7 +107,10 @@ struct Scheduler::Impl {
     HttpResponse last_probe_response;   // DoProbe 中赋值，DoLogin 读取
 
     void ResetCache() {
-        local_ip.clear();
+        // 注意：**不**清 local_ip/local_route。它们描述的是"本机长什么样"，
+        // 不是门户页面缓存；在线成功后清掉会让界面本机 IP 永远空白
+        //（这正是此前 get_status.local_ip 恒空的另一半原因）。
+        // 网络环境变化时才该失效，见 Tick 中的 network_changed 分支。
         cached_portal_body.clear();
         cached_portal_url.clear();
         cached_server_header.clear();
@@ -135,6 +158,9 @@ struct Scheduler::Impl {
         consecutive_auth_failures = 0;
         inuse_logout_count = 0;
         backoff_index = 0;
+        // 刚登录成功：AC 那边的会话是新的，旧的复核结论（可能就是「不在线」）必须作废
+        last_ac_verdict = -1;
+        last_ac_check = Clock::time_point{};
         ScheduleNext(cfg.settings.probe_interval_seconds);
         ResetCache();
     }
@@ -232,6 +258,14 @@ struct Scheduler::Impl {
             backoff_index = 0;
             inuse_logout_count = 0;   // 换了网络环境，"注销无效"的旧结论不再成立
             target_resolved = false;
+            // 地址/网关/ARP 一定变了，下一轮探测重算；AC 复核也重置（换了网就该立刻问一次）
+            local_ip.clear();
+            local_route = LocalRoute{};
+            last_ac_check = Clock::time_point{};
+            last_ac_verdict = -1;
+            // 让下一轮探测必定重记一行（含新的本机地址/网关），否则"换了网"在日志里无痕
+            last_logged_probe_state = -1;
+            last_logged_fault_message.clear();
         }
         if (probe_immediately.load() || Clock::now() >= next_probe) {
             probe_immediately.store(false);
@@ -258,23 +292,53 @@ void Scheduler::Impl::DoProbe() {
     const bool state_changed = (int)pr.state != last_logged_probe_state;
     const bool faulting = pr.state == NetState::Offline || pr.state == NetState::Unknown;
     const bool fault_msg_changed = faulting && pr.message != last_logged_fault_message;
+
+    // 门户地址：日志判读、本机地址/网关、AC 复核都走同一个口径
+    const Profile* active = ActiveProfile(cfg);
+    const std::string portal_url =
+        (active && !active->auth_url.empty()) ? active->auth_url : cfg.settings.probe_url;
+
+    // 本机地址：按门户地址取（门户是字面 IP 时不查 DNS），没有值就补一次并缓存。
+    // 此前后台从没给 local_ip 赋过值，get_status 里永远是空串。
+    if (local_ip.empty()) local_ip = LocalIpForPortal(portal_url);
+
+    // 网关/ARP：只在结论变化时问系统。RouteForUrl 要先解析门户主机名，
+    // 域名型门户在 DNS 挂掉时每次都会卡几秒——不能放进每轮探测的必经路径
+    //（2026-11-01 那次故障正是「DNS 和门户一起挂」，每 3 秒一次解析会拖死调度）。
     if (state_changed || fault_msg_changed) {
+        local_route = RouteForUrl(portal_url);
         last_logged_probe_state = (int)pr.state;
         if (faulting) last_logged_fault_message = pr.message;
         // 顺带记下「到门户时本机长什么样」：没有地址 / 链路本地 / 有地址但网关不通，
         // 这三种在日志里必须能区分开，否则"连不上"仍然是个黑盒。
-        const Profile* active = ActiveProfile(cfg);
-        const std::string portal_url =
-            (active && !active->auth_url.empty()) ? active->auth_url : cfg.settings.probe_url;
         LogInfo(std::string("探测结果：") + NetStateName(pr.state) + "（" +
-                RedactSecrets(pr.message) + "）｜" + DescribeRoute(RouteForUrl(portal_url)));
+                RedactSecrets(pr.message) + "）｜" + DescribeRoute(local_route));
     }
 
     if (pr.state == NetState::Online) {
-        // 第三层验证：探测页 200+"Success" 不证明真能出网——DNS 被劫持时探测页照样 200，
-        // 而实际打不开网页（2026-10-30 router 端实测僵尸会话持续 9 小时无人察觉）。
-        // 明确出不了网（有响应但内容不对）才降级离线、触发重连；判不出来维持在线。
-        if (CanReachInternet() == 0) {
+        // 第二层：AC 复核。探测页 200+"Success" 不证明会话还在——本网实测 DNS 被劫持后
+        // 探测域名照样回 Success，而 AC 那边会话早就没了。只有问认证服务器自己才分得清。
+        // 返回 -1（接口不存在/超时/回包异常）时**不干预**判定：否则非 Dr.COM 环境会被
+        // 一律判成断网。节流期内复用上次结论（见 last_ac_verdict 的注释）。
+        int ac = -1;
+        if (active && WantsAcRecheck(*active)) {
+            if (last_ac_check == Clock::time_point{} ||
+                Clock::now() - last_ac_check >=
+                    std::chrono::seconds(kAcRecheckIntervalSeconds)) {
+                last_ac_check = Clock::now();
+                last_ac_verdict = DrcomAcSessionState(*active);
+            }
+            ac = last_ac_verdict;
+        }
+        if (ac == 0) {
+            LogWarn("探测页可通但认证服务器判定不在线（AC 会话多半已失效），按离线处理");
+            pr.state = NetState::Offline;
+            pr.message = "探测页可通但认证服务器判定不在线（疑似会话已失效）";
+            // 落到下面的 Offline 分支
+        } else if (CanReachInternet() == 0) {
+            // 第三层验证：探测页 200+"Success" 不证明真能出网——DNS 被劫持时探测页照样 200，
+            // 而实际打不开网页（2026-10-30 router 端实测僵尸会话持续 9 小时无人察觉）。
+            // 明确出不了网（有响应但内容不对）才降级离线、触发重连；判不出来维持在线。
             LogWarn("探测判在线但实际出不了网（疑似僵尸会话/劫持），降级为离线");
             pr.state = NetState::Offline;
             pr.message = "探测页可通但实际出不了网（疑似僵尸会话）";
@@ -460,6 +524,9 @@ void Scheduler::ForceReconnect() {
     impl_->consecutive_auth_failures = 0;
     impl_->backoff_index = 0;
     impl_->target_resolved = false;
+    // 用户主动点「立即重连」：AC 复核也立刻重问一次，别让 30 秒节流把第一次判定吃掉
+    impl_->last_ac_check = Clock::time_point{};
+    impl_->last_ac_verdict = -1;
 }
 
 void Scheduler::SetConfig(const AppConfig& cfg) {
@@ -472,6 +539,9 @@ void Scheduler::SetConfig(const AppConfig& cfg) {
     impl_->backoff_index = 0;
     impl_->target_resolved = false;
     impl_->probe_immediately.store(true);
+    // 换了配置（可能连门户地址都改了）：AC 复核重新问一次
+    impl_->last_ac_check = Clock::time_point{};
+    impl_->last_ac_verdict = -1;
 }
 
 void Scheduler::NotifyNetworkChanged() {
@@ -485,6 +555,8 @@ void Scheduler::NotifyNetworkChanged() {
 RunState Scheduler::State() const { return impl_->state; }
 std::string Scheduler::LastMessage() const { return impl_->message; }
 std::string Scheduler::LocalIp() const { return impl_->local_ip; }
+std::string Scheduler::Gateway() const { return impl_->local_route.gateway; }
+int Scheduler::GatewayArpState() const { return impl_->local_route.gateway_arp; }
 long long Scheduler::LastSuccessUnix() const { return impl_->last_success; }
 long long Scheduler::LastProbeUnix() const { return impl_->last_probe; }
 int Scheduler::ConsecutiveAuthFailures() const {

@@ -35,7 +35,12 @@ public:
 
     RunState State() const;
     std::string LastMessage() const;
+    // 本机到门户方向的源地址（探测时取，取不到为空）。
     std::string LocalIp() const;
+    // 同一方向的下一跳与它的 ARP 状态（1=已解析 0=未解析 -1=未知）。
+    // 与 local_ip 一起用于把「连不上」区分成二层断 / 三层通但认证坏。
+    std::string Gateway() const;
+    int GatewayArpState() const;
     long long LastSuccessUnix() const;
     long long LastProbeUnix() const;
     int ConsecutiveAuthFailures() const;

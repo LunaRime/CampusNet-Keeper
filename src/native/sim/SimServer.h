@@ -17,6 +17,12 @@ struct SimOptions {
                                     //   /a79.htm，客户端须抓取目标页才能识别）
     std::string redirect_location;  // fail_mode == 3 时返回的 Location 值
 
+    // true=启动时**已存在**一条有效会话（相当于用户已在浏览器里登录过）。
+    // 影响 /drcom/chkstatus 的 result：有会话回 1、没会话回 0。
+    // 为什么必须有它：AC 复核会把"探测页成功但 AC 说没会话"判成离线，
+    // 而这恰恰是真实网络里不可能出现的组合（探测页成功 ⇒ 会话必然在）。
+    bool session_active = false;
+
     // true=整个新式 API 都不注册（/drcom/chkstatus、/eportal/portal/page/loadConfig、
     // /eportal/portal/login 一律 404），用于测试客户端「新式接口不存在 → 回退老式协议」
     // 的路径（此时回退通道是唯一依据，其判定应当被采信）。

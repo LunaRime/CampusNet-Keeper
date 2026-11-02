@@ -444,3 +444,31 @@ TEST_CASE("Dr.COM 应答分类：英文 inuse 变体判「终端已在线」，�
     CHECK_FALSE(ClassifyDrcomReply(0, "inuse, account not exist", "1").terminal_online);
     CHECK_FALSE(ClassifyDrcomReply(0, "inuse: invalid session", "1").success);
 }
+
+TEST_CASE("AC 复核：会话在=1 / 不在=0 / 查不出来=-1") {
+    std::string err;
+
+    // 没有会话：result=0 → 明确判「不在线」
+    cnk::SimServer srv;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+    const auto p = MakeProfile(srv.BaseUrl(), "u", "p", "campus");
+    CHECK(cnk::DrcomAcSessionState(p) == 0);
+
+    // 已有会话（用户先在浏览器里登录过）：result=1 → 在线
+    cnk::SimOptions o2;
+    o2.session_active = true;
+    srv.Stop();
+    REQUIRE(srv.Start(o2, err));
+    CHECK(cnk::DrcomAcSessionState(MakeProfile(srv.BaseUrl(), "u", "p", "campus")) == 1);
+    srv.Stop();
+
+    // 查不出来必须回 -1（不能回 0）：非 Dr.COM / 门户改版 / 配错地址都会走到这里，
+    // 回 0 会让调度器把本来正常的网络判成断网并反复重登。
+    cnk::Profile bad_scheme = p;
+    bad_scheme.auth_url = "ftp://127.0.0.1/";
+    CHECK(cnk::DrcomAcSessionState(bad_scheme) == -1);
+
+    cnk::Profile no_url = p;
+    no_url.auth_url.clear();
+    CHECK(cnk::DrcomAcSessionState(no_url) == -1);
+}

@@ -588,6 +588,65 @@ LoginResult ClassifyDrcomReply(int code, const std::string& msg,
     return r;
 }
 
+int DrcomAcSessionState(const Profile& p) {
+    if (p.auth_url.empty()) return -1;
+
+    std::string scheme_host, own_port;
+    if (!SplitHostPort(p.auth_url, scheme_host, own_port, "")) return -1;
+    // 只对 http(s) 门户发这条请求：别的 scheme 连"发得出去"都谈不上，
+    // 直接判「查不出来」，别让它去猜端口、猜协议。
+    if (scheme_host.compare(0, 5, "http:") != 0 &&
+        scheme_host.compare(0, 6, "https:") != 0)
+        return -1;
+    const std::string origin = scheme_host + (own_port.empty() ? "" : ":" + own_port);
+
+    // 认证服务器自己怎么看这条会话（对应 router 端 ac_says_online）。
+    // 注意这不是登录：不带凭据、不改会话，只是问一句"我这个 IP 还认不认"。
+    HttpRequest req;
+    req.method = "GET";
+    req.timeout_ms = 4000;   // 局域网内通常 <100ms；超时就当"查不出来"
+    req.follow_redirects = false;
+    req.url = origin + "/drcom/chkstatus?callback=cnkwd&jsVersion=4.X&lang=zh";
+
+    HttpResponse resp;
+    std::string err;
+    if (!HttpPerform(req, resp, err)) {
+        LogDebug("AC 复核：请求失败（" + err + "）");
+        return -1;
+    }
+    if (resp.status != 200) {
+        LogDebug("AC 复核：HTTP " + std::to_string(resp.status));
+        return -1;
+    }
+
+    // 任何一步解析不出来都返回 -1（查不出来），**绝不**据此判离线：
+    // 非 Dr.COM 部署、门户改版、临时超时都会走到这里，误判离线等于凭空断网。
+    nlohmann::json j;
+    if (!ParseJsonp(resp.body, j)) {
+        LogDebug("AC 复核：回包不是 JSONP（该部署多半不是 Dr.COM）");
+        return -1;
+    }
+    int code = -1;
+    try {
+        if (j.contains("result")) {
+            if (j["result"].is_number()) code = j["result"].get<int>();
+            else if (j["result"].is_string())
+                code = std::atoi(j["result"].get<std::string>().c_str());
+        }
+    } catch (...) {
+        return -1;
+    }
+    if (code < 0) {
+        LogDebug("AC 复核：回包里取不到 result 字段");
+        return -1;
+    }
+
+    const int verdict = (code == 1) ? 1 : 0;
+    LogDebug("AC 复核：result=" + std::to_string(code) + " → " +
+             (verdict == 1 ? "在线" : "不在线"));
+    return verdict;
+}
+
 std::unique_ptr<IAuth> MakeDrcomAuth() { return std::make_unique<DrcomAuth>(); }
 
 }  // namespace cnk
