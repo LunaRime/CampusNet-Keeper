@@ -817,6 +817,8 @@ static int run_daemon(Config *c) {
              * 后者在二层，登录再多次也无效（2026-11-01 实测循环 6 次全败），
              * 只有软拔插能恢复 —— 只重探不分层，就是用户遇到的那种假死。 */
             log_write(LOG_WARN, "连续 %d 次离线，先判故障层次（不再干等）", thr);
+            /* 取证：动手前回放 AC 复核历史 + 现场再问一次，定位「会话被回收」根因 */
+            ac_forensics_dump(c);
             if (handle_link_down(c)) continue;   /* 已软拔插，直接进下一轮探测 */
             log_write(LOG_WARN, "层次判定：属认证问题，主动尝试登录");
         }

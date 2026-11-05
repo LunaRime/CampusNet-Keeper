@@ -179,6 +179,14 @@ typedef struct {
 ProbeResult probe_once(const Config *c);
 const char *net_state_name(NetState s);
 
+/* AC（Dr.COM）复核的取证：记录最近若干次 chkstatus 的关键字段（result / olmac / ss1 /
+ * oltime / v4ip），离线动手前 dump 出来，用于定位「会话被频繁回收」的根因。
+ * 三种根因的指纹：
+ *   · 会话到期      → result 从 1 突变 0，oltime 复位；
+ *   · MAC 绑定冲突   → olmac（当前在线 MAC）与 ss1（历史绑定 MAC）对不上或突变；
+ *   · 共享封禁/黑洞   → result 一直 1、字段不变，但出网/门户/AC 突然全部不可达。 */
+void ac_forensics_dump(const Config *c);
+
 /* ---------------- 登录 ---------------- */
 typedef struct {
     int  ok;

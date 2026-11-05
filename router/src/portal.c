@@ -219,6 +219,97 @@ const char *net_state_name(NetState s) {
     }
 }
 
+/* ---------------- AC 复核取证（2026-11-05 新增） ----------------
+ *
+ * 背景：AC 会话被频繁回收，但「回收」只表现为「DNS 解析失败 + 门户连接超时」
+ * （AC 把整个 IP 黑洞了，而 DNS 服务器恰是 AC 自己）。要从日志定位根因，
+ * 需要在 AC 视角还正常时持续留快照，等离线时回放，看 AC 是哪种死法：
+ *   · 会话到期      → result 从 1 突变 0、oltime 复位；
+ *   · MAC 绑定冲突   → olmac（当前在线 MAC）与 ss1（历史绑定 MAC）对不上或突变；
+ *   · 共享封禁/黑洞   → result 一直 1、字段纹丝不动，但转发面突然全断。
+ *
+ * 实现：环形缓冲保留最近 N 次「成功解析出 result」的 chkstatus 快照（result 是 0
+ * 还是 1 都留——0 正是"会话被回收"的关键指纹）。请求失败/取不到 result 的则不留：
+ * 那类回包没有有效字段，塞进历史反而污染「AC 正常时是什么样」的对照基线。
+ * 离线现场由 ac_forensics_dump 里再打一次 chkstatus 补全（成败都留痕）。 */
+#define AC_FORENSIC_MAX 8
+
+typedef struct {
+    time_t ts;
+    long   result;
+    char   olmac[24];
+    char   ss1[24];
+    char   v4ip[64];
+    long   oltime;
+} AcForensicEntry;
+
+static AcForensicEntry g_ac_hist[AC_FORENSIC_MAX];
+static int g_ac_hist_n   = 0;   /* 已存条数（0..MAX） */
+static int g_ac_hist_pos = 0;   /* 下一条写入位置 */
+
+static void ac_hist_push(long result, const char *body) {
+    AcForensicEntry *e = &g_ac_hist[g_ac_hist_pos];
+    memset(e, 0, sizeof *e);
+    e->ts = time(NULL);
+    e->result = result;
+    e->oltime = -1;
+    if (body) {
+        if (!json_find_str(body, "olmac", e->olmac, sizeof e->olmac)) e->olmac[0] = '\0';
+        if (!json_find_str(body, "ss1", e->ss1, sizeof e->ss1))       e->ss1[0] = '\0';
+        if (!json_find_str(body, "v4ip", e->v4ip, sizeof e->v4ip))    e->v4ip[0] = '\0';
+        { long t = -1; if (json_find_int(body, "oltime", &t)) e->oltime = t; }
+    }
+    g_ac_hist_pos = (g_ac_hist_pos + 1) % AC_FORENSIC_MAX;
+    if (g_ac_hist_n < AC_FORENSIC_MAX) ++g_ac_hist_n;
+}
+
+static void fmt_hmstime(time_t t, char *out, size_t cap) {
+    struct tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    strftime(out, cap, "%H:%M:%S", &tmv);
+}
+
+/* 前置声明：ac_says_online 定义在本文件更下方（与探测判定放一起） */
+static int ac_says_online(const Config *c);
+
+void ac_forensics_dump(const Config *c) {
+    int i, n = 0;
+    char tbuf[16];
+
+    log_write(LOG_INFO, "【取证】AC 复核历史（最近 %d 次，最旧→最新）：", g_ac_hist_n);
+    for (i = 0; i < g_ac_hist_n; ++i) {
+        int idx = (g_ac_hist_pos - g_ac_hist_n + i + AC_FORENSIC_MAX) % AC_FORENSIC_MAX;
+        const AcForensicEntry *e = &g_ac_hist[idx];
+        fmt_hmstime(e->ts, tbuf, sizeof tbuf);
+        log_write(LOG_INFO,
+                  "  #%d %s result=%ld olmac=%s ss1=%s v4ip=%s oltime=%ld",
+                  i + 1, tbuf, e->result,
+                  e->olmac[0] ? e->olmac : "-",
+                  e->ss1[0] ? e->ss1 : "-",
+                  e->v4ip[0] ? e->v4ip : "-",
+                  e->oltime);
+        ++n;
+    }
+    if (n == 0) log_write(LOG_INFO, "  （无历史快照）");
+
+    /* 现场再打一次 chkstatus，看「此刻 AC 还认不认」——这是区分
+     * 「AC 主动踢（还能连、result=0）」vs「AC 黑洞（连不上）」的关键。
+     * 结论用 WARN 打出（不依赖 DBG 级别），保证取证结果一定可见。 */
+    {
+        int now = ac_says_online(c);
+        if (now == 1)
+            log_write(LOG_WARN, "【取证】现场 AC 复核：仍认为在线 → 转发面失效（僵尸会话/黑洞），非会话到期");
+        else if (now == 0)
+            log_write(LOG_WARN, "【取证】现场 AC 复核：明确不在线 → 会话已被 AC 主动回收（到期/被踢）");
+        else
+            log_write(LOG_WARN, "【取证】现场 AC 复核：查不出 → AC 不可达（连 chkstatus 都不响应，疑似整段黑洞）");
+    }
+}
+
 /* 用认证服务器（AC）的视角复核本机是否在线。
  *
  * 为什么需要：2026-10-30 实测，本网把 captive.apple.com **DNS 劫持**到了
@@ -258,6 +349,7 @@ static int ac_says_online(const Config *c) {
         verdict = (code == 1) ? 1 : 0;
         log_write(LOG_DBG, "AC 复核：result=%ld → %s", code,
                   verdict == 1 ? "在线" : "不在线");
+        ac_hist_push(code, resp.body);   /* 取证快照：无论 0/1 都留 */
     } else {
         log_write(LOG_DBG, "AC 复核：回包里取不到 result 字段");
     }
