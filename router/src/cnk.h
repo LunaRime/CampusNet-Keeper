@@ -178,6 +178,10 @@ typedef struct {
 
 ProbeResult probe_once(const Config *c);
 const char *net_state_name(NetState s);
+/* 设置「持续在线静默」标志：置 1 后，probe 里「一切正常」的 DEBUG 日志
+ * （AC 复核 result=1、出网验证通过）不再逐轮打印；异常（请求失败、result=0、
+ * 内容不符）照常打。用途：探测间隔降到 10s 后，持续在线时避免每轮刷屏。 */
+void probe_set_quiet(int q);
 
 /* AC（Dr.COM）复核的取证：记录最近若干次 chkstatus 的关键字段（result / olmac / ss1 /
  * oltime / v4ip），离线动手前 dump 出来，用于定位「会话被频繁回收」的根因。

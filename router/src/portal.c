@@ -310,6 +310,14 @@ void ac_forensics_dump(const Config *c) {
     }
 }
 
+/* 「持续在线静默」标志：探测间隔降到 10s 后，在线时每轮都会打
+ * 「AC 复核 result=1」「出网验证 204 通」「在线：正文匹配预期标识」三条一模一样的日志，
+ * 10 秒一轮 ≈ 26 KB/天 × 纯重复。置 1 后只静默「一切正常」的那几条，异常照打。
+ * 由 run_daemon 在进入持续在线时置 1、发生状态变化时清零。 */
+static int g_probe_quiet = 0;
+
+void probe_set_quiet(int q) { g_probe_quiet = q ? 1 : 0; }
+
 /* 用认证服务器（AC）的视角复核本机是否在线。
  *
  * 为什么需要：2026-10-30 实测，本网把 captive.apple.com **DNS 劫持**到了
@@ -347,9 +355,10 @@ static int ac_says_online(const Config *c) {
         /* json_find_int 成功返回 1、失败返回 0 —— 这里千万别写成 == 0
          * （第一版就写反了，结果永远拿不到结果，一路降级成"复核不可用"） */
         verdict = (code == 1) ? 1 : 0;
-        log_write(LOG_DBG, "AC 复核：result=%ld → %s", code,
-                  verdict == 1 ? "在线" : "不在线");
-        ac_hist_push(code, resp.body);   /* 取证快照：无论 0/1 都留 */
+        if (!g_probe_quiet)
+            log_write(LOG_DBG, "AC 复核：result=%ld → %s", code,
+                      verdict == 1 ? "在线" : "不在线");
+        ac_hist_push(code, resp.body);   /* 取证快照：无论 0/1 都留（静默也要留） */
     } else {
         log_write(LOG_DBG, "AC 复核：回包里取不到 result 字段");
     }
@@ -392,7 +401,8 @@ static int can_reach_internet(const Config *c) {
 
         if (resp.status == 204 ||
             (resp.status == 200 && resp.body && has(resp.body, "User-agent"))) {
-            log_write(LOG_DBG, "出网验证：%s → HTTP %d 通", urls[i], resp.status);
+            if (!g_probe_quiet)
+                log_write(LOG_DBG, "出网验证：%s → HTTP %d 通", urls[i], resp.status);
             http_resp_free(&resp);
             return 1;
         }

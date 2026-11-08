@@ -738,6 +738,7 @@ static int handle_link_down(const Config *c) {
 static int run_daemon(Config *c) {
     static const int backoff[] = {15, 30, 60, 120, 300};
     int bidx = 0, total = 0, ever_ok = 0, stopped = 0, offline_streak = 0;
+    int was_online = 0;   /* 上一轮是否在线：用于只在状态切换时打日志 */
 
     log_write(LOG_INFO, "cnkrouter %s 启动：账号=%s 认证地址=%s 探测间隔=%ds",
               CNK_VERSION, masked_account(c), c->auth_url, c->probe_interval);
@@ -763,10 +764,15 @@ static int run_daemon(Config *c) {
 
         if (pr.state == NET_ONLINE) {
             if (stopped) log_write(LOG_INFO, "网络已恢复，解除停止状态");
-            if (!ever_ok) log_write(LOG_INFO, "网络在线：%s", pr.message);
-            /* 提到 INFO：默认级别下也能看到每次探测（每行 ~60 字节，
-             * 60 秒一次 ≈ 86 KB/天，256 KB 轮转足够撑 3 天） */
-            else log_write(LOG_INFO, "在线：%s", pr.message);
+            /* 只在状态切换时打一条：首次在线 / 从离线恢复在线各一条。
+             * 持续在线（was_online==1）静默 —— 探测间隔降到 10s 后，
+             * 若每轮都打「在线」会是 26 KB/天的纯重复。 */
+            if (!ever_ok)
+                log_write(LOG_INFO, "网络在线：%s", pr.message);
+            else if (!was_online)
+                log_write(LOG_INFO, "已恢复在线：%s", pr.message);
+            was_online = 1;
+            probe_set_quiet(1);   /* 下一轮若仍在线，AC 复核/出网验证的 DEBUG 也静默 */
             ever_ok = 1;
             stopped = 0;
             total = 0;
@@ -775,6 +781,10 @@ static int run_daemon(Config *c) {
             sleep_slices(c->probe_interval * 1000);
             continue;
         }
+
+        /* 不在线：关闭静默，恢复详细日志，便于观察后续处置 */
+        was_online = 0;
+        probe_set_quiet(0);
 
         if (stopped) {                      /* 终止态：低频巡检 */
             sleep_slices(60000);
