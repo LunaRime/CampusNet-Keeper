@@ -1,0 +1,95 @@
+#!/bin/sh
+# cnk-traffic —— 记录每台 LAN 设备的上传/下载流量（nftables counter）
+#
+# 为什么用 nft 而不是 conntrack：/proc/net/nf_conntrack 是「连接级」的，
+# 连接一关条目就没了，短连接（网页、DNS）的流量会漏算；而且它是累计字节、
+# 不是「这段时间用了多少」。nftables 的 counter 在 forward 链上按设备 IP
+# 精确累计字节数，是数据面统计，不漏。
+#
+# 方案：每台 LAN 设备建两个 named counter：
+#   c_<IP>_u —— 上行（设备发往 WAN，forward 链 ip saddr <IP>）
+#   c_<IP>_d —— 下行（WAN 发往设备，forward 链 ip daddr <IP>）
+# 每次采样读累计值，减去上次存的累计值 = 这段时间的增量，写日志。
+# 计数器名必须以字母开头（nft 不接受数字开头的标识符），故前缀 c_。
+#
+# 幂等与防重复：
+#   - `create counter` 已存在会报 File exists（忽略）→ counter 对象只建一次；
+#   - `flush chain` 清空规则但**不清零 named counter 的累计值**（实测），
+#     所以每次采样先 flush 再重建规则，规则永远不重复、也不会 double count。
+#
+# 日志：$TRAFFIC_DIR/YYYY-MM-DD.log，每行
+#   HH:MM:SS <主机名> <IP> up=<字节> dn=<字节>
+# 状态（上次累计值）存在 $TRAFFIC_DIR/state，纯 ASCII，重启不丢。
+#
+# 清理：日志保留 $KEEP_DAYS 天（默认 3，独立于主日志的 7 天）。
+# 由 cron 每 5 分钟调一次：*/5 * * * * /usr/bin/cnk-traffic
+
+TRAFFIC_DIR=${TRAFFIC_DIR:-/mnt/data/log/cnkrouter/traffic}
+KEEP_DAYS=${KEEP_DAYS:-3}
+TABLE=cnkstat
+CHAIN=statfwd          # ⚠ 不能叫 fwd —— 那是 nft 的保留字（forward 方向）
+STATE="$TRAFFIC_DIR/state"
+LEASE=/tmp/dhcp.leases
+
+mkdir -p "$TRAFFIC_DIR" 2>/dev/null || exit 0
+[ -f "$LEASE" ] || exit 0
+[ -f "$STATE" ] || : > "$STATE"    # 首次运行建立空状态文件
+
+# 建表/链（已存在会报错，忽略即可）
+nft add table inet $TABLE 2>/dev/null
+nft add chain inet $TABLE $CHAIN '{ type filter hook forward priority 0; policy accept; }' 2>/dev/null
+
+# IP → 计数器合法名（前缀 c_ + 点转下划线）
+cnt_name() { echo "c_$(echo "$1" | tr '.' '_')"; }
+
+today=$(date +%F)
+now=$(date +%H:%M:%S)
+logfile="$TRAFFIC_DIR/$today.log"
+
+# 先 flush 掉上一轮的规则（named counter 值保留，不清零）
+nft flush chain inet $TABLE $CHAIN 2>/dev/null
+
+# 逐台设备：建 counter、加规则、读累计、算增量
+while read -r _ _ ip host _; do
+    [ -n "$ip" ] || continue
+    up=$(cnt_name "$ip")_u
+    dn=$(cnt_name "$ip")_d
+
+    nft create counter inet $TABLE "$up" 2>/dev/null
+    nft create counter inet $TABLE "$dn" 2>/dev/null
+    nft add rule inet $TABLE $CHAIN ip saddr "$ip" counter name "$up" 2>/dev/null
+    nft add rule inet $TABLE $CHAIN ip daddr "$ip" counter name "$dn" 2>/dev/null
+
+    # 读当前累计字节（counter 行形如 "packets N bytes M"，取第 4 列 = M）
+    cur_up=$(nft list table inet $TABLE 2>/dev/null | awk -v c="$up" '
+        $0 ~ "counter " c " {" { f=1; next }
+        f && /bytes/ { print $4; exit }')
+    cur_dn=$(nft list table inet $TABLE 2>/dev/null | awk -v c="$dn" '
+        $0 ~ "counter " c " {" { f=1; next }
+        f && /bytes/ { print $4; exit }')
+    cur_up=${cur_up:-0}; cur_up=$((cur_up))
+    cur_dn=${cur_dn:-0}; cur_dn=$((cur_dn))
+
+    # 上次累计值
+    prev_line=$(awk -v k="$ip" '$1==k { print $2, $3 }' "$STATE")
+    if [ -n "$prev_line" ]; then
+        prev_up=$(echo "$prev_line" | awk '{print $1}')
+        prev_dn=$(echo "$prev_line" | awk '{print $2}')
+        inc_up=$((cur_up - prev_up))
+        inc_dn=$((cur_dn - prev_dn))
+        [ "$inc_up" -lt 0 ] && inc_up=0
+        [ "$inc_dn" -lt 0 ] && inc_dn=0
+        echo "$now $host $ip up=$inc_up dn=$inc_dn" >> "$logfile"
+    fi
+
+    # 更新状态（写临时再原子替换）
+    {
+        awk -v k="$ip" '$1 != k { print }' "$STATE"
+        echo "$ip $cur_up $cur_dn"
+    } > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
+done < "$LEASE"
+
+# 清理超过 KEEP_DAYS 天的旧日志（busybox find 无 -delete，用 -exec rm）
+find "$TRAFFIC_DIR" -maxdepth 1 -name '*.log' -mtime +"$KEEP_DAYS" -exec rm -f {} + 2>/dev/null
+
+exit 0

@@ -53,6 +53,7 @@ define Package/cnkrouter/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/cnkrouter $(1)/usr/bin/cnkrouter
 	$(INSTALL_BIN) ./files/usr/bin/cnk-cleanup $(1)/usr/bin/cnk-cleanup
+	$(INSTALL_BIN) ./files/usr/bin/cnk-traffic $(1)/usr/bin/cnk-traffic
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/cnkrouter $(1)/etc/init.d/cnkrouter
 	$(INSTALL_DIR) $(1)/etc/config
