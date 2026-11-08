@@ -127,7 +127,17 @@ jobs:
           ./build-ci/cnkrouter --selftest
           python3 tests/e2e_test.py ./build-ci/cnkrouter
 
+      - name: 恢复 OpenWrt SDK 缓存
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          # 解压后的工具链约 1 GB，缓存到 ~/openwrt-sdk（runner 用户可写，无需 sudo）。
+          # key 按 SDK 版本写死：SDK 升级时改这里的版本号即可让缓存自动失效。
+          path: ~/openwrt-sdk
+          key: openwrt-sdk-24.10.4-qualcommax-ipq807x-musl-v1
+
       - name: 下载 OpenWrt SDK（取 aarch64-musl 工具链）
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
         run: |
           # 为什么是 SDK：
           #  - musl.cc 从 runner 连不上（curl: (28) 443 超时 135s，2026-10-29 实测）
@@ -136,17 +146,19 @@ jobs:
           #    与路由器上的 libc 同源，最不容易出"库里那点差异"的怪问题。
           # target 用 ipq807x 只是"最近的 aarch64 官方 target"：我们的产物是**纯静态**
           # 二进制，不挑 subtarget（真机是 Kwrt 24.10.4 / qualcommax / ipq60xx）。
+          # 210 MB 从 downloads.openwrt.org 现下常慢到 20 分钟（2026-11-08 实测），
+          # 所以只在上方缓存未命中时才下这一次，之后由 actions/cache 命中秒恢复。
           sudo apt-get update -qq && sudo apt-get install -y -qq zstd
           URL=https://downloads.openwrt.org/releases/24.10.4/targets/qualcommax/ipq807x/openwrt-sdk-24.10.4-qualcommax-ipq807x_gcc-13.3.0_musl.Linux-x86_64.tar.zst
           curl -fsSL -o /tmp/sdk.tar.zst "$URL"
-          sudo mkdir -p /opt/sdk
-          sudo tar --zstd -xf /tmp/sdk.tar.zst -C /opt/sdk --strip-components=1
-          ls /opt/sdk/staging_dir/
+          mkdir -p "$HOME/openwrt-sdk"
+          tar --zstd -xf /tmp/sdk.tar.zst -C "$HOME/openwrt-sdk" --strip-components=1
+          ls "$HOME/openwrt-sdk/staging_dir/"
 
       - name: 交叉编译（静态，不依赖路由器 libc）
         run: |
           cd router
-          GCC=$(ls /opt/sdk/staging_dir/toolchain-*/bin/aarch64-*-gcc | head -1)
+          GCC=$(ls "$HOME/openwrt-sdk/staging_dir/toolchain-*/bin/aarch64-*-gcc" | head -1)
           echo "工具链: $GCC"
           make OUT=build-aarch64 CC="$GCC" STATIC=1
           file build-aarch64/cnkrouter
