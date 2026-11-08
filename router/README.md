@@ -29,7 +29,7 @@
 | LuCI 页面（只在打开时） | 4 – 8 MB |
 
 因此：**64 MB = 能跑（别装 LuCI 或只用精简固件）；128 MB = 舒服（够跑基础伪装）；
-256 MB = 想上 UA3F 就往这走**（UA3F 单项常驻 45.6 MB，见第五节）。
+256 MB = 想上 UA3F 就往这走**（UA3F 单项常驻 45.6 MB，见第六节）。
 
 > 内存数字的来路：客户端全部用固定缓冲区，循环里不做堆分配，静态数据只有几张
 > AES 表（约 1 KB）；Linux/musl 下 RSS 通常 2–4 MB（大头是 libc 的共享页）。
@@ -37,7 +37,7 @@
 > 不代表路由器上的占用。若你有更精确的 `busybox top` 数据，以实测为准。
 Flash 才是硬门槛：**8 MB 的机器装不下 LuCI + 额外包，务必选 ≥16 MB 的型号。**
 
-CPU 不用考虑：每 60 秒 3 个 HTTP GET + 一次 320 字节 AES，MIPS 580 MHz 上耗时 < 5 ms。
+CPU 不用考虑：每 30 秒一轮探测（3 个 HTTP GET + 一次 320 字节 AES），MIPS 580 MHz 上耗时 < 5 ms。
 
 ### 挑机器只看三行
 
@@ -165,7 +165,7 @@ RAM 414 MB、overlay 1.9 G。WAN 为 DHCP（校园网下发私网段），LAN �
 ### 交叉编译（本机无 gcc，走 CI）
 
 `.github/workflows/ci.yml` 的 `router` job 会自动产出 **aarch64-musl 纯静态**二进制
-（`733 KB`，`readelf -d` 无 NEEDED）。工具链来自 **OpenWrt 官方 SDK**：
+（`852 KB`，`readelf -d` 无 NEEDED）。工具链来自 **OpenWrt 官方 SDK**：
 
 ```sh
 # musl.cc 从 GitHub runner 连不上（curl 28 超时），zig 的 Releases 只有源码包，
@@ -196,7 +196,7 @@ scp 不适用时用 exec + base64 分块：见仓库 build/.rput.py（本地工�
 | `--probe` | `online 正文匹配预期标识`，退出码 0 |
 | 常驻内存 | **VSZ 284 KB**（ps 的 VSZ 列；RSS 更低） |
 | 启动到稳定 | 秒级；日志只有两行（启动参数 + 网络在线） |
-| 在线时行为 | **只巡检、不登录**（60 s 一次），对现有会话零干扰 |
+| 在线时行为 | **只巡检、不登录**（探测间隔可配，默认 30 s；本机部署 10 s），对现有会话零干扰 |
 | 断网恢复 | 由 `hotplug` 在 `wan ifup` 后 restart，恢复时间从"最多 5 分钟"压到秒级 |
 
 ### 三个真机才暴露的坑
@@ -317,19 +317,55 @@ UA3F 能改 HTTPS，靠的是**自己做 MITM**：生成一张 CA，**每台设�
 
 ---
 
-## 七、已知限制
+## 七、运维脚本与诊断（2026-11 新增）
+
+### cnk-traffic —— 按设备统计上下行流量
+
+记录家里每台设备用了多少流量，用 **nftables named counter** 在 forward 链按 LAN 设备 IP
+精确统计字节数（不用 conntrack：那是连接级、短连接会漏算）。
+
+```sh
+# cron 每 5 分钟采样一次（随 ipk 安装，也可手工注册）
+*/5 * * * * /usr/bin/cnk-traffic
+
+# 看今天的流量
+cat /mnt/data/log/cnkrouter/traffic/$(date +%F).log
+```
+
+日志每行：`HH:MM:SS <主机名> <IP> up=<字节> dn=<字节>`（主机名取自 DHCP 租约，新设备自动出现）。
+增量 = 本次累计 − 上次累计，累计值存在同目录 `state`。日志**保留 3 天**（独立于主日志的 7 天）。
+
+### cnk-cleanup —— 旧日志清理
+
+cron 每天 4 点跑 `cnk-cleanup 7`，清理 `/mnt/data/log/cnkrouter` **顶层**的 `*.log`（`-maxdepth 1`），
+不递归、不碰 `traffic/` 子目录（那归 cnk-traffic 自己清）。
+
+### 会话回收取证
+
+AC 偶发把路由器 WAN IP 的转发面黑洞（表现为手机/电脑「加载 5~7 秒才恢复」，DNS 服务器就是 AC 自己，
+一黑洞 DNS+门户一起挂）。客户端内置了取证：离线判层前回放最近 8 次 chkstatus 快照 + 现场再问一次 AC。
+
+```sh
+grep -A 12 "【取证】AC 复核历史" /mnt/data/log/cnkrouter/$(date +%F).log
+```
+
+三种死法：`result 1→0` = 会话到期；`olmac/ss1` 突变 = MAC 绑定冲突；字段纹丝不动但转发面断 = 共享封禁/黑洞。
+
+---
+
+## 八、已知限制
 
 | 限制 | 说明 |
 |---|---|
 | 只实现 Dr.COM | 锐捷 / 深澜 / 通用表单在 Windows 版里有，本目录未移植 |
 | 只支持 `http://` 门户 | 本实现不带 TLS；https 门户需另加 mbedTLS（Flash +~200 KB，RAM +~1 MB） |
-| 无 UDP 心跳 | 本部署实测不需要（会话由 AC 按活跃度维持，每 60 秒的探测就是保活）；若某部署要求 20 秒 UDP 心跳，需另行移植 |
+| 无 UDP 心跳 | 本部署实测不需要（会话由 AC 按活跃度维持，每轮探测就是保活）；若某部署要求 20 秒 UDP 心跳，需另行移植 |
 | 验证码 / 二次验证 | 无法自动通过 |
 | 门户改版 | 端点或字段变了就要跟着改（改 `src/portal.c`） |
 
 ---
 
-## 八、目录
+## 九、目录
 
 ```
 router/
@@ -342,11 +378,14 @@ router/
 │   ├── aes_crosscheck.cpp  与主项目 BCrypt 实现逐字节比对（Windows 上跑）
 │   └── e2e_test.py         本地模拟门户，**真的解密 params 并逐字段断言**
 ├── packaging/openwrt/   ipk 打包（procd 服务 + UCI 配置 + hotplug）
+│   └── files/usr/bin/   随包安装的运维脚本：
+│       ├── cnk-cleanup  旧日志清理（cron 每天 4 点，主日志保留 7 天）
+│       └── cnk-traffic  按设备流量统计（cron 每 5 分钟，日志保留 3 天）
 ├── scripts/
 │   ├── build_win.bat    Windows 上构建（开发验证用）
 │   ├── build_openwrt.sh SDK 交叉编译
 │   ├── install_openwrt.sh 推到路由器
-│   └── harden.sh        TTL 统一 / IPv6 / TCP 时间戳（防检测，见第五节）
+│   └── harden.sh        TTL 统一 / IPv6 / TCP 时间戳（防检测，见第六节）
 ├── CMakeLists.txt       Windows 开发构建
 └── Makefile             Linux / musl 构建
 ```
