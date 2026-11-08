@@ -131,10 +131,14 @@ jobs:
         id: sdk-cache
         uses: actions/cache@v4
         with:
-          # 解压后的工具链约 1 GB，缓存到 ~/openwrt-sdk（runner 用户可写，无需 sudo）。
-          # key 按 SDK 版本写死：SDK 升级时改这里的版本号即可让缓存自动失效。
-          path: ~/openwrt-sdk
-          key: openwrt-sdk-24.10.4-qualcommax-ipq807x-musl-v1
+          # 缓存的是**下载下来的 tar 包**（210 MB），不是解压后的工具链目录。
+          # 为什么不能缓存解压目录：OpenWrt SDK 的 toolchain 里大量 gcc 是符号链接，
+          # 非 root 解压到 ~/openwrt-sdk 会丢符号链接（2026-11-08 实测：bin/ 下
+          # 没有 aarch64-*-gcc，GCC 解析成空，make 把 -O2 当命令执行直接挂）。
+          # 而 actions/cache 只能以 runner 用户读写缓存，写不回 /opt/sdk。
+          # 折中：缓存压缩包本身（用户可写），解压仍走 sudo tar 到 /opt/sdk（稳）。
+          path: ~/.cache/cnk-sdk
+          key: openwrt-sdk-24.10.4-qualcommax-ipq807x-musl-v2
 
       - name: 下载 OpenWrt SDK（取 aarch64-musl 工具链）
         if: steps.sdk-cache.outputs.cache-hit != 'true'
@@ -148,17 +152,22 @@ jobs:
           # 二进制，不挑 subtarget（真机是 Kwrt 24.10.4 / qualcommax / ipq60xx）。
           # 210 MB 从 downloads.openwrt.org 现下常慢到 20 分钟（2026-11-08 实测），
           # 所以只在上方缓存未命中时才下这一次，之后由 actions/cache 命中秒恢复。
-          sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          mkdir -p "$HOME/.cache/cnk-sdk"
           URL=https://downloads.openwrt.org/releases/24.10.4/targets/qualcommax/ipq807x/openwrt-sdk-24.10.4-qualcommax-ipq807x_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-          curl -fsSL -o /tmp/sdk.tar.zst "$URL"
-          mkdir -p "$HOME/openwrt-sdk"
-          tar --zstd -xf /tmp/sdk.tar.zst -C "$HOME/openwrt-sdk" --strip-components=1
-          ls "$HOME/openwrt-sdk/staging_dir/"
+          curl -fsSL -o "$HOME/.cache/cnk-sdk/sdk.tar.zst" "$URL"
+          ls -l "$HOME/.cache/cnk-sdk/sdk.tar.zst"
+
+      - name: 解压 OpenWrt SDK 工具链
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          sudo mkdir -p /opt/sdk
+          sudo tar --zstd -xf "$HOME/.cache/cnk-sdk/sdk.tar.zst" -C /opt/sdk --strip-components=1
+          ls /opt/sdk/staging_dir/
 
       - name: 交叉编译（静态，不依赖路由器 libc）
         run: |
           cd router
-          GCC=$(ls "$HOME/openwrt-sdk/staging_dir/toolchain-*/bin/aarch64-*-gcc" | head -1)
+          GCC=$(ls /opt/sdk/staging_dir/toolchain-*/bin/aarch64-*-gcc | head -1)
           echo "工具链: $GCC"
           make OUT=build-aarch64 CC="$GCC" STATIC=1
           file build-aarch64/cnkrouter
