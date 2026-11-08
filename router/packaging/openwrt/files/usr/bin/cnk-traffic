@@ -12,10 +12,14 @@
 # 每次采样读累计值，减去上次存的累计值 = 这段时间的增量，写日志。
 # 计数器名必须以字母开头（nft 不接受数字开头的标识符），故前缀 c_。
 #
-# 幂等与防重复：
-#   - `create counter` 已存在会报 File exists（忽略）→ counter 对象只建一次；
-#   - `flush chain` 清空规则但**不清零 named counter 的累计值**（实测），
-#     所以每次采样先 flush 再重建规则，规则永远不重复、也不会 double count。
+# 执行顺序（关键，防漏计）：
+#   ① 先读所有设备当前累计值（此时规则还在，值最完整）；
+#   ② 再 flush chain 并重建规则（flush 不清零 named counter，但 flush 到
+#      重建之间有毫秒级窗口会漏几毫秒流量 —— 这是 nft 的物理下限，5 分钟
+#      采样下可忽略；读值放在 flush 前，窗口缩到最小）；
+#   ③ 清理孤儿 counter：设备换 IP 后旧 IP 的 counter 已无规则引用（flush
+#      时规则已删），此时删除不会漏计；
+#   ④ 算增量、写日志、重建 state（只保留当前在 DHCP 租约里的设备）。
 #
 # 日志：$TRAFFIC_DIR/YYYY-MM-DD.log，每行
 #   HH:MM:SS <主机名> <IP> up=<字节> dn=<字节>
@@ -45,22 +49,14 @@ cnt_name() { echo "c_$(echo "$1" | tr '.' '_')"; }
 today=$(date +%F)
 now=$(date +%H:%M:%S)
 logfile="$TRAFFIC_DIR/$today.log"
+tmpvals="$TRAFFIC_DIR/.vals.$$"
 
-# 先 flush 掉上一轮的规则（named counter 值保留，不清零）
-nft flush chain inet $TABLE $CHAIN 2>/dev/null
-
-# 逐台设备：建 counter、加规则、读累计、算增量
+# ---- ① 先读当前累计值（规则还在，值最完整；此时读无漏计窗口）----
+: > "$tmpvals"
 while read -r _ _ ip host _; do
     [ -n "$ip" ] || continue
     up=$(cnt_name "$ip")_u
     dn=$(cnt_name "$ip")_d
-
-    nft create counter inet $TABLE "$up" 2>/dev/null
-    nft create counter inet $TABLE "$dn" 2>/dev/null
-    nft add rule inet $TABLE $CHAIN ip saddr "$ip" counter name "$up" 2>/dev/null
-    nft add rule inet $TABLE $CHAIN ip daddr "$ip" counter name "$dn" 2>/dev/null
-
-    # 读当前累计字节（counter 行形如 "packets N bytes M"，取第 4 列 = M）
     cur_up=$(nft list table inet $TABLE 2>/dev/null | awk -v c="$up" '
         $0 ~ "counter " c " {" { f=1; next }
         f && /bytes/ { print $4; exit }')
@@ -69,8 +65,34 @@ while read -r _ _ ip host _; do
         f && /bytes/ { print $4; exit }')
     cur_up=${cur_up:-0}; cur_up=$((cur_up))
     cur_dn=${cur_dn:-0}; cur_dn=$((cur_dn))
+    echo "$ip $host $cur_up $cur_dn" >> "$tmpvals"
+done < "$LEASE"
 
-    # 上次累计值
+# ---- ② flush + 重建规则（flush 不清零 counter 值；窗口=这几条命令耗时）----
+nft flush chain inet $TABLE $CHAIN 2>/dev/null
+while read -r _ _ ip host _; do
+    [ -n "$ip" ] || continue
+    up=$(cnt_name "$ip")_u
+    dn=$(cnt_name "$ip")_d
+    nft create counter inet $TABLE "$up" 2>/dev/null
+    nft create counter inet $TABLE "$dn" 2>/dev/null
+    nft add rule inet $TABLE $CHAIN ip saddr "$ip" counter name "$up" 2>/dev/null
+    nft add rule inet $TABLE $CHAIN ip daddr "$ip" counter name "$dn" 2>/dev/null
+done < "$LEASE"
+
+# ---- ③ 清理孤儿 counter（不在当前租约里的 IP，其 counter 已无规则引用）----
+ips=$(awk '{print $3}' "$LEASE")
+nft list table inet $TABLE 2>/dev/null | awk '/counter c_/{print $2}' | while read -r cname; do
+    ip=$(echo "$cname" | sed 's/^c_//; s/_[ud]$//; s/_/./g')
+    case " $ips " in
+        *" $ip "*) : ;;   # 在租约里，保留
+        *) nft delete counter inet $TABLE "$cname" 2>/dev/null ;;   # 孤儿，删除
+    esac
+done
+
+# ---- ④ 算增量、写日志、重建 state（只保留当前租约里的设备）----
+: > "$STATE.tmp"
+while read -r ip host cur_up cur_dn; do
     prev_line=$(awk -v k="$ip" '$1==k { print $2, $3 }' "$STATE")
     if [ -n "$prev_line" ]; then
         prev_up=$(echo "$prev_line" | awk '{print $1}')
@@ -81,15 +103,12 @@ while read -r _ _ ip host _; do
         [ "$inc_dn" -lt 0 ] && inc_dn=0
         echo "$now $host $ip up=$inc_up dn=$inc_dn" >> "$logfile"
     fi
+    echo "$ip $cur_up $cur_dn" >> "$STATE.tmp"
+done < "$tmpvals"
+mv "$STATE.tmp" "$STATE"
+rm -f "$tmpvals"
 
-    # 更新状态（写临时再原子替换）
-    {
-        awk -v k="$ip" '$1 != k { print }' "$STATE"
-        echo "$ip $cur_up $cur_dn"
-    } > "$STATE.tmp" && mv "$STATE.tmp" "$STATE"
-done < "$LEASE"
-
-# 清理超过 KEEP_DAYS 天的旧日志（busybox find 无 -delete，用 -exec rm）
+# ---- ⑤ 清理超过 KEEP_DAYS 天的旧日志（busybox find 无 -delete，用 -exec rm）----
 find "$TRAFFIC_DIR" -maxdepth 1 -name '*.log' -mtime +"$KEEP_DAYS" -exec rm -f {} + 2>/dev/null
 
 exit 0
