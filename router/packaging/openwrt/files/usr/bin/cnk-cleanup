@@ -1,0 +1,55 @@
+#!/bin/sh
+# cnk-cleanup —— 定期清理长期运行攒下来的临时文件与旧日志
+#
+# 为什么需要：路由器可能几个月不关机。两处会持续增长：
+#   ① /tmp（tmpfs，直接吃内存）—— LuCI 索引缓存、各种残留
+#   ② cnkrouter 的按天日志（数据盘，每天一个 YYYY-MM-DD.log）
+# cnkrouter 自己只负责按天分文件，不做删除——删除策略放这里，好调、好审。
+#
+# 保守原则（宁可少删）：
+#   · /tmp 只看**顶层**普通文件，不递归（不碰目录里的 socket/pid）
+#   · 只删 N 天没被修改过的（默认 7 天）
+#   · 明确跳过系统运行时要用的那几个
+#
+# 用法：cnk-cleanup [天数]      默认 7
+
+DAYS=${1:-7}
+case "$DAYS" in
+    ''|*[!0-9]*) DAYS=7 ;;
+esac
+
+CNK_LOG_DIR=${CNK_LOG_DIR:-/mnt/data/log/cnkrouter}
+
+before=$(du -sk /tmp 2>/dev/null | awk '{print $1}')
+
+# ⚠ 这里不能用 `find ... -delete`：busybox 的 find 没有 -delete 动作
+#   （只有 -print/-print0/-exec）。写成 -delete 会直接报 "unrecognized: -delete"
+#   并以非零退出，但被 2>/dev/null 吞掉 —— 2026-11-08 实测日志 10 天从没被清过。
+#   改用 busybox 兼容的 `-exec rm -f {} +`。
+find /tmp -maxdepth 1 -type f -mtime +"$DAYS" \
+    ! -name 'dhcp.leases*' \
+    ! -name 'resolv.conf*' \
+    ! -name 'TZ' \
+    ! -name 'board.json' \
+    ! -name 'crond.pid' \
+    -exec rm -f {} + 2>/dev/null
+
+after=$(du -sk /tmp 2>/dev/null | awk '{print $1}')
+[ -z "$before" ] && before=0
+[ -z "$after" ] && after=0
+
+log_freed=0
+if [ -d "$CNK_LOG_DIR" ]; then
+    log_before=$(du -sk "$CNK_LOG_DIR" 2>/dev/null | awk '{print $1}')
+    find "$CNK_LOG_DIR" -maxdepth 1 -type f -name '*.log' -mtime +"$DAYS" \
+        -exec rm -f {} + 2>/dev/null
+    log_after=$(du -sk "$CNK_LOG_DIR" 2>/dev/null | awk '{print $1}')
+    [ -z "$log_before" ] && log_before=0
+    [ -z "$log_after" ] && log_after=0
+    log_freed=$((log_before - log_after))
+fi
+
+if [ "$before" -gt "$after" ] || [ "$log_freed" -gt 0 ]; then
+    logger -t cnk-cleanup "/tmp ${before}KB→${after}KB，日志目录释放 ${log_freed}KB（清理 ${DAYS} 天前的文件）"
+fi
+exit 0
