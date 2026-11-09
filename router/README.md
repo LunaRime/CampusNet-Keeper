@@ -82,7 +82,7 @@ CPU 不用考虑：每 30 秒一轮探测（3 个 HTTP GET + 一次 320 字节 A
 |---|---|---|
 | `auth/DrcomAuth.cpp` | `src/portal.c` | `chkstatus` → `loadConfig(rcn)` → `login(AES-128-ECB params)`；老式 `c=ACSetting` 回退 |
 | `core/Crypto.cpp` | `src/crypto.c` | AES-128-ECB + PKCS7 + Base64，**516 组随机向量与 BCrypt 实现逐字节相同** |
-| `core/Probe.cpp` | `src/portal.c` | 204 / 3xx 异主机 / 200 正文标识；`msftncsi` 在本校园网不可达，默认用 apple 探测页 |
+| `core/Probe.cpp` | `src/portal.c` | 204 / 3xx 异主机 / 200 正文标识；`msftncsi` 与苹果探测页在本网都不可靠，默认改用 `generate_204`（见第七节） |
 | `core/Scheduler.cpp` | `src/main.c` | 离线 3 秒快重探、失败退避 15/30/60/120/300、凭据错误停机、连续 3 次失败判非校园网 |
 | `main.cpp` 登录后复测 | `wait_online()` | 登录成功后再轮询 5×1.5 秒——AC 放行有秒级延迟，探一次会假失败 |
 
@@ -193,7 +193,7 @@ scp 不适用时用 exec + base64 分块：见仓库 build/.rput.py（本地工�
 | 项 | 结果 |
 |---|---|
 | `--selftest`（不联网） | AES FIPS-197 / Base64 / URL 全过 |
-| `--probe` | `online 正文匹配预期标识`，退出码 0 |
+| `--probe` | `online 探测目标可达（HTTP 204）`，退出码 0 |
 | 常驻内存 | **VSZ 284 KB**（ps 的 VSZ 列；RSS 更低） |
 | 启动到稳定 | 秒级；日志只有两行（启动参数 + 网络在线） |
 | 在线时行为 | **只巡检、不登录**（探测间隔可配，默认 30 s；本机部署 10 s），对现有会话零干扰 |
@@ -204,9 +204,10 @@ scp 不适用时用 exec + base64 分块：见仓库 build/.rput.py（本地工�
 1. **CRLF 会让 init 脚本彻底失效**：`/etc/init.d/cnkrouter` 若带 `\r`，报
    `can't open '/etc/rc.common'`（路径末尾多了 `\r`）和 `line 7: \: not found`。
    仓库已加 `.gitattributes` 钉死 `router/**` 为 LF、`*.bat` 为 CRLF。
-2. **`captive.apple.com` 在本网被 DNS 劫持**（解析到 `*.download.ks-cdn.com`），
-   它的 200 + `Success` 不能单独当"已认证"的证据；验证真出网要用 TLS
-   （如 `https://api.github.com/zen` 返回真实内容）。
+2. **`captive.apple.com` 在本网被 DNS 劫持**（CNAME 到 CDN），且上游 DNS 服务器就是 AC 自己，
+   AC 一黑洞 DNS 和门户会一起挂；它的 200 + `Success` 也不能单独当"已认证"的证据。
+   2026-11-09 起默认探测页换成 `generate_204`，并且**任何「可达」都只是第 1 层**，
+   还要过 AC 复核（`chkstatus`）与出网验证才算在线（见第七节）。
 3. **交接顺序**：如果电脑上还跑着 Windows 版守护进程，它经 NAT 出去的源 IP 就是路由器
    WAN IP —— 它才是"当前认证者"。正确顺序是**先启路由器客户端（在线时不登录）→ 观察
    → 再停电脑端**，两头不会抢会话。
@@ -350,6 +351,80 @@ grep -A 12 "【取证】AC 复核历史" /mnt/data/log/cnkrouter/$(date +%F).log
 ```
 
 三种死法：`result 1→0` = 会话到期；`olmac/ss1` 突变 = MAC 绑定冲突；字段纹丝不动但转发面断 = 共享封禁/黑洞。
+
+### 探测地址与三层判定（2026-11-09 改造）
+
+原默认的 `http://captive.apple.com/hotspot-detect.html` + `probe_expect=Success` 在本网有两个问题：
+苹果域名被 DNS 劫持到 CDN；上游 DNS 服务器就是 AC 自己，AC 一黑洞 DNS 和门户一起挂。
+探测间隔降到 10 s 后，`域名解析失败：captive.apple.com` 被大量放大，反而掩盖了真正的故障。
+
+现在默认改成：
+
+```sh
+option probe_url 'http://connectivitycheck.platform.hicloud.com/generate_204'
+option probe_expect ''
+```
+
+两个候选地址真机实测（2026-11-09，路由器直出）：
+
+| 地址 | 状态码 | 耗时 | 重定向 |
+|---|---|---|---|
+| `http://connectivitycheck.platform.hicloud.com/generate_204` | 204 | 0.038 s | 0 |
+| `http://connect.rom.miui.com/generate_204` | 204 | 0.084 s | 0 |
+
+选 hicloud 作探测页，MIUI 保留为**出网验证**的独立目标（刻意用不同域名，避免同一 CDN
+同时挂掉时把「探测通」误当成「能上网」）。
+
+> ⚠ **204 分支绝不能直接判在线。** 老逻辑里 `status == 204` 是短路返回 `NET_ONLINE` 的，
+> 换成 `generate_204` 后就会绕过 AC 复核与出网验证，僵尸会话永远查不出来。现在 204、
+> 200+预期标识、同主机 3xx 三条「可达」分支统一走：
+
+```text
+第 1 层 探测页可达（204 / 200+预期标识 / 同主机 3xx）
+   ↓
+第 2 层 AC 复核 chkstatus：result=1 继续；=0 判离线；查不出(-1) 不干预
+   ↓
+第 3 层 出网验证：MIUI generate_204 或 baidu robots.txt
+        「有响应但内容不对」= 疑似僵尸会话(0)；「一个都搭不上」= 判不出来(-1)，维持在线
+```
+
+默认值同步改了 4 处：`src/main.c` 的 `config_defaults()`、UCI 模板
+`files/etc/config/cnkrouter`、`files/etc/init.d/cnkrouter` 的 `config_get`，以及本地部署脚本
+`build/.deploy_conf.py`。**注意真机上的 init.d 不会随二进制自动更新**：换默认探测地址时
+必须单独推一次并 `restart`（`reload` 只发 SIGHUP，不重新渲染 `/var/etc/cnkrouter.conf`）。
+
+### 检查网络是否正常连通：7 种手段（真机实测）
+
+单看一个 `ping` 或一个 HTTP 请求都不够：本网 DNS 就是 AC，AC 黑洞时 DNS、门户、外网一起挂；
+反过来「探测页通 + AC 说在线」也可能是僵尸会话。按层次从下往上查：
+
+| 层 | 手段（路由器上执行） | 能说明什么 | 不能说明什么 |
+|---|---|---|---|
+| L0 链路 | `ip -4 addr show wan \| grep inet`；`ip neigh show dev wan \| grep <网关>`；`ping -c 1 -W 1 <网关>` | WAN 是否拿到地址、网关 ARP 是否解析、二层是否通 | 完全不能说明有没有认证 |
+| L1 DNS | `cat /etc/resolv.conf`；`nslookup connectivitycheck.platform.hicloud.com` | 上游 DNS 是否应答（本网上游就是 AC，一挂全挂） | 解析成功 ≠ 能出网 |
+| L2 探测页 | `wget -S -O /dev/null -T 5 <probe_url> 2>&1 \| grep -i 'HTTP/'` | 是否返回 204；有没有被劫持成 302 / 200 门户页 | 204 也可能被中间盒伪造 |
+| L3 AC 视角 | `wget -qO- -T 5 'http://<portal>/drcom/chkstatus?callback=cnkwd&jsVersion=4.X&lang=zh'` | AC 认不认这个会话（`result`）、它记的 `v4ip`/`oltime`/MAC 字段 | `result=1` ≠ 转发面没被黑洞 |
+| L4 出网验证 | `wget -q -O /dev/null -T 5 http://connect.rom.miui.com/generate_204; echo $?`，再看 `www.baidu.com/robots.txt` | 真的能不能打开外网 | 两个都解析失败时是「判不出来」，不是「已断网」 |
+| L5 三层合一 | `cnkrouter --config=/var/etc/cnkrouter.conf --probe; echo $?` | **最接近真实判定**：一次跑完 L2+L3+L4，退出码 0=在线 / 2=门户 / 3=离线 | 只是瞬时快照，短黑洞可能正好错过 |
+| L6 历史 | `grep -E 'WARN\|ERROR' /mnt/data/log/cnkrouter/$(date +%F).log`；`grep '离线：' ... \| tail`；`logread -e cnkrouter` | 过去几小时掉过几次、哪种死法、有没有触发软拔插 | 事后证据，不能替代当下判定 |
+| L7 流量面 | `cat /mnt/data/log/cnkrouter/traffic/$(date +%F).log`；`nft list counters table inet cnkstat` | 终端有没有真实字节在转发 | 计数为 0 也可能只是设备没在用 |
+
+判定口径（与客户端状态机一致）：
+
+- **L0 就不通** → 物理/链路问题，走 `handle_link_down` 软拔插换 IP；
+- **L0 通、L2 拿到 302 到门户** → 未认证，该登录；
+- **L2 通、L3 `result=0`** → AC 会话已被回收，重新登录；
+- **L2 通、L3 `result=1`、L4 内容不符** → 僵尸会话 / 转发面黑洞；
+- **L2/L3/L4 全都超时** → 大概率整段黑洞，先取证再决定是否换 IP；
+- **只有 DNS 解析失败、1~15 s 内自己恢复** → 瞬时抖动，不需要任何动作。
+
+两个 busybox 坑：`wget` 的 `-w` 是 `--wait`（等待一段时间），**不是** curl 的 `--write-out`
+（实测报 `--wait: Invalid time period`），要看状态码得用 `-S ... 2>&1 | grep -i 'HTTP/'`；
+`-T 5` 才是超时。另外 `nslookup` 输出里的 CNAME 链只是 CDN 调度，不代表被劫持到门户页——
+认 302 的 `Location` 才算。
+
+本次实测（2026-11-09 23:24）：L0 网关 `REACHABLE` / ping 0% 丢包、L2 `204 No Content`、
+L3 `result=1`、L4 两个目标 rc=0、L5 `online 探测目标可达（HTTP 204）` rc=0、L7 counter 持续增长。
 
 ---
 
