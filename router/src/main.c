@@ -120,12 +120,14 @@ void log_write(int level, const char *fmt, ...) {
 
 void config_defaults(Config *c) {
     memset(c, 0, sizeof *c);
-    /* 默认值取自 Windows 版真机实测：msftncsi 在本校园网 0/4 可达，
-     * 用 apple 探测页 5/5、平均 86ms，故默认值就是它 */
+    /* 探测地址：generate_204 直连返回 204（无重定向、无劫持），比 captive.apple.com
+     * 更稳——后者在本网被 DNS 劫持到 CDN（多一跳，抖动就报"域名解析失败"）。
+     * 2026-11-09 实测 hicloud 38ms / miui 84ms，均直连 204。probe_expect 留空：
+     * 204 分支不看 expect；若换回 200 型探测页再填。 */
     snprintf(c->auth_url, sizeof c->auth_url, "http://10.0.0.1/");
     snprintf(c->isp, sizeof c->isp, "campus");
-    snprintf(c->probe_url, sizeof c->probe_url, "http://captive.apple.com/hotspot-detect.html");
-    snprintf(c->probe_expect, sizeof c->probe_expect, "Success");
+    snprintf(c->probe_url, sizeof c->probe_url, "http://connectivitycheck.platform.hicloud.com/generate_204");
+    snprintf(c->probe_expect, sizeof c->probe_expect, "");
     c->probe_timeout = 6;
     c->probe_interval = 30;
     /* 默认开 DEBUG：2026-11-01 排查时才发现 log_level=2 把 AC 复核、出网验证这些

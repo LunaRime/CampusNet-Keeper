@@ -441,9 +441,44 @@ ProbeResult probe_once(const Config *c) {
         return r;
     }
 
-    if (resp.status == 204) {
+    /* 探测目标「可达」只是第 1 层。204 或 200+预期标识都算可达，但可达 ≠ 真在线：
+     * 僵尸会话正是「探测域名能通、AC 还记着在线、但实际打不开网页」。
+     * 所以第 1 层通过后统一走第 2 层（问 AC）+ 第 3 层（真的出得去），
+     * 两层都过才判在线。 */
+    if (resp.status == 204 ||
+        (resp.status == 200 && c->probe_expect[0] &&
+         has(resp.body, c->probe_expect) && resp.body_len <= 8192)) {
+        int ac = 1;
+        /* 第 2 层：问 AC 自己（防 DNS 劫持导致的假在线） */
+        if (c->verify_ac) ac = ac_says_online(c);
+
+        if (ac == 0) {
+            r.state = NET_OFFLINE;
+            snprintf(r.message, sizeof r.message,
+                     "探测目标可达但认证服务器判定不在线（AC 会话多半已失效）");
+            http_resp_free(&resp);
+            return r;
+        }
+
+        /* 第 3 层：AC 说在线也得"真的出得去"。 */
+        {
+            int net = can_reach_internet(c);
+            if (net == 0) {
+                r.state = NET_OFFLINE;
+                snprintf(r.message, sizeof r.message,
+                         "探测目标可达但实际出不了网（疑似僵尸会话）");
+                http_resp_free(&resp);
+                return r;
+            }
+            /* net < 0：两个目标都够不着，判不出来，维持在线（宁可不折腾） */
+        }
+
         r.state = NET_ONLINE;
-        snprintf(r.message, sizeof r.message, "HTTP 204");
+        if (ac < 0)
+            snprintf(r.message, sizeof r.message, "探测目标可达（AC 复核不可用）");
+        else
+            snprintf(r.message, sizeof r.message, "探测目标可达（%s）",
+                     resp.status == 204 ? "HTTP 204" : "正文匹配预期标识");
         http_resp_free(&resp);
         return r;
     }
@@ -459,6 +494,26 @@ ProbeResult probe_once(const Config *c) {
             snprintf(r.message, sizeof r.message, "被重定向到 %s", abs_url);
             snprintf(r.portal_url, sizeof r.portal_url, "%s", abs_url);
         } else {
+            /* 同主机 3xx 不算劫持，但同样要过 AC 复核 + 出网验证（防僵尸会话） */
+            int ac = 1;
+            if (c->verify_ac) ac = ac_says_online(c);
+            if (ac == 0) {
+                r.state = NET_OFFLINE;
+                snprintf(r.message, sizeof r.message,
+                         "同主机重定向但 AC 判定不在线");
+                http_resp_free(&resp);
+                return r;
+            }
+            {
+                int net = can_reach_internet(c);
+                if (net == 0) {
+                    r.state = NET_OFFLINE;
+                    snprintf(r.message, sizeof r.message,
+                             "同主机重定向但实际出不了网（疑似僵尸会话）");
+                    http_resp_free(&resp);
+                    return r;
+                }
+            }
             r.state = NET_ONLINE;
             snprintf(r.message, sizeof r.message, "同主机重定向，判定在线");
         }
@@ -467,46 +522,11 @@ ProbeResult probe_once(const Config *c) {
     }
 
     if (resp.status == 200) {
-        const int has_expect = c->probe_expect[0] && has(resp.body, c->probe_expect);
-        const int too_long = resp.body_len > 8192;
-        if (has_expect && !too_long) {
-            int ac = 1;
-            /* 第 2 层：问 AC 自己（防 DNS 劫持导致的假在线） */
-            if (c->verify_ac) ac = ac_says_online(c);
-
-            if (ac == 0) {
-                r.state = NET_OFFLINE;
-                snprintf(r.message, sizeof r.message,
-                         "正文匹配但认证服务器判定不在线（AC 会话多半已失效）");
-                http_resp_free(&resp);
-                return r;
-            }
-
-            /* 第 3 层：AC 说在线也得"真的出得去"。
-             * 僵尸会话正是"AC 记着已认证、探测域名也能通、但实际打不开网页"，
-             * 只靠前两层永远发现不了。 */
-            {
-                int net = can_reach_internet(c);
-                if (net == 0) {
-                    r.state = NET_OFFLINE;
-                    snprintf(r.message, sizeof r.message,
-                             "探测页可通但实际出不了网（疑似僵尸会话）");
-                    http_resp_free(&resp);
-                    return r;
-                }
-                /* net < 0：两个目标都够不着，判不出来，维持在线（宁可不折腾） */
-            }
-
-            r.state = NET_ONLINE;
-            if (ac < 0)
-                snprintf(r.message, sizeof r.message, "正文匹配（AC 复核不可用）");
-            else
-                snprintf(r.message, sizeof r.message, "正文匹配预期标识");
-        } else {
-            r.state = NET_PORTAL;
-            snprintf(r.message, sizeof r.message, "%s",
-                     too_long ? "正文长度异常，疑似门户劫持" : "正文不含预期标识，疑似门户劫持");
-        }
+        /* 走到这里说明：200 但正文不含预期标识或过长 → 疑似门户劫持页 */
+        r.state = NET_PORTAL;
+        snprintf(r.message, sizeof r.message, "%s",
+                 resp.body_len > 8192 ? "正文长度异常，疑似门户劫持"
+                                      : "正文不含预期标识，疑似门户劫持");
         http_resp_free(&resp);
         return r;
     }

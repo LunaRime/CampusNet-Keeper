@@ -18,9 +18,12 @@ config main 'main'
 	# 也可以用 custom:xxx 直接指定后缀
 	option isp 'campus'
 
-	# 在线探测：不要用 msftncsi（部分校园网不可达，会把在线误判成离线）
-	option probe_url 'http://captive.apple.com/hotspot-detect.html'
-	option probe_expect 'Success'
+	# 在线探测：generate_204 直连返回 204，比 captive.apple.com 更稳
+	# （后者在本网被 DNS 劫持到 CDN，多一跳，抖动就报"域名解析失败"）。
+	# 候选：hicloud（实测 38ms）/ miui（84ms）均直连 204。
+	# 204 分支不看 probe_expect；若换回 200 型探测页再填 expect。
+	option probe_url 'http://connectivitycheck.platform.hicloud.com/generate_204'
+	option probe_expect ''
 	option probe_timeout '6'
 
 	# 在线时的巡检间隔（秒）；<=10 会被钳到 60
