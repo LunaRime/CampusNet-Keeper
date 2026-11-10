@@ -16,14 +16,17 @@ namespace cnk {
 namespace {
 
 std::mutex g_mutex;
+std::string g_log_dir;
 fs::path g_log_path;
 std::ofstream g_stream;
+std::string g_current_day;      // 当前打开的日志属于哪一天（YYYY-MM-DD）
 LogLevel g_min_level = LogLevel::Info;
 size_t g_max_bytes = 512 * 1024;
-int g_keep_files = 3;
-bool g_rotate_failed = false;    // 轮转失败待报告（见 RotateIfNeeded / LogWrite）
-bool g_rotate_reported = false;  // 本次失败是否已经报过（不按行刷屏）
-int g_rotate_retry = 0;          // 失败后隔多少次写再重试（别每行都 close/rename/open）
+int g_keep_days = 3;
+constexpr int kRotateBackups = 3;   // 日内大小轮转备份数（与时间保留期无关）
+bool g_rotate_failed = false;
+bool g_rotate_reported = false;
+int g_rotate_retry = 0;
 std::deque<std::string> g_tail;
 constexpr size_t kTailMax = 500;
 
@@ -46,18 +49,49 @@ std::string Timestamp() {
     return buf;
 }
 
+std::string TodayYmd() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &t);
+    char buf[16] = {0};
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+    return buf;
+}
+
+// 严格解析 YYYY-MM-DD，全手工，不用 stoi（服务线程里绝不让异常逃出去）。
+bool ParseYmd(const std::string& s, int& y, unsigned& m, unsigned& d) {
+    if (s.size() != 10 || s[4] != '-' || s[7] != '-') return false;
+    for (size_t i : {0u, 1u, 2u, 3u, 5u, 6u, 8u, 9u})
+        if (!std::isdigit((unsigned char)s[i])) return false;
+    y = (s[0] - '0') * 1000 + (s[1] - '0') * 100 + (s[2] - '0') * 10 + (s[3] - '0');
+    m = (unsigned)((s[5] - '0') * 10 + (s[6] - '0'));
+    d = (unsigned)((s[8] - '0') * 10 + (s[9] - '0'));
+    return m >= 1 && m <= 12 && d >= 1 && d <= 31;
+}
+
+// 民用日期 → 距 1970-01-01 的天数（纯算术，不受时区 / DST 影响，便于测试独立复算）。
+long long DaysFromCivil(int y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned mp = (unsigned)((int)m + (m > 2 ? -3 : 9));
+    const unsigned doy = (153 * mp + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return (long long)era * 146097 + (long long)doe - 719468;
+}
+
+// 日内大小保护：当天文件超过 max_bytes 才轮转，备份数固定。
 void RotateIfNeeded() {
     std::error_code ec;
     if (!fs::exists(g_log_path, ec)) return;
     if ((size_t)fs::file_size(g_log_path, ec) < g_max_bytes) return;
 
-    // 上一轮失败过就先别每次都重试：另一个进程可能长期持着文件，
-    // 每写一行都 close/rename×3/open 是白费力气（2026-10-17 复核 P2-6/N2）
+    // 另一进程长期持文件时，每写一行都 close/rename/open 是白费力气（P2-6/N2）
     if (g_rotate_failed && ++g_rotate_retry < 64) return;
     g_rotate_retry = 0;
 
     g_stream.close();
-    for (int i = g_keep_files - 1; i >= 1; --i) {
+    for (int i = kRotateBackups - 1; i >= 1; --i) {
         fs::path from = g_log_path;
         from += "." + std::to_string(i);
         fs::path to = g_log_path;
@@ -74,16 +108,34 @@ void RotateIfNeeded() {
     fs::remove(first, e3);
     fs::rename(g_log_path, first, e3);
 
+    g_stream.clear();
     g_stream.open(g_log_path, std::ios::app);
     if (e3 || !g_stream.is_open()) {
-        // 另一个进程（如 --ui 界面子进程）可能正持有该文件 → 改名失败。
-        // 不能在这里直接 LogWarn（本函数是在持锁状态下被调用的，会死锁），
-        // 只置标志，由 LogWrite 在同一把锁内补一行警告（见下）。恢复后自动复位。
+        // 本函数在持锁状态下被调用，不能直接 LogWarn（会死锁），只置标志
         g_rotate_failed = true;
     } else {
         g_rotate_failed = false;
         g_rotate_reported = false;
     }
+}
+
+// 切到今天的文件，并顺手清理过期日志（启动时与跨天时调用）。
+void OpenForToday() {
+    const std::string day = TodayYmd();
+    g_current_day = day;
+    if (g_stream.is_open()) g_stream.close();
+    // 测试/异常路径可能传入空目录：只保留内存 tail，绝不把日志文件落到当前工作目录
+    //（曾因此把 keeper-YYYY-MM-DD.log 写进仓库根）。
+    if (g_log_dir.empty()) return;
+    std::error_code ec;
+    fs::create_directories(fs::u8path(g_log_dir), ec);
+    g_log_path = fs::u8path(g_log_dir) / cnk::LogFileNameForDate(day);
+    g_stream.clear();
+    g_stream.open(g_log_path, std::ios::app);
+    g_rotate_failed = !g_stream.is_open();
+    g_rotate_reported = false;
+    g_rotate_retry = 0;
+    cnk::CleanupOldLogs(g_log_dir, day, g_keep_days);
 }
 
 bool IsSecretKey(const std::string& key) {
@@ -96,10 +148,9 @@ bool IsSecretKey(const std::string& key) {
         // 通用表单的账号字段：任务 21 的 GenericFormAuth 会用它提交学号
         "username",
         // 其它厂商/模板常见的账号字段名——GET 表单会把字段拼进 URL，经日志脱敏输出；
-        // 漏掉这些名字会让学号原样进 keeper.log（2026-10-16 审阅 P1）
+        // 漏掉这些名字会让学号原样进日志（2026-10-16 审阅 P1）
         "user", "account", "user_name", "login_name", "userid", "uid"
     };
-    // ASCII 大小写折叠后比较，键名大小写不影响脱敏。
     std::string lower;
     lower.reserve(key.size());
     for (char c : key)
@@ -110,9 +161,6 @@ bool IsSecretKey(const std::string& key) {
 }
 
 // JSON 载荷里的凭据：把 "key":"value" / "key":value 形式的敏感值替换为 ***。
-// 2026-10-16 审阅 P1：新式 API 的请求体是 JSON，而下面的 key=value 主循环只认
-// '='，对 JSON 完全失效（学号与页面令牌会被原样打印）。这里做一遍前置替换，
-// 其余文本原样保留，不影响既有的表单/查询串脱敏。
 std::string RedactJsonPairs(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -130,7 +178,7 @@ std::string RedactJsonPairs(const std::string& s) {
         const std::string key = s.substr(i + 1, key_end - i - 1);
         size_t j = key_end + 1;
         while (j < s.size() && std::isspace((unsigned char)s[j])) ++j;
-        if (j >= s.size() || s[j] != ':') {  // 不是键值对：普通字符串，原样保留
+        if (j >= s.size() || s[j] != ':') {
             out.append(s, i, key_end - i + 1);
             i = key_end + 1;
             continue;
@@ -138,9 +186,8 @@ std::string RedactJsonPairs(const std::string& s) {
         ++j;
         while (j < s.size() && std::isspace((unsigned char)s[j])) ++j;
 
-        out.append(s, i, j - i);  // 键名与冒号原样保留
+        out.append(s, i, j - i);
         if (j < s.size() && s[j] == '"') {
-            // 字符串值：扫到未转义的收尾引号（跳过 \" 转义，防值内含引号时截断泄漏）
             size_t k = j + 1;
             while (k < s.size()) {
                 if (s[k] == '\\') {
@@ -150,14 +197,13 @@ std::string RedactJsonPairs(const std::string& s) {
                 if (s[k] == '"') break;
                 ++k;
             }
-            if (k >= s.size()) {  // 未闭合：整段按敏感处理，不冒险回显
+            if (k >= s.size()) {
                 out += "\"***\"";
                 break;
             }
             out += IsSecretKey(key) ? "\"***\"" : s.substr(j, k - j + 1);
             i = k + 1;
         } else {
-            // 数字/布尔/null：值到 ',' 或 '}' 为止
             size_t k = j;
             while (k < s.size() && s[k] != ',' && s[k] != '}') ++k;
             out += IsSecretKey(key) ? "***" : s.substr(j, k - j);
@@ -169,18 +215,77 @@ std::string RedactJsonPairs(const std::string& s) {
 
 }  // namespace
 
-void LogInit(const std::string& log_dir, LogLevel level,
-             size_t max_bytes, int keep_files) {
-    std::lock_guard<std::mutex> lk(g_mutex);
-    if (!g_stream.is_open()) {
-        std::error_code ec;
-        fs::create_directories(fs::u8path(log_dir), ec);
-        g_log_path = fs::u8path(log_dir) / "keeper.log";
-        g_stream.open(g_log_path, std::ios::app);
+std::string LogFileNameForDate(const std::string& ymd) {
+    return "keeper-" + ymd + ".log";
+}
+
+int CleanupOldLogs(const std::string& log_dir, const std::string& today_ymd, int keep_days) {
+    int y = 0;
+    unsigned m = 0, d = 0;
+    if (!ParseYmd(today_ymd, y, m, d) || keep_days < 1) return 0;
+    const long long today = DaysFromCivil(y, m, d);
+
+    std::error_code ec;
+    fs::directory_iterator it(fs::u8path(log_dir), ec), end;
+    if (ec) return 0;
+    int removed = 0;
+    const std::string prefix = "keeper-";
+    for (; it != end; it.increment(ec)) {
+        if (ec) break;
+        const std::string name = it->path().filename().string();
+        // 迁移前遗留的 keeper.log[.N]：文件名里没有日期，按最后写入时间清理（同样 3 天），
+        // 免得它变成永远删不掉的孤岛。刚写完/时间异常的文件不会被误删。
+        if (name.rfind("keeper.log", 0) == 0) {
+            std::error_code t_ec;
+            const auto last = fs::last_write_time(it->path(), t_ec);
+            if (!t_ec) {
+                const auto age = fs::file_time_type::clock::now() - last;
+                const auto hours = std::chrono::duration_cast<std::chrono::hours>(age).count();
+                if (hours >= (long long)keep_days * 24) {
+                    std::error_code del_ec;
+                    fs::remove(it->path(), del_ec);
+                    if (!del_ec) ++removed;
+                }
+            }
+            continue;
+        }
+        // 只认 keeper-YYYY-MM-DD.log[.N]；解析不出日期的其它文件一律不动
+        if (name.size() < prefix.size() + 10 + 4 ||
+            name.compare(0, prefix.size(), prefix) != 0 ||
+            name.compare(prefix.size() + 10, 4, ".log") != 0)
+            continue;
+        int fy = 0;
+        unsigned fm = 0, fd = 0;
+        if (!ParseYmd(name.substr(prefix.size(), 10), fy, fm, fd)) continue;
+        if (today - DaysFromCivil(fy, fm, fd) < keep_days) continue;
+        std::error_code del_ec;
+        fs::remove(it->path(), del_ec);
+        if (!del_ec) ++removed;
     }
+    return removed;
+}
+
+bool HasAnyLogFile(const std::string& log_dir) {
+    std::error_code ec;
+    fs::directory_iterator it(fs::u8path(log_dir), ec), end;
+    if (ec) return false;   // 目录不存在 = 首次安装
+    for (; it != end; it.increment(ec)) {
+        if (ec) break;
+        const std::string name = it->path().filename().string();
+        if (name.rfind("keeper", 0) == 0 && name.find(".log") != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+void LogInit(const std::string& log_dir, LogLevel level,
+             size_t max_bytes, int keep_days) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    g_log_dir = log_dir;
     g_min_level = level;
     g_max_bytes = max_bytes > 4096 ? max_bytes : 4096;
-    g_keep_files = keep_files > 0 ? keep_files : 1;
+    g_keep_days = keep_days > 0 ? keep_days : 3;
+    OpenForToday();
 }
 
 void LogShutdown() {
@@ -193,14 +298,16 @@ void LogWrite(LogLevel level, const std::string& msg) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (level < g_min_level) return;
 
-    std::string line = Timestamp() + " [" + LevelName(level) + "] " + msg;
+    const std::string line = Timestamp() + " [" + LevelName(level) + "] " + msg;
+
+    // 跨天（或上次打开失败）时换文件；换文件同时执行 3 天清理
+    if (!g_log_dir.empty() && (!g_stream.is_open() || g_current_day != TodayYmd()))
+        OpenForToday();
 
     if (g_stream.is_open()) {
         RotateIfNeeded();
         g_stream << line << "\n";
         if (g_rotate_failed && !g_rotate_reported) {
-            // 一次失败只报一条（这里已持锁，不能再调 LogWrite/LogWarn——会死锁）；
-            // 每 64 行会重试一次轮转，成功后再失败才会再报（见 RotateIfNeeded）
             g_rotate_reported = true;
             g_stream << Timestamp() << " [" << LevelName(LogLevel::Warn) << "] "
                      << "日志轮转失败（文件可能被其它进程占用；每 64 行重试一次，"
@@ -222,23 +329,18 @@ std::vector<std::string> LogTail(size_t max_lines) {
 }
 
 std::string RedactSecrets(const std::string& s) {
-    // 先处理 JSON 形式的键值对（新式 API 的请求体），再走下面的 key=value 主循环
     const std::string src = RedactJsonPairs(s);
     std::string out;
     out.reserve(src.size());
     size_t i = 0;
     while (i < src.size()) {
-        // 找到一个 key= 的起点
         size_t eq = src.find('=', i);
         if (eq == std::string::npos) { out.append(src, i, std::string::npos); break; }
 
-        // key 是从上一个分隔符到 eq 的子串
         size_t key_start = src.find_last_of("?&", eq);
         key_start = (key_start == std::string::npos) ? i : key_start + 1;
         std::string key = src.substr(key_start, eq - key_start);
 
-        // '?' 与 '&' 同为参数分隔符，否则内嵌查询串（如 url=http://x?upass=y）
-        // 会被当成单个值整体吃掉，其中的凭据不会被脱敏。
         size_t val_end = src.find_first_of("&?", eq);
         if (val_end == std::string::npos) val_end = src.size();
 

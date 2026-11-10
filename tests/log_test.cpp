@@ -2,6 +2,9 @@
 #include "core/Log.h"
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <cstdio>
+#include <ctime>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -22,6 +25,11 @@ fs::path FreshLogDir(const char* name) {
     return dir;
 }
 
+void Touch(const fs::path& dir, const char* name) {
+    std::ofstream out(dir / name);
+    out << "x";
+}
+
 }  // namespace
 
 TEST_CASE("RedactSecrets 屏蔽密码类参数") {
@@ -34,8 +42,6 @@ TEST_CASE("RedactSecrets 屏蔽密码类参数") {
 }
 
 TEST_CASE("RedactSecrets 必须能脱敏 JSON 载荷（新式 API 的请求体是 JSON）") {
-    // 2026-10-16 审阅 P1：新式 API 的展示用请求体是 JSON，而 RedactSecrets 只认
-    // key=value，导致学号与 rcn 被原样打印（老式通道的 DDDDD 反而是打码的 = 回归）。
     const std::string body =
         "{\"login_method\":1,\"user_account\":\",0,202400000000@cmcc\","
         "\"user_password\":\"pw-secret\",\"wlan_user_mac\":\"000000000000\","
@@ -68,7 +74,6 @@ TEST_CASE("RedactSecrets 键名大小写不敏感") {
     CHECK(cnk::RedactSecrets("User_Password=q") == "User_Password=***");
     CHECK(cnk::RedactSecrets("PASSWD=q") == "PASSWD=***");
     CHECK(cnk::RedactSecrets("ddddd=alice") == "ddddd=***");
-    // 通用表单的账号字段（任务 21 会用它提交学号）
     CHECK(cnk::RedactSecrets("username=stu001&domain=cmcc")
           == "username=***&domain=cmcc");
 }
@@ -95,4 +100,88 @@ TEST_CASE("低于阈值的日志不写入") {
     for (auto& l : lines) joined += l;
     CHECK(joined.find("should-not-appear") == std::string::npos);
     CHECK(joined.find("should-appear") != std::string::npos);
+}
+
+TEST_CASE("按天文件名格式固定") {
+    CHECK(cnk::LogFileNameForDate("2026-11-10") == "keeper-2026-11-10.log");
+    CHECK(cnk::LogFileNameForDate("2026-01-02") == "keeper-2026-01-02.log");
+}
+
+TEST_CASE("日志真的写进当天文件，不再有 keeper.log") {
+    auto dir = FreshLogDir("cnk_log_daily");
+    cnk::LogInit(dir.string(), cnk::LogLevel::Info, 1024 * 1024, 3);
+    cnk::LogWrite(cnk::LogLevel::Info, "daily-marker-xyz");
+    cnk::LogShutdown();
+
+    // 期望文件名在测试里独立拼出来，不复用被测的 LogFileNameForDate
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+    localtime_s(&tm, &t);
+    char buf[16] = {0};
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tm);
+    const std::string expected = std::string("keeper-") + buf + ".log";
+
+    std::ifstream in(dir / expected);
+    REQUIRE(in.good());
+    std::string content((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+    CHECK(content.find("daily-marker-xyz") != std::string::npos);
+    CHECK_FALSE(fs::exists(dir / "keeper.log"));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+TEST_CASE("清理只保留最近 3 天，轮转备份同样按日期清，无关文件不动") {
+    auto dir = FreshLogDir("cnk_log_cleanup");
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    REQUIRE(!ec);
+    for (int d = 1; d <= 10; ++d) {
+        char name[64];
+        std::snprintf(name, sizeof(name), "keeper-2026-11-%02d.log", d);
+        Touch(dir, name);
+    }
+    Touch(dir, "keeper-2026-11-01.log.1");   // 日内轮转备份
+    Touch(dir, "keeper.log");                // 旧格式：不动
+    Touch(dir, "notes.txt");                 // 无关文件：不动
+    Touch(dir, "keeper-not-a-date.log");     // 解析不出日期：不动
+
+    const int removed = cnk::CleanupOldLogs(dir.string(), "2026-11-10", 3);
+    // 保留 08/09/10；删 01..07 共 7 个 + 01.log.1 共 1 个
+    CHECK(removed == 8);
+    CHECK(fs::exists(dir / "keeper-2026-11-08.log"));
+    CHECK(fs::exists(dir / "keeper-2026-11-09.log"));
+    CHECK(fs::exists(dir / "keeper-2026-11-10.log"));
+    CHECK_FALSE(fs::exists(dir / "keeper-2026-11-07.log"));
+    CHECK_FALSE(fs::exists(dir / "keeper-2026-11-01.log.1"));
+    CHECK(fs::exists(dir / "keeper.log"));
+    CHECK(fs::exists(dir / "notes.txt"));
+    CHECK(fs::exists(dir / "keeper-not-a-date.log"));
+    fs::remove_all(dir, ec);
+}
+
+TEST_CASE("keep_days 非法值不删任何文件") {
+    auto dir = FreshLogDir("cnk_log_badkeep");
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    Touch(dir, "keeper-2020-01-01.log");
+    CHECK(cnk::CleanupOldLogs(dir.string(), "2026-11-10", 0) == 0);
+    CHECK(fs::exists(dir / "keeper-2020-01-01.log"));
+    fs::remove_all(dir, ec);
+}
+
+TEST_CASE("HasAnyLogFile 认新旧两种日志，忽略无关文件") {
+    auto dir = FreshLogDir("cnk_log_hasany");
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    CHECK_FALSE(cnk::HasAnyLogFile(dir.string()));
+    Touch(dir, "notes.txt");
+    CHECK_FALSE(cnk::HasAnyLogFile(dir.string()));
+    Touch(dir, "keeper.log");
+    CHECK(cnk::HasAnyLogFile(dir.string()));
+    fs::remove(dir / "keeper.log", ec);
+    CHECK_FALSE(cnk::HasAnyLogFile(dir.string()));
+    Touch(dir, "keeper-2026-11-10.log");
+    CHECK(cnk::HasAnyLogFile(dir.string()));
+    fs::remove_all(dir, ec);
 }

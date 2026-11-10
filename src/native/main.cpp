@@ -56,12 +56,6 @@ void PrintLine(const std::string& s) {
     std::printf("%s\n", s.c_str());
 }
 
-bool FileExists(const std::string& utf8_path) {
-    if (utf8_path.empty()) return false;
-    const std::wstring w = cnk::Utf8ToWide(utf8_path);
-    return GetFileAttributesW(w.c_str()) != INVALID_FILE_ATTRIBUTES;
-}
-
 // 控制台控制事件（Ctrl+C / 关终端 / 注销 / 关机）。此前这些路径**什么都不记**，
 // 于是"守护进程怎么没的"永远查不出来。这里只留痕迹，处理仍交回默认行为（终止进程）。
 BOOL WINAPI OnConsoleCtrl(DWORD type) {
@@ -84,9 +78,11 @@ BOOL WINAPI OnConsoleCtrl(DWORD type) {
 //   读到标记 → 上次是正常退出的，把来源与时间补进日志；
 //   读不到 → 上次不是正常退出（被强制结束 / 崩溃 / 掉电），明确记一条警告，
 //            否则"日志里什么都没有"会让人以为程序从没跑过。
-// 只在**非首次运行**时报警（判据：keeper.log 是否已存在），免得第一次安装就误报。
-void AuditLastExit(const std::string& log_dir) {
-    const bool first_run = !FileExists(log_dir + "\\keeper.log");
+// 只在**非首次运行**时报警。判据由调用方在 LogInit 之前算好传进来：
+// 日志已改成按天分文件，且 LogInit 本身会创建当天的文件，若在这里现查目录，
+// 「本次刚创建的文件」会被误当成历史，首次安装就永远报不出「首次运行」。
+void AuditLastExit(bool has_previous_logs) {
+    const bool first_run = !has_previous_logs;
     const cnk::LastExit le = cnk::TakeLastExit();
     if (le.recorded) {
         cnk::LogInfo("上次运行正常退出（来源=" + le.reason + "，于 " + le.at + "）");
@@ -883,6 +879,7 @@ int WinMainEntry() {
     }
 
     std::string log_dir = cnk::AppDataSubDir("logs");
+    bool has_previous_logs = false;
     if (log_dir.empty()) {
         // 此前该场景是静默的：日志系统不工作且无任何提示，事后难以诊断
         //（用户环境曾出现"配置保存失败且无日志"的偶发情况，与此吻合）。
@@ -890,6 +887,9 @@ int WinMainEntry() {
         std::printf("       配置保存与日志写入将不可用，请检查目录是否存在、权限是否正常，\n");
         std::printf("       或是否有安全软件阻止了本程序写入该目录。\n");
     } else {
+        // ⚠ 必须在 LogInit 之前取：LogInit 会创建当天日志文件，之后查就永远是「有历史」
+        has_previous_logs = cnk::HasAnyLogFile(log_dir);
+        // 按天分文件 + 保留 3 天；512KB 只作日内大小保护
         cnk::LogInit(log_dir, cnk::LogLevel::Info, 512 * 1024, 3);
     }
     cnk::LogInfo("启动，模式=" + std::to_string((int)opts.mode));
@@ -920,7 +920,7 @@ int WinMainEntry() {
     //   否则父进程取走后子进程一启动就会误报"上次未正常退出"。
     if (opts.mode == cnk::CliMode::Daemon) {
         SetConsoleCtrlHandler(OnConsoleCtrl, TRUE);
-        AuditLastExit(log_dir);
+        AuditLastExit(has_previous_logs);
     }
 
     // 任务 26：UI 形态与载荷自检都不需要配置、模拟会话与单实例，提前分流。

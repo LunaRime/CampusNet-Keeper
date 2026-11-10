@@ -2,6 +2,7 @@
 #include "tray/TrayIcon.h"
 #include "core/Version.h"
 #include <cwchar>
+#include <cctype>
 #include <string>
 
 TEST_CASE("托盘状态标签与设置界面 v2 的六态语义一致") {
@@ -15,7 +16,16 @@ TEST_CASE("托盘状态标签与设置界面 v2 的六态语义一致") {
 }
 
 TEST_CASE("托盘版本行能给出版本号与构建短哈希") {
-    // 菜单第二行灰显「版本 x.y.z · git xxxxxxx」，排障时可直接对照 --version
-    CHECK(std::string(cnk::VersionString()) == "0.1.7");
+    // 菜单第二行灰显「版本 x.y.z · git xxxxxxx」，排障时可直接对照 --version。
+    // 只校验格式，不钉死具体版本值——否则每次发版都得改测试（v0.1.8 踩过）。
+    const std::string v = cnk::VersionString();
+    int dots = 0;
+    bool all_digits_or_dots = !v.empty();
+    for (char c : v) {
+        if (c == '.') ++dots;
+        else if (!std::isdigit((unsigned char)c)) all_digits_or_dots = false;
+    }
+    CHECK(all_digits_or_dots);
+    CHECK(dots == 2);
     CHECK(std::string(cnk::BuildCommitString()).length() >= 4);
 }

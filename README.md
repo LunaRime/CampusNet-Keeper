@@ -2,9 +2,9 @@
 
 校园网自动重连守护：会话失效时自动重新登录，让你在游戏里感觉不到掉线。
 
-一个仓库两部分：**Windows 守护 + Avalonia 设置界面**（同一个 exe 双形态）、**路由器端子工程**（`router/`，在 OpenWrt 上自己认证并共享会话）。当前版本 **0.1.7**。
+一个仓库两部分：**Windows 守护 + Avalonia 设置界面**（同一个 exe 双形态）、**路由器端子工程**（`router/`，在 OpenWrt 上自己认证并共享会话）。当前版本 **0.1.8**。
 
-**最新发布**：[v0.1.7](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.7)（完整版 + 精简版两个 zip；SHA256 与签名证书见对应 Release 页）。历史：[v0.1.6](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.6) / [v0.1.4](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.4) / [v0.1.3](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.3) / [v0.1.1](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.1) / [v0.1.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0)。
+**最新发布**：[v0.1.8](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.8)（完整版 + 精简版两个 zip；SHA256 见对应 Release 页）。历史：[v0.1.7](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.7) / [v0.1.6](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.6) / [v0.1.4](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.4) / [v0.1.3](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.3) / [v0.1.1](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.1) / [v0.1.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0)。
 
 | 部分 | 目录 | 语言 / 运行位置 | 说明 |
 |---|---|---|---|
@@ -27,7 +27,7 @@
 
 完整现场步骤见 `docs/M1-实测指南.md`。
 
-配置文件 `%APPDATA%\CampusNet-Keeper\config.json`（可漫游，**不含本机密文**）；密码库 `%LOCALAPPDATA%\CampusNet-Keeper\secret.json`（DPAPI 绑定「本机 + 当前 Windows 账号」）；日志 `%APPDATA%\CampusNet-Keeper\logs\keeper.log`。
+配置文件 `%APPDATA%\CampusNet-Keeper\config.json`（可漫游，**不含本机密文**）；密码库 `%LOCALAPPDATA%\CampusNet-Keeper\secret.json`（DPAPI 绑定「本机 + 当前 Windows 账号」）。日志**按天分文件**到 `%APPDATA%\CampusNet-Keeper\logs\keeper-YYYY-MM-DD.log`：跨天自动切换、保留最近 **3 天**（启动时与跨天时清理），单日超 512KB 才轮转 `.1/.2/.3` 兜底。
 
 ---
 
@@ -40,16 +40,16 @@
 - **会话异常自愈**：「终端 IP 已在线 / inuse」判成功后复测；僵尸会话、账号被占会先注销再重登，连续 3 次无效即停手并提示去门户处理，不做无意义空转。
 - **网络感知**：`NotifyAddrChange` 监听地址变化，切网/睡眠唤醒立即探测；网关 ARP 状态写进 `get_status`，`ARP 未解析` 表示二层断，此时重试登录无效。
 - **退出留痕**：`last_exit.txt` 记录正常退出的来源（托盘菜单 / WM_CLOSE / 关机 / Ctrl+C），读不到且非首次会 WARN；排查「守护进程莫名消失」先看日志开头。
-- **构建戳**：`--version` 第一行 `CampusNet-Keeper 0.1.7`，第二行 `git <短哈希>, built <UTC 时间>`（CMake 注入），用于证明真机跑的是哪次产物。
+- **构建戳**：`--version` 第一行 `CampusNet-Keeper 0.1.8`，第二行 `git <短哈希>, built <UTC 时间>`（CMake 注入），用于证明真机跑的是哪次产物。
 
-### 托盘（0.1.7 重构）
+### 托盘（v0.1.7 起统一）
 
 守护进程没有可最小化的窗口，从启动起只以托盘图标常驻；图标是**应用图标 + 右下角状态圆点**，颜色与设置界面 v2 同源（在线绿 / 探测认证蓝 / 认证失败红 / 非校园网琥珀 / 未连接灰）。左键单击或双击打开设置界面，右键弹出原生 Win32 菜单：
 
 | 菜单项 | 行为 |
 |---|---|
 | `状态：<中文状态> · <调度器消息>` | 灰显；暂停时追加「已暂停自动重连」 |
-| `版本 0.1.7 · git <短哈希>` | 灰显，便于对照产物 |
+| `版本 0.1.8 · git <短哈希>` | 灰显，便于对照产物 |
 | 打开设置… | 启动 `--ui`；界面已在跑则还原并置前；精简版弹气泡说明 |
 | 立即重连 | 立即触发一次探测/重连，**暂停态下也放行** |
 | 暂停自动重连 / 恢复自动重连 | 暂停时仍探测、仍显示状态，只是**不自动发起登录** |
@@ -102,6 +102,8 @@ v0.1.7 起界面**全面推倒重写**，设计真源是 `DESIGN.md` v2「现代
 
 **密码三态**：`ok` 已保存 / `foreign` 来自其他电脑或账号（**保留原密文原样写回**，绝不因点一次保存删掉别人的密码）/ `none` 未设置。界面**永不读取已存明文**，只显示「已保存密码」状态；跨机迁移只走显式导出/导入（PBKDF2-SHA256 200k + AES-256-GCM），绝不使用 `CRYPTPROTECT_LOCAL_MACHINE`。保存 ≠ 能登录：当前档案没有密码时界面会明确提示用「测试登录」做一次真实认证验证。
 
+**v0.1.8 修复**：完整版 exe 曾因运行时 XAML 加载下 `x:Name` 字段为 null，构造窗口即抛空引用，点「设置」毫无反应；现全部改用 `FindControl` 并加空防护，`--self-test` 与 CI 都会真正构造窗口。同时修掉日志页双层滚动条、长日志行撑破卡片，并给星号列统一加 `MinWidth=0` 防止右侧内容被挤出容器。
+
 **验收**：`pwsh -File tools/check_ui_tokens.ps1`（XML 良构、明暗键一一对应、禁裸色值、引用可解析、长文案截断、按钮居中）、`CampusNet.UI.exe --self-test`（32 个色键 × 明暗 + 圆角/字号/字体/图标）、`dotnet build`、ContractCheck 跨语言契约。
 
 ---
@@ -149,7 +151,7 @@ v0.1.7 起界面**全面推倒重写**，设计真源是 `DESIGN.md` v2「现代
 
 ## 测试与验证
 
-    ./build-m1/Release/cnk_tests.exe              # C++ 全量测试（当前 311 例 / 1395 断言）
+    ./build-m1/Release/cnk_tests.exe              # C++ 全量测试（当前 316 例 / 1417 断言）
     pwsh -File tools/check_ui_tokens.ps1          # UI 令牌静态检查（不需编译器）
     CampusNet.UI.exe --self-test                  # 明暗令牌逐值断言
     pwsh -File tools/verify_ui_host.ps1           # 载荷释放 → 弹窗 → 关窗退出 → 版本戳
@@ -162,13 +164,13 @@ v0.1.7 起界面**全面推倒重写**，设计真源是 `DESIGN.md` v2「现代
 
 ## CI 与发布
 
-`.github/workflows/ci.yml`：推送/PR 走「构建精简版 → 测试 → `--ui-info` 退 3 → 脱敏审计 → UI 令牌/契约检查」；推 `v*` tag 时先校验 tag 与 `Version.h` 一致，再用 `scripts/package.ps1` 构建两个包、解包自检后上传 GitHub Release（配 `CODESIGN_PFX_BASE64` / `CODESIGN_PFX_PASSWORD` 时自动签名）。
+`.github/workflows/ci.yml`：推送/PR 走「构建精简版 → 测试 → `--ui-info` 退 3 → 脱敏审计 → UI 令牌/契约检查 → 窗口构造自检」；推 `v*` tag 时先校验 tag 与 `Version.h` 一致，再用 `scripts/package.ps1` 构建两个包、解包自检后上传 GitHub Release（配 `CODESIGN_PFX_BASE64` / `CODESIGN_PFX_PASSWORD` 时自动签名）。
 
 发版流程（**README 的「最新发布」链接必须与 tag 同一次提交**）：
 
     git push origin master:main
-    git tag -a v0.1.7 -m "说明"
-    git push origin v0.1.7
+    git tag -a v0.1.8 -m "说明"
+    git push origin v0.1.8
 
 推送前跑 `python docs/evidence/audit_redaction.py`（CI 也会跑）：全仓文本查学号样数字串 / MAC / 私有网段，图片与压缩包资产须登记白名单。**新截图必须逐张打开看过**——栅格图里的文字文本审计看不见。发布说明里的 SHA256 必须取 **CI 产物**，不能取本地包。
 

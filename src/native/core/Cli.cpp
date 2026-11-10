@@ -104,7 +104,8 @@ std::string CliHelpText() {
         "\n"
         "配置文件默认位于 %APPDATA%\\CampusNet-Keeper\\config.json\n"
         "密码库位于 %LOCALAPPDATA%\\CampusNet-Keeper\\secret.json（本机专属，不随漫游）\n"
-        "日志位于 %APPDATA%\\CampusNet-Keeper\\logs\\keeper.log\n";
+        "日志位于 %APPDATA%\\CampusNet-Keeper\\logs\\keeper-YYYY-MM-DD.log\n"
+        "        （按天分文件，跨天自动切换，保留最近 3 天）\n";
 }
 
 }  // namespace cnk
