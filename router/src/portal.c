@@ -229,6 +229,7 @@ const char *net_state_name(NetState s) {
         case NET_ONLINE:  return "online";
         case NET_PORTAL:  return "portal";
         case NET_OFFLINE: return "offline";
+        case NET_DNS:     return "dns_degraded";
         default:          return "unknown";
     }
 }
@@ -446,11 +447,82 @@ static int can_reach_internet(const Config *c) {
     return -1;                    /* 一个都没搭上（可能目标被墙）—— 判不出来 */
 }
 
+/* ---- 阶段 A：DNS 抖动的 IP 直连旁证 ------------------------------------
+ *
+ * 本网上游 DNS 服务器就是 AC。AC 短黑洞时 DNS 先挂、1~2 秒又自己好，
+ * 旧逻辑一律判 NET_OFFLINE：刷「离线」日志、累计 offline_streak，甚至触发
+ * 一次多余登录（真机 2026-11-10 15:16 实录：复测第 1 次就通）。
+ * 关键观察：chkstatus 与门户首页都走 auth_url（IP 直连），DNS 挂掉时它们
+ * 依然可用 —— 这两个信号以前没被用上。
+ *
+ * 只有两个条件**同时**成立才判「只是 DNS 抖动」；任一失败一律按真实离线
+ * 走原有分层逻辑（保守，宁可多判一次离线，也不能漏掉二层黑洞）。 */
+static int portal_ip_reachable(const Config *c) {
+    HttpResp resp;
+    char err[128];
+
+    if (!c->auth_url[0]) return 0;
+    memset(&resp, 0, sizeof resp);
+    if (http_request("GET", c->auth_url, NULL, NULL, c->bind_ip,
+                     4000, &resp, err, sizeof err) != 0) {
+        log_write(LOG_DBG, "DNS 旁证：门户不可达（%s）", err);
+        return 0;
+    }
+    /* 只要拿到 HTTP 响应（哪怕是 404）就证明 IP 直连链路是通的 */
+    log_write(LOG_DBG, "DNS 旁证：门户 HTTP %d 可达", resp.status);
+    http_resp_free(&resp);
+    return 1;
+}
+
+static int dns_confirm_online(const Config *c) {
+    int ac = ac_says_online(c);
+    if (ac != 1) {
+        log_write(LOG_DBG, "DNS 旁证：AC 复核未确认在线（返回 %d）", ac);
+        return 0;
+    }
+    if (!portal_ip_reachable(c)) return 0;
+    log_write(LOG_INFO, "DNS 旁证：AC 与门户 IP 直连均可达，判为 DNS 抖动");
+    return 1;
+}
+
+/* 第 1 层探测。正常请求失败且确属「域名解析失败」时，阶段 B 先用缓存 IP
+ * 直连重试（Host 头保留原域名）；彻底失败才把 dns_failed 交给调用方做
+ * 阶段 A 的 IP 直连旁证确认。返回 0 表示 resp 有效，可继续走三层判定。 */
+static int probe_layer1(const Config *c, HttpResp *resp,
+                        char *err, size_t errcap, int *dns_failed) {
+    int secs = c->probe_timeout > 0 ? c->probe_timeout : 3;
+    *dns_failed = 0;
+    if (secs > 60) secs = 60;
+
+    if (http_request("GET", c->probe_url, NULL, NULL, c->bind_ip,
+                     secs * 1000, resp, err, errcap) == 0)
+        return 0;
+    if (!net_is_dns_error(err)) return -1;
+    *dns_failed = 1;
+
+    /* 缓存来自本进程此前解析成功的结果，不硬编码任何公网 IP；
+     * 过期（默认 1 小时）宁可不用，避免拿失效的 CDN 地址造出假故障。 */
+    {
+        char scheme[16], host[CNK_HOST_MAX], port[16], path[CNK_PATH_MAX], ip[64];
+        if (url_split(c->probe_url, scheme, sizeof scheme, host, sizeof host,
+                      port, sizeof port, path, sizeof path) == 0 &&
+            dns_cache_get(host, ip, sizeof ip)) {
+            if (http_request_ip("GET", c->probe_url, ip, host, c->bind_ip,
+                                secs * 1000, resp, err, errcap) == 0) {
+                log_write(LOG_INFO, "DNS 缓存兜底成功：%s → %s（Host: %s）", host, ip, host);
+                return 0;
+            }
+            log_write(LOG_WARN, "DNS 缓存兜底失败：%s → %s（%s）", host, ip, err);
+        }
+    }
+    return -1;
+}
+
 ProbeResult probe_once(const Config *c) {
     ProbeResult r;
     HttpResp resp;
     char err[192];
-    int secs;
+    int dns_failed = 0;
 
     memset(&r, 0, sizeof r);
     memset(&resp, 0, sizeof resp);
@@ -461,11 +533,17 @@ ProbeResult probe_once(const Config *c) {
         return r;
     }
 
-    secs = c->probe_timeout > 0 ? c->probe_timeout : 3;
-    if (secs > 60) secs = 60;
-
-    if (http_request("GET", c->probe_url, NULL, NULL, c->bind_ip,
-                     secs * 1000, &resp, err, sizeof err) != 0) {
+    if (probe_layer1(c, &resp, err, sizeof err, &dns_failed) != 0) {
+        /* 阶段 A：把「域名解析失败」与真实链路故障分开。
+         * 二次确认只在这一种错误上生效，204 / 200 / 3xx 三层判定原样不动，
+         * 因此不会绕过僵尸会话检测；整段黑洞时 chkstatus 也不响应，
+         * 旁证必然失败，照样走离线分层与软拔插。 */
+        if (dns_failed && dns_confirm_online(c)) {
+            r.state = NET_DNS;
+            snprintf(r.message, sizeof r.message,
+                     "DNS 解析失败，但 AC 与门户 IP 直连均可达（观察中，暂不动作）");
+            return r;
+        }
         r.state = NET_OFFLINE;
         snprintf(r.message, sizeof r.message, "探测失败：%s", err);
         return r;

@@ -34,6 +34,74 @@ typedef int sock_t;
 #define sock_close close
 #endif
 
+/* DNS 失败原因码：错误串由本文件的 sock_connect 生成，统一在这里判定，
+ * 免得调用方各自硬编码中文、拼错一个字就漏判（阶段 A 的入口）。 */
+int net_is_dns_error(const char *err) {
+    return err && err[0] && strstr(err, "域名解析失败") != NULL;
+}
+
+/* ---- 阶段 B：DNS 结果缓存 ------------------------------------------------
+ * 固定 8 槽、无堆分配。在线时每次解析成功就刷新；DNS 挂掉时 portal.c 用
+ * 缓存 IP 直连并保留原 Host 头，把「域名解析不出来」变成「还能继续探测」。
+ * 时间戳用单调时钟 now_ms()，不受 NTP 校时回拨影响。 */
+typedef struct {
+    char host[CNK_HOST_MAX];
+    char ip[64];
+    long long ts_ms;
+} DnsCacheEntry;
+
+static DnsCacheEntry g_dns_cache[CNK_DNS_CACHE_MAX];
+
+void dns_cache_clear(void) {
+    memset(g_dns_cache, 0, sizeof g_dns_cache);
+}
+
+void dns_cache_put_at(const char *host, const char *ip, long long ts_ms) {
+    int i, slot = 0;
+    long long oldest_ts = 0;
+
+    if (!host || !host[0] || !ip || !ip[0]) return;
+    for (i = 0; i < CNK_DNS_CACHE_MAX; ++i) {
+        if (g_dns_cache[i].host[0] && strcmp(g_dns_cache[i].host, host) == 0) {
+            snprintf(g_dns_cache[i].ip, sizeof g_dns_cache[i].ip, "%s", ip);
+            g_dns_cache[i].ts_ms = ts_ms;
+            return;
+        }
+    }
+    for (i = 0; i < CNK_DNS_CACHE_MAX; ++i) {
+        if (!g_dns_cache[i].host[0]) { slot = i; break; }
+        if (i == 0 || g_dns_cache[i].ts_ms < oldest_ts) {
+            oldest_ts = g_dns_cache[i].ts_ms;
+            slot = i;
+        }
+    }
+    snprintf(g_dns_cache[slot].host, sizeof g_dns_cache[slot].host, "%s", host);
+    snprintf(g_dns_cache[slot].ip, sizeof g_dns_cache[slot].ip, "%s", ip);
+    g_dns_cache[slot].ts_ms = ts_ms;
+}
+
+void dns_cache_put(const char *host, const char *ip) {
+    dns_cache_put_at(host, ip, now_ms());
+}
+
+int dns_cache_get(const char *host, char *ip, size_t cap) {
+    int i;
+    long long now;
+
+    if (!host || !host[0] || !ip || cap == 0) return 0;
+    now = now_ms();
+    for (i = 0; i < CNK_DNS_CACHE_MAX; ++i) {
+        if (g_dns_cache[i].host[0] && strcmp(g_dns_cache[i].host, host) == 0) {
+            /* 过期宁可不用：CDN IP 可能已变，拿旧地址硬连会造出假故障 */
+            if (now - g_dns_cache[i].ts_ms > (long long)CNK_DNS_CACHE_TTL * 1000)
+                return 0;
+            snprintf(ip, cap, "%s", g_dns_cache[i].ip);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* ---------------- 时间 ---------------- */
 
 void net_init(void) {
@@ -266,6 +334,16 @@ static int sock_connect(const char *host, const char *port, const char *bind_ip,
         return -1;
     }
 
+    /* 解析成功就缓存 IP（阶段 B）。纯 IP 字面量的 host 不缓存，
+     * 否则 IP 直连兜底会往缓存里塞一堆 host==ip 的无效条目。 */
+    {
+        char ipbuf[64];
+        if (getnameinfo(res->ai_addr, (int)res->ai_addrlen, ipbuf, sizeof ipbuf,
+                        NULL, 0, NI_NUMERICHOST) == 0 &&
+            strcmp(ipbuf, host) != 0)
+            dns_cache_put(host, ipbuf);
+    }
+
     for (it = res; it; it = it->ai_next) {
         sock_t fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         int ok = 0;
@@ -450,10 +528,12 @@ void http_resp_free(HttpResp *r) {
     r->body_len = 0;
 }
 
-int http_request(const char *method, const char *url, const char *body,
-                 const char *content_type, const char *bind_ip,
-                 int timeout_ms, HttpResp *out, char *err, size_t errcap) {
+static int http_request_inner(const char *method, const char *url, const char *body,
+                              const char *content_type, const char *bind_ip,
+                              int timeout_ms, HttpResp *out, char *err, size_t errcap,
+                              const char *connect_ip, const char *host_header) {
     char scheme[8], host[CNK_HOST_MAX], port[8], path[CNK_PATH_MAX];
+    const char *connect_host, *hdr_host;
     char *req = NULL;
     size_t req_len;
     sock_t fd = SOCK_INVALID;
@@ -476,16 +556,19 @@ int http_request(const char *method, const char *url, const char *body,
     }
     if (!port[0]) snprintf(port, sizeof port, "80");
 
-    if (sock_connect(host, port, bind_ip, timeout_ms, &fd, err, errcap) != 0) return -1;
+    connect_host = (connect_ip && connect_ip[0]) ? connect_ip : host;
+    hdr_host = (host_header && host_header[0]) ? host_header : host;
 
-    req = (char *)malloc(strlen(host) + strlen(path) + 512 + (body ? strlen(body) : 0));
+    if (sock_connect(connect_host, port, bind_ip, timeout_ms, &fd, err, errcap) != 0) return -1;
+
+    req = (char *)malloc(strlen(hdr_host) + strlen(path) + 512 + (body ? strlen(body) : 0));
     if (!req) { set_err(err, errcap, "内存不足"); goto done; }
 
     if (body) {
         req_len = (size_t)sprintf(req,
             "%s %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: cnkrouter/%s\r\nAccept: */*\r\n"
             "Content-Type: %s\r\nContent-Length: %u\r\nConnection: close\r\n\r\n",
-            method, path, host, CNK_VERSION,
+            method, path, hdr_host, CNK_VERSION,
             content_type ? content_type : "application/x-www-form-urlencoded",
             (unsigned)strlen(body));
         memcpy(req + req_len, body, strlen(body));
@@ -494,7 +577,7 @@ int http_request(const char *method, const char *url, const char *body,
         req_len = (size_t)sprintf(req,
             "%s %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: cnkrouter/%s\r\nAccept: */*\r\n"
             "Connection: close\r\n\r\n",
-            method, path, host, CNK_VERSION);
+            method, path, hdr_host, CNK_VERSION);
     }
 
     if (send_all(fd, req, req_len, deadline, err, errcap) != 0) goto done;
@@ -564,4 +647,18 @@ done:
     free(req);
     free(raw);
     return rc;
+}
+
+int http_request(const char *method, const char *url, const char *body,
+                 const char *content_type, const char *bind_ip,
+                 int timeout_ms, HttpResp *out, char *err, size_t errcap) {
+    return http_request_inner(method, url, body, content_type, bind_ip,
+                              timeout_ms, out, err, errcap, NULL, NULL);
+}
+
+int http_request_ip(const char *method, const char *url, const char *connect_ip,
+                    const char *host_header, const char *bind_ip,
+                    int timeout_ms, HttpResp *out, char *err, size_t errcap) {
+    return http_request_inner(method, url, NULL, NULL, bind_ip,
+                              timeout_ms, out, err, errcap, connect_ip, host_header);
 }

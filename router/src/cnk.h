@@ -99,6 +99,26 @@ void http_resp_free(HttpResp *r);
 int http_request(const char *method, const char *url, const char *body,
                  const char *content_type, const char *bind_ip,
                  int timeout_ms, HttpResp *out, char *err, size_t errcap);
+/* 错误文本是否属于「域名解析失败」：把 DNS 抖动与真实链路故障分开的入口。 */
+int net_is_dns_error(const char *err);
+
+/* ---- 阶段 B：DNS 结果缓存 + IP 直连兜底 ----
+ * 在线时把解析出的 IP 按 host 缓存；DNS 挂掉时用缓存 IP 直连，
+ * 并在 HTTP 请求里保留原 Host 头（CDN 靠 Host 选站点）。
+ * 固定数组、无堆分配，适合路由器常驻进程。 */
+#define CNK_DNS_CACHE_MAX 8
+#define CNK_DNS_CACHE_TTL 3600      /* 秒 */
+void dns_cache_put(const char *host, const char *ip);
+/* 仅供 --selftest 构造过期条目；正常代码用 dns_cache_put */
+void dns_cache_put_at(const char *host, const char *ip, long long ts_ms);
+int  dns_cache_get(const char *host, char *ip, size_t cap);
+void dns_cache_clear(void);
+
+/* connect_ip 非空时用它建连（IP 字面量，不查 DNS），host_header 非空时替换 Host 头。
+ * url 仍传原始 URL，用于取 path / port。 */
+int http_request_ip(const char *method, const char *url, const char *connect_ip,
+                    const char *host_header, const char *bind_ip,
+                    int timeout_ms, HttpResp *out, char *err, size_t errcap);
 /* Windows 下做 WSAStartup；POSIX 下为空操作 */
 void net_init(void);
 
@@ -183,7 +203,11 @@ typedef enum {
     NET_UNKNOWN = 0,   /* 未配置探测地址 */
     NET_ONLINE  = 1,
     NET_PORTAL  = 2,
-    NET_OFFLINE = 3
+    NET_OFFLINE = 3,
+    /* 第 1 层因「域名解析失败」不通，但 IP 直连的 AC 复核与门户都还可达：
+     * 多半是上游 DNS 抖动（本网 DNS 服务器就是 AC）。观察态，不判离线、
+     * 不触发登录/软拔插；由 run_daemon 快重探，连续失败再降级为真实离线。 */
+    NET_DNS     = 4
 } NetState;
 
 typedef struct {

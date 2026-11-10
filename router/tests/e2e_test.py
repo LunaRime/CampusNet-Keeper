@@ -338,6 +338,33 @@ def main():
     check("守护日志出现已恢复在线", "已恢复在线" in dout, dout[-400:])
     check("守护日志包含启动信息", "启动" in dout, dout[:300])
 
+    # ---- 阶段 A：DNS 抖动 vs 真实离线 ----------------------------------
+    # .invalid 是 RFC 2606 保留 TLD，getaddrinfo 必定失败，不依赖外网状态。
+    print("== 6. DNS 解析失败但 IP 直连旁证通 → 观察态 ==")
+    STATE["online"] = True
+    write_conf("pw123")
+    with open(conf, "r", encoding="utf-8") as f:
+        dns_conf = f.read()
+    dns_conf = re.sub(r"probe_url=[^\n]+",
+                      "probe_url=http://cnk-no-such-host.invalid/generate_204", dns_conf)
+    with open(conf, "w", encoding="utf-8") as f:
+        f.write(dns_conf)
+    rc, out = run_client(exe, conf, "--probe")
+    check("退出码 0（观察态按在线处理）", rc == 0, "rc=%d\n%s" % (rc, out[-400:]))
+    check("状态为 dns_degraded", "dns_degraded" in out, out[-400:])
+    check("有 IP 直连旁证日志", "DNS 旁证" in out, out[-400:])
+
+    print("== 7. DNS 解析失败且旁证也断 → 真实离线 ==")
+    # auth_url 也换成不可解析域名：chkstatus 与门户都够不着 → 旁证必须失败
+    dark_conf = re.sub(r"auth_url=[^\n]+",
+                       "auth_url=http://cnk-no-such-host.invalid/", dns_conf)
+    with open(conf, "w", encoding="utf-8") as f:
+        f.write(dark_conf)
+    rc, out = run_client(exe, conf, "--probe")
+    check("退出码 3（真实离线）", rc == 3, "rc=%d\n%s" % (rc, out[-400:]))
+    check("状态为 offline", "offline" in out, out[-400:])
+    check("未误判为观察态", "dns_degraded" not in out, out[-400:])
+
     srv.shutdown()
     print()
     if fails:

@@ -762,6 +762,7 @@ static int handle_link_down(const Config *c) {
 static int run_daemon(Config *c) {
     static const int backoff[] = {15, 30, 60, 120, 300};
     int bidx = 0, total = 0, ever_ok = 0, stopped = 0, offline_streak = 0;
+    int dns_streak = 0;   /* 连续「DNS 抖动但旁证通」的轮数，超过阈值按真实离线处理 */
     int was_online = 0;   /* 上一轮是否在线：用于只在状态切换时打日志 */
 
     log_write(LOG_INFO, "cnkrouter %s 启动：账号=%s 认证地址=%s 探测间隔=%ds",
@@ -802,8 +803,29 @@ static int run_daemon(Config *c) {
             total = 0;
             bidx = 0;
             offline_streak = 0;
+            dns_streak = 0;
             sleep_slices(c->probe_interval * 1000);
             continue;
+        }
+
+        /* NET_DNS 是观察态，不是离线：IP 直连旁证还在，链路大概率没断。
+         * 快重探 1.5 秒、最多 3 轮（合计约 4.5 秒，与旧版离线判定 3 秒同量级）；
+         * 连续 3 轮仍解析不了就说明不是瞬时抖动，降级按真实离线分层处理。
+         * 观察期间不动 was_online / quiet，避免恢复时刷一条「已恢复在线」。 */
+        if (pr.state == NET_DNS) {
+            if (stopped) { sleep_slices(60000); continue; }
+            ++dns_streak;
+            log_write(LOG_WARN, "DNS 解析失败，IP 直连旁证仍通（观察 %d/3）：%s",
+                      dns_streak, pr.message);
+            if (dns_streak < 3) {
+                sleep_slices(1500);
+                continue;
+            }
+            log_write(LOG_WARN, "连续 3 次 DNS 仍无法解析，不再当抖动，按真实离线处理");
+            dns_streak = 0;
+            offline_streak = 2;   /* 直接进分层，不再叠加 1.5s×2 的等待 */
+            snprintf(pr.message, sizeof pr.message, "连续 3 次 DNS 解析失败（IP 直连旁证已失效）");
+            /* 落到下面的离线分层逻辑 */
         }
 
         /* 不在线：关闭静默，恢复详细日志，便于观察后续处置 */
@@ -819,7 +841,7 @@ static int run_daemon(Config *c) {
             sleep_slices(10000);
             continue;
         }
-        if (pr.state == NET_OFFLINE) {
+        if (pr.state == NET_OFFLINE || pr.state == NET_DNS) {
             char gw[64], mac[32];
             int gws = link_gw_status(gw, sizeof gw, mac, sizeof mac);
             int thr = c->link_after > 0 ? c->link_after : 2;
@@ -857,7 +879,13 @@ static int run_daemon(Config *c) {
             log_write(LOG_WARN, "层次判定：属认证问题，主动尝试登录");
         }
 
-        log_write(LOG_INFO, "检测到门户劫持：%s", pr.message);
+        /* 只有 NET_PORTAL 才是真的被劫持。NET_OFFLINE 走到这里说明故障分层判定
+         * 认为属认证侧问题，pr.message 是「探测失败：…」；以前两种情况都打
+         * 「检测到门户劫持」，真机 15:16 出现「检测到门户劫持：探测失败：域名解析失败」
+         * 这种自相矛盾的日志。按状态分开写。 */
+        log_write(LOG_INFO, "%s：%s",
+                  pr.state == NET_PORTAL ? "检测到门户劫持" : "层次判定后尝试登录",
+                  pr.message);
         {
             LoginResult lr = portal_login(c);
             ++total;
@@ -870,6 +898,10 @@ static int run_daemon(Config *c) {
                 if (wait_online(c, 2, 1000)) {
                     log_write(LOG_INFO, "服务器报已在线，复测也通，正常");
                     ever_ok = 1;
+                    /* 复测已确认在线：同步状态位，否则下一轮 probe 又按「从离线恢复」
+                     * 再打一条「已恢复在线」，同一秒出现两条（2026-11-10 实测）。 */
+                    was_online = 1;
+                    probe_set_quiet(1);
                     total = 0;
                     bidx = 0;
                 } else {
@@ -883,6 +915,8 @@ static int run_daemon(Config *c) {
                 if (wait_online(c, 4, 1000)) {
                     log_write(LOG_INFO, "已恢复在线");
                     ever_ok = 1;
+                    was_online = 1;
+                    probe_set_quiet(1);
                     total = 0;
                     bidx = 0;
                 } else {
@@ -1037,6 +1071,38 @@ static int selftest(void) {
         } else log_write(LOG_INFO, "自检通过：mask_id（取证字段稳定脱敏）");
     }
 
+    /* DNS 失败原因码分类（阶段 A 的入口，错误串由 net.c 生成） */
+    {
+        int ok = 1;
+        ok &= net_is_dns_error("域名解析失败：connectivitycheck.platform.hicloud.com");
+        ok &= !net_is_dns_error("连接超时（目标无响应，疑似被丢包/黑洞）");
+        ok &= !net_is_dns_error("主机/网络不可达（网关不通或路由不可达）");
+        ok &= !net_is_dns_error("");
+        ok &= !net_is_dns_error(NULL);
+        if (!ok) { log_write(LOG_ERR, "自检失败：net_is_dns_error 分类"); ++fails; }
+        else log_write(LOG_INFO, "自检通过：net_is_dns_error（DNS 失败原因码）");
+    }
+
+    /* DNS 结果缓存（阶段 B）：命中 / 覆盖 / 未命中 / 过期 / 清空 */
+    {
+        char ip[64];
+        int ok = 1;
+        dns_cache_clear();
+        ok &= dns_cache_get("a.example", ip, sizeof ip) == 0;
+        dns_cache_put("a.example", "192.0.2.1");
+        ok &= dns_cache_get("a.example", ip, sizeof ip) == 1 && strcmp(ip, "192.0.2.1") == 0;
+        dns_cache_put("a.example", "192.0.2.9");   /* 同 host 覆盖 */
+        ok &= dns_cache_get("a.example", ip, sizeof ip) == 1 && strcmp(ip, "192.0.2.9") == 0;
+        ok &= dns_cache_get("b.example", ip, sizeof ip) == 0;
+        dns_cache_put_at("exp.example", "192.0.2.7",
+                         now_ms() - (long long)CNK_DNS_CACHE_TTL * 1000 - 1);
+        ok &= dns_cache_get("exp.example", ip, sizeof ip) == 0;   /* 过期不认 */
+        dns_cache_clear();
+        ok &= dns_cache_get("a.example", ip, sizeof ip) == 0;
+        if (!ok) { log_write(LOG_ERR, "自检失败：dns_cache 缓存/过期"); ++fails; }
+        else log_write(LOG_INFO, "自检通过：dns_cache（命中/覆盖/过期/清空）");
+    }
+
     /* 构建身份：CI 用 strings 校验它确实烧进了交叉产物 */
     {
         const char *id = CNK_BUILD_ID;
@@ -1149,7 +1215,9 @@ int main(int argc, char **argv) {
     if (mode == 4) {
         ProbeResult pr = probe_once(&cfg);
         printf("%s\t%s\n", net_state_name(pr.state), pr.message);
-        return pr.state == NET_ONLINE ? 0 : (pr.state == NET_PORTAL ? 2 : 3);
+        /* NET_DNS 按在线处理（守护处于观察态，不动作），输出 dns_degraded 便于识别 */
+        return (pr.state == NET_ONLINE || pr.state == NET_DNS) ? 0 :
+               (pr.state == NET_PORTAL ? 2 : 3);
     }
     if (mode == 3) {
         LoginResult lr = portal_login(&cfg);
