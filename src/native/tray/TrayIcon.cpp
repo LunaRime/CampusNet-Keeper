@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/LastExit.h"
 #include "core/Paths.h"
+#include "core/Version.h"
 #include "core/NetworkChange.h"
 #include "ipc/DaemonCommands.h"
 #include "ipc/PipeServer.h"
@@ -32,10 +33,12 @@ constexpr int kStateCount = 8;   // RunState 目前 7 个，留一个余量
 
 enum MenuId {
     kMenuStatus = 1,
-    kMenuOpenUi = 2,
-    kMenuReconnect = 3,
-    kMenuOpenLog = 4,
-    kMenuQuit = 5,
+    kMenuVersion = 2,
+    kMenuOpenUi = 3,
+    kMenuReconnect = 4,
+    kMenuTogglePause = 5,
+    kMenuOpenLog = 6,
+    kMenuQuit = 7,
 };
 
 // Utf8ToWide 用 cnk 命名空间里的公共实现（ui_host/PayloadExtract.h），这里不再重复定义
@@ -46,18 +49,27 @@ void OpenPathInExplorer(const std::string& path) {
 
 // ---------------------------------------------------------------- 托盘图标
 
-// 状态徽标颜色（与 DESIGN.md 的语义令牌同源：成功绿 / 信息蓝 / 危险红 / 中性灰）
+// 状态徽标颜色：与 DESIGN.md v2 的语义令牌一一对应
+//（成功绿 CnkSuccess / 信息蓝 CnkInfo / 危险红 CnkDanger / 警告琥珀 CnkWarning / 中性灰 CnkOffline）
 COLORREF BadgeColor(RunState s) {
     switch (s) {
         case RunState::Online: return RGB(0x16, 0xA3, 0x4A);
         case RunState::Probing:
         case RunState::PortalDetected:
         case RunState::Authenticating: return RGB(0x25, 0x63, 0xEB);
-        case RunState::AuthFailed:
-        case RunState::NotCampusNetwork: return RGB(0xDC, 0x26, 0x26);
+        case RunState::AuthFailed: return RGB(0xDC, 0x26, 0x26);
+        case RunState::NotCampusNetwork: return RGB(0xD9, 0x77, 0x06);  // v2：非校园网是警告，不是错误
         case RunState::Disconnected:
         default: return RGB(0x6B, 0x72, 0x80);
     }
+}
+
+// tooltip 形如「CampusNet-Keeper — <调度器消息>」，菜单状态行只需要后半段；
+// 放全名会让菜单项又长又重复，还容易把菜单撑出屏幕。
+std::wstring StripTooltipPrefix(const std::wstring& tip) {
+    static const std::wstring kPrefix = L"CampusNet-Keeper — ";
+    if (tip.rfind(kPrefix, 0) == 0) return tip.substr(kPrefix.size());
+    return tip;
 }
 
 // 从本 exe 资源加载应用图标；资源缺失（例如测试程序没编进 app.rc）时回退系统图标
@@ -189,10 +201,11 @@ LRESULT CALLBACK TrayIcon::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case WM_COMMAND:
             switch (LOWORD(wp)) {
-                case kMenuOpenUi:    if (self->on_open_ui_) self->on_open_ui_(); break;
-                case kMenuReconnect: if (self->on_reconnect_) self->on_reconnect_(); break;
-                case kMenuOpenLog:   if (self->on_open_log_) self->on_open_log_(); break;
-                case kMenuQuit:      if (self->on_quit_) self->on_quit_(); break;
+                case kMenuOpenUi:      if (self->on_open_ui_) self->on_open_ui_(); break;
+                case kMenuReconnect:   if (self->on_reconnect_) self->on_reconnect_(); break;
+                case kMenuTogglePause: if (self->on_toggle_pause_) self->on_toggle_pause_(); break;
+                case kMenuOpenLog:     if (self->on_open_log_) self->on_open_log_(); break;
+                case kMenuQuit:        if (self->on_quit_) self->on_quit_(); break;
             }
             return 0;
         // 退出来历：这三条路径此前都静默地走到 WM_DESTROY，事后完全分不清是谁关的。
@@ -300,10 +313,12 @@ void TrayIcon::ShowBalloon(const std::string& title, const std::string& text) {
 void TrayIcon::SetCallbacks(std::function<void()> on_open_ui,
                             std::function<void()> on_reconnect,
                             std::function<void()> on_open_log,
+                            std::function<void()> on_toggle_pause,
                             std::function<void()> on_quit) {
     on_open_ui_ = std::move(on_open_ui);
     on_reconnect_ = std::move(on_reconnect);
     on_open_log_ = std::move(on_open_log);
+    on_toggle_pause_ = std::move(on_toggle_pause);
     on_quit_ = std::move(on_quit);
 }
 
@@ -322,12 +337,26 @@ void TrayIcon::OnTrayMessage(LPARAM lparam) {
 
 void TrayIcon::ShowContextMenu() {
     HMENU menu = CreatePopupMenu();
-    // 状态行：显示最近一次的工具提示文本（即调度器的状态说明）
-    std::wstring status = L"状态：" + last_tooltip_;
+
+    // 状态行：中文状态标签 + 调度器消息，与设置界面 v2 的六态语义一致。
+    // 去掉 tooltip 里冗余的应用名前缀，并截断长文案避免菜单撑出屏幕。
+    const std::wstring detail = StripTooltipPrefix(last_tooltip_);
+    std::wstring status = std::wstring(L"状态：") + TrayStateLabel(state_);
+    if (!detail.empty()) status += L" · " + detail;
+    if (paused_) status += L"（已暂停自动重连）";
+    if (status.size() > 60) status = status.substr(0, 57) + L"…";
     AppendMenuW(menu, MF_STRING | MF_GRAYED, kMenuStatus, status.c_str());
+
+    // 版本行：短哈希来自 CMake 构建戳，排障时能直接对照跑的是哪次产物
+    const std::wstring version = L"版本 " + Utf8ToWide(VersionString()) +
+                                 L" · git " + Utf8ToWide(BuildCommitString());
+    AppendMenuW(menu, MF_STRING | MF_GRAYED, kMenuVersion, version.c_str());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, kMenuOpenUi, L"设置…");
+
+    AppendMenuW(menu, MF_STRING, kMenuOpenUi, L"打开设置…");
     AppendMenuW(menu, MF_STRING, kMenuReconnect, L"立即重连");
+    AppendMenuW(menu, MF_STRING, kMenuTogglePause,
+                paused_ ? L"恢复自动重连" : L"暂停自动重连");
     AppendMenuW(menu, MF_STRING, kMenuOpenLog, L"打开日志目录");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuQuit, L"退出");
@@ -392,8 +421,19 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
             tray.ShowBalloon("CampusNet-Keeper", "已触发立即重连");
         },
         [&tray]() {
-            std::string dir = AppDataDir();
+            // 与设置界面「打开日志目录」统一到 logs 子目录（原来开的是应用数据根目录）
+            std::string dir = AppDataSubDir("logs");
             OpenPathInExplorer(dir);
+        },
+        [sch, &tray]() {
+            const bool paused = !sch->IsPaused();
+            sch->SetPaused(paused);
+            tray.SetPaused(paused);
+            LogInfo(paused ? "用户已暂停自动重连（探测继续，不自动登录）"
+                           : "用户已恢复自动重连");
+            tray.ShowBalloon("自动重连", paused
+                ? "已暂停：仍显示网络状态，但不会自动发起登录"
+                : "已恢复：断线时会自动重新登录");
         },
         [&tray]() {
             LogInfo("用户通过托盘菜单「退出」");
@@ -487,6 +527,19 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
         // 空闲等待：有消息（含定时器到期）立刻醒，否则最多等 250ms。
         // 状态变化只由 WM_TIMER→Tick 产生，等待会被其唤醒，无需高频空转。
         MsgWaitForMultipleObjects(0, nullptr, FALSE, 250, QS_ALLINPUT);
+    }
+}
+
+const wchar_t* TrayStateLabel(RunState s) {
+    switch (s) {
+        case RunState::Online:           return L"在线";
+        case RunState::Probing:          return L"探测中";
+        case RunState::PortalDetected:   return L"需要认证";
+        case RunState::Authenticating:   return L"认证中";
+        case RunState::AuthFailed:       return L"认证失败";
+        case RunState::NotCampusNetwork: return L"非校园网";
+        case RunState::Disconnected:
+        default:                         return L"未连接";
     }
 }
 

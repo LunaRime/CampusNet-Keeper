@@ -99,7 +99,7 @@ std::string CliHelpText() {
         "  --simulate-pass=<密码>  模拟服务器的有效密码（配合 --simulate）\n"
         "  --simulate-fail=<模式>  故障注入：badcred（凭据错误）| timeout（挂起）|\n"
         "                        hijack302（裸 302 劫持，模拟真实环境形态）\n"
-        "  --version             显示版本号\n"
+        "  --version             显示版本号与构建戳（git 短哈希 / 构建时间）\n"
         "  --help                显示本帮助\n"
         "\n"
         "配置文件默认位于 %APPDATA%\\CampusNet-Keeper\\config.json\n"

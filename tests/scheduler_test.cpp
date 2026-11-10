@@ -83,6 +83,59 @@ TEST_CASE("被劫持且凭据正确时自动登录并恢复在线") {
     srv.Stop();
 }
 
+TEST_CASE("暂停自动重连后不发起登录，手动「立即重连」仍放行一次") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
+    cfg.settings.probe_url = srv.BaseUrl() + "/";   // 会被判为门户劫持
+    cfg.settings.probe_expect = "Microsoft NCSI";
+    cnk::Scheduler sch(cfg);
+    sch.SetPaused(true);
+    CHECK(sch.IsPaused());
+
+    // 构造后 probe_immediately 默认 true，第一次 Tick 就会探测，无需 ForceReconnect
+    for (int i = 0; i < 5; ++i) sch.Tick();
+    CHECK(srv.LoginCount() == 0);
+    CHECK(sch.State() == cnk::RunState::PortalDetected);
+    CHECK(sch.LastMessage().find("已暂停自动重连") != std::string::npos);
+
+    // 用户主动点托盘「立即重连」：暂停态下也放行这一次
+    sch.ForceReconnect();
+    sch.Tick();
+    CHECK(srv.LoginCount() >= 1);
+    srv.Stop();
+}
+
+TEST_CASE("恢复自动重连后重新自动登录（不走手动放行）") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
+    cfg.settings.probe_url = srv.BaseUrl() + "/";
+    cfg.settings.probe_expect = "Microsoft NCSI";
+    cnk::Scheduler sch(cfg);
+    sch.SetPaused(true);
+    sch.Tick();
+    CHECK(srv.LoginCount() == 0);
+
+    sch.SetPaused(false);
+    CHECK_FALSE(sch.IsPaused());
+    // SetConfig 只触发立即探测，不会设 manual_override —— 验证的是纯自动路径
+    sch.SetConfig(cfg);
+    sch.Tick();
+    CHECK(srv.LoginCount() >= 1);
+    srv.Stop();
+}
+
 TEST_CASE("凭据错误时停止重试并进入 AuthFailed") {
     cnk::SimServer srv;
     cnk::SimOptions o;

@@ -96,9 +96,18 @@ TEST_CASE("无 visit_blacklist 时解析返回 false") {
 }
 
 TEST_CASE("DefaultProbeTarget 返回内置默认值") {
-    // 2026-10-16 实测修订：内置默认改为清单内 4/4 可达的 Apple 探测页
-    //（原 msftncsi 在本校园网 0/4 可达，会让「在线」被判成「离线」）
+    // 2026-11-10 迁移 router 端真机实证：苹果探测页在本网被 DNS 劫持，
+    // 且上游 DNS 就是 AC；改用实测 204 / 0.038s / 无重定向的 hicloud generate_204。
+    // expect 留空：204 走三层判定，200 无标识时判 PortalDetected。
     auto t = cnk::DefaultProbeTarget();
-    CHECK(t.url == "http://captive.apple.com/hotspot-detect.html");
-    CHECK(t.expect == "Success");
+    CHECK(t.url == "http://connectivitycheck.platform.hicloud.com/generate_204");
+    CHECK(t.expect.empty());
+}
+
+TEST_CASE("黑名单含 hicloud 域名时可选中 generate_204（expect 留空）") {
+    std::vector<std::string> bl = {"connectivitycheck.platform.hicloud.com"};
+    cnk::ProbeTarget t;
+    REQUIRE(cnk::SelectProbeTarget(bl, t));
+    CHECK(t.url == "http://connectivitycheck.platform.hicloud.com/generate_204");
+    CHECK(t.expect.empty());
 }

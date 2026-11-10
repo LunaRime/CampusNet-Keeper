@@ -84,7 +84,7 @@ TEST_CASE("损坏的配置文件被备份且返回失败，不崩溃") {
     CHECK(err.size() > 0);
     CHECK(fs::exists(path + ".bak"));       // 已备份
     CHECK(cfg.profiles.empty());            // 回落到干净默认值
-    CHECK(cfg.settings.probe_interval_seconds == 5);
+    CHECK(cfg.settings.probe_interval_seconds == 30);
 
     CleanDir(dir);
 }

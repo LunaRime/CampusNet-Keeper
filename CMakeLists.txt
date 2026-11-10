@@ -61,6 +61,23 @@ target_include_directories(cnk_core PUBLIC src/native third_party)
 target_link_libraries(cnk_core PUBLIC
   winhttp crypt32 bcrypt shell32 advapi32 ole32 user32 ws2_32 iphlpapi)
 
+# 构建戳（对齐 router 端 CNK_BUILD_ID）：把 git 短哈希与 UTC 构建时间烧进二进制，
+# --version 第二行输出，真机排查时才能证明"跑的到底是哪次提交"。
+# 时间戳刻意用无空格的 ISO 形式，避免 MSVC 命令行宏被空格拆开。
+execute_process(COMMAND git rev-parse --short HEAD
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                OUTPUT_VARIABLE CNK_GIT_COMMIT
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+if(NOT CNK_GIT_COMMIT)
+  set(CNK_GIT_COMMIT "unknown")
+endif()
+string(TIMESTAMP CNK_BUILD_STAMP "%Y-%m-%dT%H:%M:%S" UTC)
+target_compile_definitions(cnk_core PUBLIC
+  CNK_BUILD_COMMIT=\"${CNK_GIT_COMMIT}\"
+  CNK_BUILD_TIME=\"${CNK_BUILD_STAMP}\")
+message(STATUS "构建戳: git ${CNK_GIT_COMMIT}, built ${CNK_BUILD_STAMP}")
+
 # 主程序是 GUI 子系统（见下面的 WIN32_EXECUTABLE）：CLI 输出由 main.cpp 的
 # BindStandardStreams 自己接上（cmd/管道/重定向三种场景都覆盖），
 # 守护形态则不申请控制台——双击与开机自启都不会闪黑窗。
@@ -96,6 +113,7 @@ enable_testing()
 add_executable(cnk_tests
   tests/test_main.cpp
   tests/smoke_test.cpp
+  tests/tray_menu_test.cpp
   tests/log_test.cpp
   tests/sim_test.cpp
   tests/http_test.cpp

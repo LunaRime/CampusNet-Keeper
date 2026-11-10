@@ -866,7 +866,10 @@ int WinMainEntry() {
         return 0;
     }
     if (opts.mode == cnk::CliMode::Version) {
+        // 第一行保持纯版本号（package.ps1 / 验收脚本按它比对 tag），
+        // 第二行给构建戳：真机排障时能证明跑的是哪个提交、哪次构建。
         std::printf("CampusNet-Keeper %s\n", cnk::VersionString());
+        std::printf("%s\n", cnk::BuildStampString());
         return 0;
     }
 

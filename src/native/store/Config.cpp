@@ -185,7 +185,13 @@ bool ParseConfigJson(const std::string& json_str, AppConfig& out, std::string& e
         if (j.contains("settings") && j["settings"].is_object()) {
             const auto& s = j["settings"];
             auto& t = out.settings;
-            t.probe_interval_seconds = s.value("probe_interval_seconds", 5);
+            // 缺键回落到结构体默认值（不写字面量，避免改默认值时漏一处）。
+            // 钳制对齐 router 端：<10 秒或 >1 小时都回落到 30 秒，防止手改配置
+            // 把探测压成紧凑循环、把 AC 打成风控对象。
+            t.probe_interval_seconds = s.value("probe_interval_seconds",
+                                               t.probe_interval_seconds);
+            if (t.probe_interval_seconds < 10 || t.probe_interval_seconds > 3600)
+                t.probe_interval_seconds = 30;
             // 缺键时回落到结构体默认值（不写字面量，避免默认值改了一处漏一处）
             t.probe_timeout_seconds = s.value("probe_timeout_seconds", t.probe_timeout_seconds);
             t.probe_url = s.value("probe_url", t.probe_url);

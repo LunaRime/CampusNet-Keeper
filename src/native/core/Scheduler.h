@@ -28,6 +28,11 @@ public:
     void ForceReconnect();
     void SetConfig(const AppConfig& cfg);
 
+    // 托盘「暂停/恢复自动重连」：暂停时仍探测、仍显示状态，只是不自动发起登录。
+    // 用户主动点「立即重连」不受暂停影响（ForceReconnect 会放行一次）。
+    void SetPaused(bool paused);
+    bool IsPaused() const;
+
     // 系统网络状态发生变化（地址变更、睡眠唤醒、网卡上下线）时调用。
     // 下一次 Tick 将立即探测，不等轮询周期。
     // 本方法可从任意线程调用（只写原子标志，主线程 Tick 中消费）。

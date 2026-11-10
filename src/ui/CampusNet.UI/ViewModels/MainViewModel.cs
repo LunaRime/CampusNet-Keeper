@@ -48,9 +48,11 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _logText = "";
 
     // 高级设置（镜像 C++ Settings）。数值型用 decimal 以便直接绑 NumericUpDown。
-    [ObservableProperty] private decimal _probeIntervalSeconds = 5;
+    // 默认值与 C++ 守护的 Settings 保持一致（2026-11-10 迁移 router 端实证）：
+    // 30 秒间隔 + generate_204；204 仍须走 AC 复核 + 出网验证。
+    [ObservableProperty] private decimal _probeIntervalSeconds = 30;
     [ObservableProperty] private decimal _probeTimeoutSeconds = 6;
-    [ObservableProperty] private string _probeUrl = "http://captive.apple.com/hotspot-detect.html";
+    [ObservableProperty] private string _probeUrl = "http://connectivitycheck.platform.hicloud.com/generate_204";
     [ObservableProperty] private bool _autostart = true;
     [ObservableProperty] private bool _notifyOnReconnect = true;
     [ObservableProperty] private string _retryBackoffText = "5, 10, 20, 30, 60";

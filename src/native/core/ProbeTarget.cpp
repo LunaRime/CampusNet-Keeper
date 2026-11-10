@@ -16,12 +16,18 @@ struct Candidate {
 //   msftncsi       200 / ~880ms     ← 历史上曾 0/4 不可达（M1 假失败根因），放最后
 // 注意：清单只说明"这些地址免劫持"，**不保证可达**。所以 Scheduler 不拿它去改探测
 // 地址（见 DoProbe 里的说明），只有 `--detect` 会给建议，且建议前会真的打一次。
+//
+// 2026-11-10：追加 router 端实证可用的 hicloud generate_204（204 / 0.038s / 无重定向）。
+// 放在队尾是刻意的：Windows 端还没对这份清单里的 hicloud 条目做过耗时实测，
+// 而 apple/firefox/msftncsi 的优先级有真机数据支撑；默认探测地址则由
+// DefaultProbeTarget() 直接给 hicloud（那里是已实证的结论）。
 const Candidate kCandidates[] = {
     {"captive.apple", "http://captive.apple.com/hotspot-detect.html",  "Success"},
     {"detectportal",  "http://detectportal.firefox.com/success.txt",   "success"},
     {"success.txt",   "http://detectportal.firefox.com/success.txt",   "success"},
     {"msftncsi",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
     {"ncsi.txt",      "http://www.msftncsi.com/ncsi.txt",              "Microsoft NCSI"},
+    {"hicloud",       "http://connectivitycheck.platform.hicloud.com/generate_204", ""},
 };
 
 // 域名/标识符边界匹配：needle 必须位于串首或 '.'、'/' 之后，且后随 '.' 或串尾。
@@ -92,10 +98,11 @@ bool SelectProbeTarget(const std::vector<std::string>& blacklist, ProbeTarget& o
 }
 
 ProbeTarget DefaultProbeTarget() {
-    // 与 store/Config.h 的 Settings 默认值保持一致（2026-10-16 实测：msftncsi 在本
-    // 校园网直连 0/4 可达，captive.apple.com 4/4 且约 50ms）。当前无生产调用方，
-    // 但留成不可达地址就是地雷，故同步。
-    return ProbeTarget{"http://captive.apple.com/hotspot-detect.html", "Success"};
+    // 与 store/Config.h 的 Settings 默认值保持一致（2026-11-10 迁移 router 端
+    // 真机实证）：苹果探测页在本网被 DNS 劫持、且上游 DNS 就是 AC，
+    // 200+Success 不能单独当在线证据；hicloud generate_204 实测 204 / 0.038s /
+    // 无重定向。expect 留空：204 走三层判定，200 无标识时判 PortalDetected。
+    return ProbeTarget{"http://connectivitycheck.platform.hicloud.com/generate_204", ""};
 }
 
 }  // namespace cnk

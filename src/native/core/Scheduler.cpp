@@ -66,6 +66,10 @@ struct Scheduler::Impl {
     size_t backoff_index = 0;
     bool ever_succeeded = false;
     bool stop_retrying = false;
+    // 托盘「暂停自动重连」：暂停只挡自动登录，探测与状态显示照常。
+    bool paused = false;
+    // ForceReconnect（用户主动点「立即重连」）放行一次，不受暂停影响。
+    bool manual_override = false;
 
     // 「会话被占 / 僵尸会话」的处置计数（2026-10-30）。
     // 为什么要单独计数：这两种失败**重试无效**，只能靠「注销 → 重登」清理。
@@ -75,8 +79,8 @@ struct Scheduler::Impl {
     long long last_logout_unix = 0;
 
     Clock::time_point next_probe{};
-    // 上次向 AC（认证服务器）复核会话的结果与时间。探测默认 5 秒一轮，但没必要每 5 秒
-    // 都问一次门户；询问频率对齐 router 端（那边一轮探测 30 秒）。
+    // 上次向 AC（认证服务器）复核会话的结果与时间。探测间隔与 AC 复核节流都对齐
+    // router 端的 30 秒：一轮最多发 3~4 个 HTTP，间隔过短会压 AC 并放大 DNS 抖动。
     // ⚠ 节流期间必须**复用上次结论**，不能当「查不出来」：AC 说会话没了是确定性结论，
     // 丢掉它就会在下一轮退回只靠出网验证，把刚判死的会话又判回在线。
     // 登录成功/网络变更/用户手动重连时无条件失效，避免旧结论压住新状态。
@@ -271,6 +275,10 @@ struct Scheduler::Impl {
 };
 
 void Scheduler::Impl::DoProbe() {
+    // 一次性消费手动放行标志：只有本轮探测能用，不会漏到下一轮把暂停态架空
+    const bool manual = manual_override;
+    manual_override = false;
+
     const bool was_stopped = stop_retrying;
     const RunState stopped_state = state;
 
@@ -380,6 +388,13 @@ void Scheduler::Impl::DoProbe() {
 
     // PortalDetected
     state = RunState::PortalDetected;
+    // 暂停时跳过登录：仍显示「需认证」状态，但绝不拿账号去撞门户。
+    // 用户手动点「立即重连」时 manual=true，放行这一次。
+    if (paused && !manual) {
+        message = "已暂停自动重连：探测到门户劫持，未发起登录";
+        ScheduleNext(cfg.settings.probe_interval_seconds);
+        return;
+    }
     message = pr.message;
     // spec §7：识别（DoLogin 中执行）的输入是「Portal 的响应头与页面 HTML」。
     // 真实劫持 302 常不含指纹（本机实测 2026-10-16 为裸 302），须先抓取
@@ -511,6 +526,8 @@ Scheduler::~Scheduler() = default;
 void Scheduler::Tick() { impl_->Tick(); }
 
 void Scheduler::ForceReconnect() {
+    // 用户主动触发：即使处于「暂停自动重连」也放行这一次登录
+    impl_->manual_override = true;
     impl_->probe_immediately.store(true);
     impl_->stop_retrying = false;
     impl_->total_auth_attempts = 0;
@@ -542,6 +559,9 @@ void Scheduler::NotifyNetworkChanged() {
     impl_->probe_immediately.store(true);
     LogInfo("收到网络变更事件，立即重新探测");
 }
+
+void Scheduler::SetPaused(bool paused) { impl_->paused = paused; }
+bool Scheduler::IsPaused() const { return impl_->paused; }
 
 RunState Scheduler::State() const { return impl_->state; }
 std::string Scheduler::LastMessage() const { return impl_->message; }

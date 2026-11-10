@@ -7,6 +7,10 @@
 
 namespace cnk {
 
+// 托盘菜单的状态文案（与设置界面 v2 的状态语义一致）。
+// 导出为自由函数，便于单测钉住六态映射，不必启动 Win32 消息循环。
+const wchar_t* TrayStateLabel(RunState s);
+
 class TrayIcon {
 public:
     TrayIcon() = default;
@@ -20,9 +24,14 @@ public:
     void ShowBalloon(const std::string& title, const std::string& text);
     HWND Hwnd() const { return hwnd_; }
 
+    // 菜单文案随暂停态切换；由守护循环在用户点菜单后回写
+    void SetPaused(bool paused) { paused_ = paused; }
+    bool IsPaused() const { return paused_; }
+
     void SetCallbacks(std::function<void()> on_open_ui,
                       std::function<void()> on_reconnect,
                       std::function<void()> on_open_log,
+                      std::function<void()> on_toggle_pause,
                       std::function<void()> on_quit);
 
     // 退出来历：**谁**让守护进程结束的（托盘菜单 / 外部 WM_CLOSE / 系统关机…）。
@@ -44,7 +53,9 @@ private:
     std::function<void()> on_open_ui_;
     std::function<void()> on_reconnect_;
     std::function<void()> on_open_log_;
+    std::function<void()> on_toggle_pause_;
     std::function<void()> on_quit_;
+    bool paused_ = false;       // 「暂停自动重连」开关的视图状态
     std::string quit_reason_;   // 退出来历（见 SetQuitReason）
 
     void OnTrayMessage(LPARAM lparam);

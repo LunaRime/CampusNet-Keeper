@@ -1,17 +1,43 @@
 #include "doctest.h"
 #include "store/Dpapi.h"
 #include "store/Config.h"
+#include "core/ProbeTarget.h"
 #include <filesystem>
 
-TEST_CASE("默认探测地址必须是实测可达的地址（2026-10-16 实测修订）") {
-    // 原默认 www.msftncsi.com/ncsi.txt 在本校园网直连实测 **0/4 可达**（每次都卡满
-    // 超时），把「在线」误判成「离线」——守护程序会永远认为不在线，--test-login 的
-    // 复测也会报「仍不在线」（真机实测踩到过）。改用免劫持清单内、实测 4/4、
-    // 平均约 50ms 的 Apple 探测页；此处钉住取值，防止以后被改回不可达的地址。
+TEST_CASE("默认探测地址必须是实测可达的地址（2026-11-10 迁移 router 端实证）") {
+    // 演进：msftncsi 在本校园网直连 0/4 不可达 → 改 Apple 探测页；
+    // 2026-11-09 路由器端真机发现 captive.apple.com 被 DNS 劫持（CNAME 到 CDN），
+    // 且上游 DNS 就是 AC，黑洞时 200+Success 不能单独当在线证据 → 改 generate_204。
+    // expect 留空：204 走三层判定，200 无标识时 Probe.cpp 判 PortalDetected。
     cnk::Settings s;
-    CHECK(s.probe_url == "http://captive.apple.com/hotspot-detect.html");
-    CHECK(s.probe_expect == "Success");
-    CHECK(s.probe_timeout_seconds >= 6);  // 3 秒连旧默认地址都不够，留足余量
+    CHECK(s.probe_url == "http://connectivitycheck.platform.hicloud.com/generate_204");
+    CHECK(s.probe_expect.empty());
+    CHECK(s.probe_timeout_seconds >= 6);
+    CHECK(s.probe_interval_seconds == 30);
+}
+
+TEST_CASE("Settings 默认值与 DefaultProbeTarget 一致") {
+    // 默认值有四处（Config.h、Config.cpp 解析、ProbeTarget.cpp、UI ViewModel），
+    // 这里钉住 C++ 侧的两处，避免改了一处漏一处。
+    cnk::Settings s;
+    const auto t = cnk::DefaultProbeTarget();
+    CHECK(s.probe_url == t.url);
+    CHECK(s.probe_expect == t.expect);
+}
+
+TEST_CASE("探测间隔钳制：<10 或 >3600 回落到 30，合法值原样保留") {
+    // 对齐 router 端：一轮探测最多发 3~4 个 HTTP，间隔过短会压 AC 并放大 DNS 抖动。
+    auto parse_interval = [](const char* json) {
+        cnk::AppConfig cfg;
+        std::string err;
+        REQUIRE(cnk::ConfigFromJson(json, cfg, err));
+        return cfg.settings.probe_interval_seconds;
+    };
+    CHECK(parse_interval(R"({"settings":{"probe_interval_seconds":5}})") == 30);
+    CHECK(parse_interval(R"({"settings":{"probe_interval_seconds":0}})") == 30);
+    CHECK(parse_interval(R"({"settings":{"probe_interval_seconds":7200}})") == 30);
+    CHECK(parse_interval(R"({"settings":{"probe_interval_seconds":10}})") == 10);
+    CHECK(parse_interval(R"({"settings":{"probe_interval_seconds":45}})") == 45);
 }
 
 TEST_CASE("DPAPI 加解密往返") {
@@ -52,7 +78,7 @@ TEST_CASE("IspSuffix 按厂商映射") {
 TEST_CASE("AppConfig JSON 往返保持一致") {
     cnk::AppConfig cfg;
     cfg.active_profile = "宿舍";
-    cfg.settings.probe_interval_seconds = 7;
+    cfg.settings.probe_interval_seconds = 45;  // 避开 <10 的钳制区间
     cnk::Profile p;
     p.name = "宿舍";
     p.auth_url = "http://10.0.0.1";
@@ -68,7 +94,7 @@ TEST_CASE("AppConfig JSON 往返保持一致") {
     cnk::AppConfig back;
     REQUIRE(cnk::ConfigFromJson(json_out, back, err));
     CHECK(back.active_profile == "宿舍");
-    CHECK(back.settings.probe_interval_seconds == 7);
+    CHECK(back.settings.probe_interval_seconds == 45);
     REQUIRE(back.profiles.size() == 1);
     CHECK(back.profiles[0].username == "u");
     CHECK(back.profiles[0].password == "pw");
@@ -101,7 +127,7 @@ TEST_CASE("缺字段的 JSON 使用默认值") {
     std::string err;
     REQUIRE(cnk::ConfigFromJson("{}", back, err));
     CHECK(back.version == 1);
-    CHECK(back.settings.probe_interval_seconds == 5);
+    CHECK(back.settings.probe_interval_seconds == 30);
     CHECK(back.profiles.empty());
 }
 

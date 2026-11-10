@@ -35,15 +35,17 @@ struct Profile {
 };
 
 struct Settings {
-    int probe_interval_seconds = 5;
+    // 对齐 router 端（2026-11-09 真机实证）：一轮探测最多发 3~4 个 HTTP，
+    // 5 秒间隔既压 AC 也放大 DNS 抖动；AC 复核本身也按 30 秒节流。
+    int probe_interval_seconds = 30;
     int probe_timeout_seconds = 6;
-    // 探测地址（2026-10-16 真机实测修订）：原默认 www.msftncsi.com/ncsi.txt 在本校园网
-    // 直连实测 **0/4 可达**（每次都卡满超时），会把「在线」误判成「离线」——守护程序
-    // 永远认为不在线，--test-login 的复测也报「仍不在线」。改用免劫持清单内、实测
-    // 4/4 且平均约 50ms 的 Apple 探测页（iOS/macOS 的原生 captive 探测地址，
-    // 各校园网普遍放行；正文 134 字节，含 "Success"）。
-    std::string probe_url = "http://captive.apple.com/hotspot-detect.html";
-    std::string probe_expect = "Success";
+    // 探测地址（2026-11-10 迁移 router 端实证）：captive.apple.com 在本网被
+    // DNS 劫持（CNAME 到 CDN），且上游 DNS 就是 AC，黑洞时 200+Success 不能
+    // 单独当在线证据。改用实测 204 / 0.038s / 无重定向的 generate_204。
+    // probe_expect 置空：204 仍走 AC 复核 + 出网验证；200 且无预期标识时
+    // Probe.cpp 判 PortalDetected，不会把门户页误当在线。
+    std::string probe_url = "http://connectivitycheck.platform.hicloud.com/generate_204";
+    std::string probe_expect = "";
     std::vector<int> retry_backoff_seconds = {5, 10, 20, 30, 60};
     bool autostart = true;
     bool notify_on_reconnect = true;
