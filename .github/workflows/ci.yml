@@ -29,7 +29,8 @@ jobs:
         run: cmake -S . -B build-m1 -G "Visual Studio 17 2022" -A x64
 
       - name: 构建（Release，/W4）
-        run: cmake --build build-m1 --config Release
+        # /m 让 MSBuild 并行构建各 target；CMakeLists 里的 /MP 让 cl 在 target 内并行编 .cpp
+        run: cmake --build build-m1 --config Release -- /m
 
       - name: 运行 C++ 测试
         shell: pwsh
@@ -74,6 +75,16 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+
+      - name: 缓存 NuGet 包
+        uses: actions/cache@v4
+        with:
+          # dotnet build 的 NUGET_PACKAGES 指向这里；只缓存依赖包（不是编译产物），
+          # 不会像缓存 obj/ 那样掩盖增量构建问题（项目铁律）。
+          path: build-ui/nuget
+          key: nuget-${{ runner.os }}-${{ hashFiles('src/ui/**/*.csproj', 'Directory.Build.props') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
 
       - name: 构建 Avalonia UI + 核心自检
         shell: pwsh

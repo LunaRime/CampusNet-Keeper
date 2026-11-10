@@ -220,15 +220,17 @@ TEST_CASE("无端口的 auth_url：登录走同源（不再默认 801）") {
     // 2026-10-16 实测修订：老式 c=ACSetting 协议与门户页同源（:801 只回 SPA 外壳），
     // auth_url 未显式写端口时不补默认端口，由 scheme 缺省（http→80 / https→443）
     cnk::Profile p;
-    // 回环地址：连接立即被拒，测试无需等超时，也不会把凭据发往外部主机
-    p.auth_url = "http://127.0.0.1/";
+    // 用 RFC 2606 保留域名：DNS 立即 NXDOMAIN，不会把凭据发往任何主机。
+    // 别用 127.0.0.1 的无服务端口 —— WinHTTP 对 connect refused 仍要干等约 6 秒
+    // （2026-11-10 实测本组 4 个用例共 24s），而这里只断言构造出的 URL。
+    p.auth_url = "http://cnk-test.invalid/";
     p.username = "u";
     p.password = "p";
     p.vendor = "drcom";
     auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
     cnk::NetContext ctx;
     auto r = auth->Login(p, ctx);
-    CHECK(r.request_url.find("http://127.0.0.1/eportal/") == 0);
+    CHECK(r.request_url.find("http://cnk-test.invalid/eportal/") == 0);
     CHECK(r.request_url.find(":801") == std::string::npos);
     CHECK(r.request_url.find("c=ACSetting") != std::string::npos);
     CHECK(r.request_url.find("a=Login") != std::string::npos);
@@ -236,7 +238,7 @@ TEST_CASE("无端口的 auth_url：登录走同源（不再默认 801）") {
 
 TEST_CASE("auth_url 已带端口时沿用该端口") {
     cnk::Profile p;
-    p.auth_url = "http://127.0.0.1:9000/";
+    p.auth_url = "http://cnk-test.invalid:9000/";
     p.username = "u";
     p.password = "p";
     p.vendor = "drcom";
@@ -249,14 +251,14 @@ TEST_CASE("auth_url 已带端口时沿用该端口") {
 
 TEST_CASE("https 无端口 auth_url：登录同源 https（不再补 802）") {
     cnk::Profile p;
-    p.auth_url = "https://127.0.0.1/";
+    p.auth_url = "https://cnk-test.invalid/";
     p.username = "u";
     p.password = "p";
     p.vendor = "drcom";
     auto auth = cnk::CreateAuth(cnk::Vendor::Drcom, p);
     cnk::NetContext ctx;
     auto r = auth->Login(p, ctx);
-    CHECK(r.request_url.find("https://127.0.0.1/eportal/") == 0);
+    CHECK(r.request_url.find("https://cnk-test.invalid/eportal/") == 0);
     CHECK(r.request_url.find(":802") == std::string::npos);
 }
 
@@ -309,9 +311,10 @@ TEST_CASE("空账号不发请求直接返回失败") {
     srv.Stop();
 }
 
-TEST_CASE("服务器无响应时返回失败并带错误信息") {
+TEST_CASE("请求失败时返回失败并带错误信息") {
     cnk::Profile p;
-    p.auth_url = "http://127.0.0.1:1/";
+    // 保留域名立即 NXDOMAIN：比回环无服务端口（WinHTTP 干等约 6 秒）快得多
+    p.auth_url = "http://cnk-test.invalid/";
     p.username = "u";
     p.password = "p";
     p.vendor = "drcom";

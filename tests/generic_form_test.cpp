@@ -21,6 +21,10 @@ const char* kFormPage = R"HTML(
 </body></html>
 )HTML";
 
+// 这些用例只断言「构造出的请求 URL / 请求体」，但 Login() 内部仍会真的发一次
+// HTTP。URL 用 RFC 2606 保留域名 .invalid：DNS 立即 NXDOMAIN，避免 WinHTTP 对
+// 不可达内网 IP 干等 8~12 秒（2026-11-10 实测：本文件 15 个用例曾耗时 57s）。
+// 注意 kFormPage 里的 10.0.0.x 是表单 hidden 字段值，属于被测数据，不要改。
 cnk::Profile MakeGeneric(const std::string& url, const std::string& u,
                          const std::string& p, const std::string& preset) {
     cnk::Profile pr;
@@ -35,7 +39,7 @@ cnk::Profile MakeGeneric(const std::string& url, const std::string& u,
 }  // namespace
 
 TEST_CASE("识别并填充标准表单字段（含隐藏字段与下拉）") {
-    cnk::Profile p = MakeGeneric("http://10.0.0.1/", "alice", "pw", "cmcc");
+    cnk::Profile p = MakeGeneric("http://cnk-test.invalid/", "alice", "pw", "cmcc");
     cnk::NetContext ctx;
     ctx.portal_body = kFormPage;
 
@@ -56,7 +60,7 @@ TEST_CASE("识别并填充标准表单字段（含隐藏字段与下拉）") {
 }
 
 TEST_CASE("页面无表单时返回明确失败并提示自定义模板") {
-    cnk::Profile p = MakeGeneric("http://10.0.0.1/", "u", "p", "campus");
+    cnk::Profile p = MakeGeneric("http://cnk-test.invalid/", "u", "p", "campus");
     cnk::NetContext ctx;
     ctx.portal_body = "<html><body>no form here</body></html>";
 
@@ -67,7 +71,7 @@ TEST_CASE("页面无表单时返回明确失败并提示自定义模板") {
 }
 
 TEST_CASE("空 portal_body 时返回明确失败") {
-    cnk::Profile p = MakeGeneric("http://10.0.0.1/", "u", "p", "campus");
+    cnk::Profile p = MakeGeneric("http://cnk-test.invalid/", "u", "p", "campus");
     cnk::NetContext ctx;
 
     auto auth = cnk::CreateAuth(cnk::Vendor::Unknown, p);
@@ -77,13 +81,13 @@ TEST_CASE("空 portal_body 时返回明确失败") {
 }
 
 TEST_CASE("相对 action 在 portal_url 为空时退回 auth_url") {
-    cnk::Profile p = MakeGeneric("http://10.0.0.1/portal/", "u", "p", "campus");
+    cnk::Profile p = MakeGeneric("http://cnk-test.invalid/portal/", "u", "p", "campus");
     cnk::NetContext ctx;
     ctx.portal_body = kFormPage;
 
     auto auth = cnk::CreateAuth(cnk::Vendor::Unknown, p);
     auto r = auth->Login(p, ctx);
-    CHECK(r.request_url.find("10.0.0.1") != std::string::npos);
+    CHECK(r.request_url.find("cnk-test.invalid") != std::string::npos);
     CHECK(r.request_url.find("/doLogin") != std::string::npos);
 }
 
@@ -105,7 +109,7 @@ TEST_CASE("相对 action 优先相对 portal_url 解析（审阅注记）") {
 }
 
 TEST_CASE("DDDDD 用户名变体也能识别") {
-    cnk::Profile p = MakeGeneric("http://10.0.0.1/", "carol", "pw", "campus");
+    cnk::Profile p = MakeGeneric("http://cnk-test.invalid/", "carol", "pw", "campus");
     cnk::NetContext ctx;
     ctx.portal_body =
         "<form action='/l' method='post'>"
@@ -119,7 +123,7 @@ TEST_CASE("DDDDD 用户名变体也能识别") {
 
 TEST_CASE("隐藏字段不会被误当账号字段（包含匹配跳过 hidden）") {
     // 只有 hidden 的 wlanuserip 与普通 username：必须选 username
-    cnk::Profile p = MakeGeneric("http://10.0.0.1/", "dave", "pw", "campus");
+    cnk::Profile p = MakeGeneric("http://cnk-test.invalid/", "dave", "pw", "campus");
     cnk::NetContext ctx;
     ctx.portal_body =
         "<form action='/l' method='post'>"
@@ -135,7 +139,7 @@ TEST_CASE("隐藏字段不会被误当账号字段（包含匹配跳过 hidden�
 }
 
 TEST_CASE("GET 表单把字段拼到查询串") {
-    cnk::Profile p = MakeGeneric("http://10.0.0.1/", "u", "p", "campus");
+    cnk::Profile p = MakeGeneric("http://cnk-test.invalid/", "u", "p", "campus");
     cnk::NetContext ctx;
     ctx.portal_body =
         "<form action='/login' method='get'>"
