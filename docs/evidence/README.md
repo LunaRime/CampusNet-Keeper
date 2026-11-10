@@ -102,6 +102,12 @@ Portal 把配置**分散在两个响应里**，不要假设它们都在同一处
 
    ⇒ 内置默认与 `Settings::probe_timeout_seconds`（3→6 秒）已按实测修订；
    `ProbeTarget.cpp` 的候选优先级与失败切换仍待跟进（见计划「实测回修 4」）。
+   ⚠ **2026-11-10 后续修订**：上表是 2026-10-16 的历史实测，保留作证据。
+   路由器端 11-09 真机发现 `captive.apple.com` 在本网被 DNS 劫持且上游 DNS 就是 AC，
+   Windows 端默认已迁到 `http://connectivitycheck.platform.hicloud.com/generate_204`
+   （实测 204 / 0.038s / 无重定向）、`probe_expect` 留空、探测间隔 5→30 秒。
+   注意上表里的 `connectivitycheck.gstatic.com` 与新的 `platform.hicloud.com` 是**不同域名**，
+   前者不在花园内不代表后者不可用（后者有路由器端真机阳性样本）。
 6. **编码按 Content-Type 动态判定**：首页声明 `charset=gbk`（meta 写 `gb2312`），
    `/eportal/` 路径声明 `charset=utf-8`。硬编码任一种都会让另一条路径乱码。
 7. **劫持指纹只在跳转目标页上**（2026-10-16 实测回修）：真实环境的劫持是
