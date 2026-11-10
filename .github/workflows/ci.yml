@@ -1,6 +1,6 @@
 name: CI
 
-# 每次推送到 master / PR：构建（精简版）→ 测试 → 脱敏审计 → UI 令牌与核心自检 → 上传产物。
+# 每次推送到 master / PR：C++ 构建测试、UI 契约检查、路由器端子工程三条线并行。
 # 打 v* tag：走 scripts/package.ps1 构建**两个发布包**（精简版 + 单 exe 完整版）并创建 Release。
 #
 # 两条硬约束（见 build.ps1 的说明与 2026-10-17 的教训）：
@@ -71,6 +71,23 @@ jobs:
           python docs/evidence/audit_redaction.py
           if ($LASTEXITCODE -ne 0) { Write-Error "证据文件未通过脱敏审计"; exit 1 }
 
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          # 名字里写明 lite：这里没有内嵌界面载荷，完整版在 Release 里
+          name: CampusNet-Keeper-lite-win-x64
+          path: |
+            build-m1/Release/CampusNet-Keeper.exe
+            build-m1/Release/cnk_tests.exe
+            build-m1/Release/cnk_ipc_probe.exe
+
+  ui:
+    # 界面契约 / 令牌检查只依赖 .NET，与 C++ 构建互不依赖。
+    # 原先这约 30 秒串在 windows job 尾部，拆出来并行后门禁时长取两个 job 的较大值。
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
       - name: 安装 .NET SDK
         uses: actions/setup-dotnet@v4
         with:
@@ -108,16 +125,6 @@ jobs:
         run: |
           pwsh -File tools/check_ui_tokens.ps1
           if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - name: 上传构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          # 名字里写明 lite：这里没有内嵌界面载荷，完整版在 Release 里
-          name: CampusNet-Keeper-lite-win-x64
-          path: |
-            build-m1/Release/CampusNet-Keeper.exe
-            build-m1/Release/cnk_tests.exe
-            build-m1/Release/cnk_ipc_probe.exe
 
   router:
     # 路由器端子工程（`router/`）：编 aarch64-musl 静态二进制，供 OpenWrt 路由器部署
@@ -208,7 +215,8 @@ jobs:
     #   · 精简版：~1 MB，需目标机装 .NET 10 运行时才有设置界面
     #   · 完整版：单 exe 双形态（内嵌界面载荷，约 24 MB）
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: windows
+    # UI 检查已拆成独立 job：发布门禁必须同时等它，不能只看 C++ job
+    needs: [windows, ui]
     runs-on: windows-2022
     permissions:
       contents: write
