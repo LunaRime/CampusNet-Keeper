@@ -19,30 +19,39 @@ internal static class SelfTest
 {
     private static readonly (string Key, string Light, string Dark)[] ExpectedBrushes =
     {
-        // 键与取值全部取自 DESIGN.md（shadcn/ui）；亮暗为数学反转
-        ("CnkBg", "#ffffffff", "#ff0a0a0a"),
-        ("CnkText", "#ff0a0a0a", "#fffafafa"),
-        ("CnkTextSecondary", "#ff3f3f46", "#ffd4d4d8"),
-        ("CnkTextMuted", "#ff71717a", "#ffa1a1aa"),
-        ("CnkTextFaint", "#ffa1a1aa", "#ff71717a"),
-        ("CnkBrand", "#ff0a0a0a", "#fffafafa"),
-        ("CnkBrandHover", "#ff1a1a1a", "#ffe4e4e7"),
-        ("CnkBrandActive", "#ff27272a", "#ffd4d4d8"),
-        ("CnkOnBrand", "#fffafafa", "#ff0a0a0a"),
-        ("CnkSurface", "#fffafafa", "#ff171717"),
-        ("CnkSurfaceStrong", "#fff4f4f5", "#ff27272a"),
-        ("CnkSurfaceElevated", "#ffffffff", "#ff18181b"),
-        ("CnkBorder", "#ffe4e4e7", "#ff27272a"),
-        ("CnkBorderSoft", "#fff4f4f5", "#ff18181b"),
-        ("CnkBorderStrong", "#ffd4d4d8", "#ff3f3f46"),
-        ("CnkInputBorder", "#ffe4e4e7", "#ff27272a"),
-        ("CnkRing", "#ff0a0a0a", "#fffafafa"),
-        ("CnkDanger", "#ffef4444", "#ff7f1d1d"),
-        ("CnkDangerHover", "#ffdc2626", "#ff991b1b"),
-        ("CnkSuccess", "#ff10b981", "#ff10b981"),
-        ("CnkWarning", "#fff59e0b", "#fff59e0b"),
-        ("CnkInfo", "#ff3b82f6", "#ff3b82f6"),
-        ("CnkSelection", "#1a0a0a0a", "#1ffafafa"),
+        // 键与取值全部取自 DESIGN.md v2（现代桌面原生）；暗色独立调校，不是数学反转
+        ("CnkBg", "#fff3f5f9", "#ff0f1218"),
+        ("CnkTitleBar", "#fffbfcfe", "#ff151a22"),
+        ("CnkSurface", "#ffffffff", "#ff1a1f28"),
+        ("CnkSurfaceStrong", "#ffeff3f9", "#ff252c39"),
+        ("CnkSurfaceSubtle", "#fff7f9fc", "#ff202632"),
+        ("CnkConsole", "#fff8fafc", "#ff141922"),
+        ("CnkSidebar", "#fff9fafc", "#ff161b23"),
+        ("CnkText", "#ff16202e", "#ffedf2f9"),
+        ("CnkTextSecondary", "#ff46566b", "#ffb2bfd0"),
+        ("CnkTextMuted", "#ff7b8b9f", "#ff8593a6"),
+        ("CnkTextFaint", "#ffa8b4c3", "#ff5c6a7c"),
+        ("CnkBrand", "#ff2f6bff", "#ff5b8cff"),
+        ("CnkBrandHover", "#ff1f56e0", "#ff7aa2ff"),
+        ("CnkBrandActive", "#ff1846c2", "#ff93b4ff"),
+        ("CnkBrandSoft", "#ffe8efff", "#ff1e2c4a"),
+        ("CnkOnBrand", "#ffffffff", "#ff0f1218"),
+        ("CnkBorder", "#ffe2e8f1", "#ff2a3240"),
+        ("CnkBorderStrong", "#ffcbd5e3", "#ff3b4657"),
+        ("CnkInputBorder", "#ffcbd5e3", "#ff3b4657"),
+        ("CnkRing", "#612f6bff", "#785b8cff"),
+        ("CnkSelection", "#1a2f6bff", "#245b8cff"),
+        ("CnkSuccess", "#ff16a34a", "#ff3ecf7a"),
+        ("CnkSuccessSoft", "#ffe7f6ec", "#ff14301f"),
+        ("CnkInfo", "#ff2563eb", "#ff6f9bff"),
+        ("CnkInfoSoft", "#ffe9f0ff", "#ff1b2a4a"),
+        ("CnkWarning", "#ffd97706", "#fff0a942"),
+        ("CnkWarningSoft", "#fffef2df", "#ff34250e"),
+        ("CnkDanger", "#ffdc2626", "#ffff6b6b"),
+        ("CnkDangerHover", "#ffb91c1c", "#ffff8f8f"),
+        ("CnkDangerSoft", "#fffdeaea", "#ff3a1a1c"),
+        ("CnkOffline", "#ff64748b", "#ff94a3b8"),
+        ("CnkOfflineSoft", "#ffeef1f5", "#ff242c38"),
     };
 
     public static int Run()
@@ -62,17 +71,17 @@ internal static class SelfTest
             CheckBrush(app, key, ThemeVariant.Dark, dark, ref failed);
         }
 
-        // 圆角（单一 radius 基准派生）
-        CheckValue(app, "CnkRadiusSm", ThemeVariant.Light, 6, ref failed);
-        CheckValue(app, "CnkRadiusMd", ThemeVariant.Light, 8, ref failed);
-        CheckValue(app, "CnkRadiusLg", ThemeVariant.Light, 12, ref failed);
+        // 圆角（DESIGN.md v2 §2：控件 8 / 卡片 12 / 大面 16）
+        CheckValue(app, "CnkRadiusSm", ThemeVariant.Light, 8, ref failed);
+        CheckValue(app, "CnkRadiusMd", ThemeVariant.Light, 12, ref failed);
+        CheckValue(app, "CnkRadiusLg", ThemeVariant.Light, 16, ref failed);
 
-        // 字号（DESIGN.md 的 type scale）
-        CheckValue(app, "CnkFontSizeTitle", ThemeVariant.Light, 24, ref failed);
-        CheckValue(app, "CnkFontSizeLabel", ThemeVariant.Light, 14, ref failed);
-        CheckValue(app, "CnkFontSizeCaption", ThemeVariant.Light, 12, ref failed);
+        // 字号（DESIGN.md v2 §3 的桌面字阶）
+        CheckValue(app, "CnkFontSizeTitle", ThemeVariant.Light, 20, ref failed);
+        CheckValue(app, "CnkFontSizeLabel", ThemeVariant.Light, 12, ref failed);
+        CheckValue(app, "CnkFontSizeCaption", ThemeVariant.Light, 11.5, ref failed);
 
-        // 字体栈：必须是 DESIGN.md 的栈 + 中文回退
+        // 字体栈：Windows 原生栈 + 中文回退（平台必需）
         CheckFont(app, "CnkFontSans", "Microsoft YaHei UI", ref failed);
         CheckFont(app, "CnkFontMono", "Consolas", ref failed);
 

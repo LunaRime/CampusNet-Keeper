@@ -1,356 +1,163 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:CampusNet.UI.ViewModels"
-        xmlns:svc="using:CampusNet.UI.Services"
         xmlns:views="using:CampusNet.UI.Views"
         x:Class="CampusNet.UI.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="校园网助手 — 设置"
         Icon="avares://CampusNet.UI/Assets/app.ico"
-        Width="920" Height="812" MinWidth="760" MinHeight="560"
+        Width="1000" Height="700" MinWidth="880" MinHeight="600"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource CnkBg}"
         FontFamily="{DynamicResource CnkFontSans}">
 
   <!--
-    设置界面（任务 24）。视觉语言全部来自 DESIGN.md（shadcn/ui），经
-    docs/design/avalonia-mapping.md 映射：色值只在 Theme.*.axaml 里出现，
-    本文件只用 {DynamicResource Cnk*}；卡片是「发丝线边框 + 面色阶、无阴影」。
+    DESIGN.md v2：三段 Shell（应用头 / 侧栏+内容 / 底栏）。
+    色值只在 Theme.*.axaml；控件样式只在 Controls.axaml；本文件只写结构与绑定。
+    分区导航是**纯视图层状态**（code-behind 切 IsVisible / Classes），不新增 VM 字段。
+    保留系统标题栏：避免无边框窗口在 Win11 上的 DPI / 拖动 / 圆角兼容问题。
   -->
-  <Window.Styles>
-    <!-- 输入类控件：36 高、6 圆角、1px 输入边框、8×12 内边距（映射 §4） -->
-    <Style Selector="TextBox">
-      <Setter Property="Height" Value="36"/>
-      <Setter Property="Padding" Value="8,0"/>
-      <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
-      <Setter Property="Background" Value="{DynamicResource CnkBg}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource CnkInputBorder}"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/>
-    </Style>
-    <Style Selector="ComboBox">
-      <Setter Property="Height" Value="36"/>
-      <Setter Property="Padding" Value="8,0"/>
-      <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
-      <Setter Property="Background" Value="{DynamicResource CnkBg}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource CnkInputBorder}"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/>
-    </Style>
+  <Grid RowDefinitions="48,*,64">
 
-    <!-- 按钮文字必须显式居中：ContentControl 的默认对齐是左对齐，而下面三个类只覆盖了
-         Padding/背景，于是短标签（刷新、保存）会贴着左边、右侧留一大块空白。
-         统一在这里钉住，不依赖主题默认值。（2026-10-26 用户反馈"文字不居中"） -->
-    <Style Selector="Button">
-      <Setter Property="HorizontalContentAlignment" Value="Center"/>
-      <Setter Property="VerticalContentAlignment" Value="Center"/>
-      <Setter Property="MinWidth" Value="72"/>
-    </Style>
+    <!-- ============ 应用头 ============ -->
+    <Border Grid.Row="0"
+            Background="{DynamicResource CnkTitleBar}"
+            BorderBrush="{DynamicResource CnkBorder}"
+            BorderThickness="0,0,0,1"
+            Padding="14,0">
+      <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto">
+        <Border Grid.Column="0" Width="26" Height="26"
+                CornerRadius="{DynamicResource CnkRadiusSm}"
+                Background="{DynamicResource CnkBrand}"
+                VerticalAlignment="Center">
+          <TextBlock Text="C" FontSize="14" FontWeight="Bold"
+                     Foreground="{DynamicResource CnkOnBrand}"
+                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
 
-    <!-- 按钮：主操作=近黑实心；次操作=面色阶；描边=白底+发丝线 -->
-    <Style Selector="Button.primary">
-      <Setter Property="Height" Value="36"/>
-      <Setter Property="Padding" Value="16,0"/>
-      <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
-      <Setter Property="Background" Value="{DynamicResource CnkBrand}"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkOnBrand}"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-    </Style>
-    <Style Selector="Button.primary:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource CnkBrandHover}"/>
-      <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkOnBrand}"/>
-    </Style>
-    <Style Selector="Button.secondary">
-      <Setter Property="Height" Value="36"/>
-      <Setter Property="Padding" Value="12,0"/>
-      <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
-      <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
-    </Style>
-    <Style Selector="Button.outline">
-      <Setter Property="Height" Value="36"/>
-      <Setter Property="Padding" Value="12,0"/>
-      <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
-      <Setter Property="Background" Value="{DynamicResource CnkBg}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource CnkBorder}"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
-    </Style>
+        <TextBlock Grid.Column="1" Text="校园网助手" FontSize="13.5" FontWeight="SemiBold"
+                   Foreground="{DynamicResource CnkText}"
+                   VerticalAlignment="Center" Margin="10,0,14,0"/>
 
-    <!-- 卡片：发丝线 + 面色阶，无阴影 -->
-    <Style Selector="Border.card">
-      <Setter Property="Background" Value="{DynamicResource CnkBg}"/>
-      <Setter Property="BorderBrush" Value="{DynamicResource CnkBorder}"/>
-      <Setter Property="BorderThickness" Value="1"/>
-      <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusMd}"/>
-      <Setter Property="Padding" Value="16"/>
-    </Style>
+        <TextBlock x:Name="Crumb" Grid.Column="2" Classes="caption" Text="概览 · 设置"
+                   VerticalAlignment="Center"/>
 
-    <!-- 文本层级 -->
-    <Style Selector="TextBlock.title">
-      <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeTitle}"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
-    </Style>
-    <Style Selector="TextBlock.heading">
-      <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeHeading}"/>
-      <Setter Property="FontWeight" Value="SemiBold"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
-    </Style>
-    <Style Selector="TextBlock.label">
-      <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeLabel}"/>
-      <Setter Property="FontWeight" Value="Medium"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
-      <Setter Property="Margin" Value="0,0,0,6"/>
-    </Style>
-    <Style Selector="TextBlock.caption">
-      <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeCaption}"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkTextMuted}"/>
-    </Style>
+        <Border Grid.Column="4" Classes="pill" VerticalAlignment="Center" Margin="0,0,8,0"
+                MaxWidth="240">
+          <Grid ColumnDefinitions="Auto,*">
+            <Border Grid.Column="0" Classes="dot"
+                    Classes.online="{Binding IsOnline}"
+                    Classes.busy="{Binding IsBusy}"
+                    Classes.failed="{Binding IsFailed}"
+                    Margin="0,0,7,0"/>
+            <TextBlock Grid.Column="1" Text="{Binding StatusText}"
+                       FontSize="{DynamicResource CnkFontSizeCaption}"
+                       FontWeight="Medium"
+                       Foreground="{DynamicResource CnkText}"
+                       VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip.Tip="{Binding StatusText}"/>
+          </Grid>
+        </Border>
 
-    <!-- 状态指示灯：颜色随状态在令牌间切换（产品状态 → 设计语义，映射 §5） -->
-    <Style Selector="Border.dot">
-      <Setter Property="Width" Value="10"/>
-      <Setter Property="Height" Value="10"/>
-      <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusPill}"/>
-      <Setter Property="Background" Value="{DynamicResource CnkTextMuted}"/>
-      <Setter Property="VerticalAlignment" Value="Center"/>
-    </Style>
-    <Style Selector="Border.dot.online"><Setter Property="Background" Value="{DynamicResource CnkSuccess}"/></Style>
-    <Style Selector="Border.dot.busy"><Setter Property="Background" Value="{DynamicResource CnkInfo}"/></Style>
-    <Style Selector="Border.dot.failed"><Setter Property="Background" Value="{DynamicResource CnkDanger}"/></Style>
+        <Button Grid.Column="5" Classes="outline compact" Content="切换主题"
+                Click="Theme_Click" VerticalAlignment="Center"/>
+      </Grid>
+    </Border>
 
-    <Style Selector="TextBlock.error">
-      <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeCaption}"/>
-      <Setter Property="Foreground" Value="{DynamicResource CnkDanger}"/>
-      <Setter Property="TextWrapping" Value="Wrap"/>
-    </Style>
-  </Window.Styles>
+    <!-- ============ 侧栏 + 内容区 ============ -->
+    <Grid Grid.Row="1" ColumnDefinitions="208,*">
+      <Border Grid.Column="0"
+              Background="{DynamicResource CnkSidebar}"
+              BorderBrush="{DynamicResource CnkBorder}"
+              BorderThickness="0,0,1,0"
+              Padding="12,14">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,Auto">
 
-  <Grid ColumnDefinitions="248,*">
+          <TextBlock Grid.Row="0" Classes="caption" Text="工作台" Margin="10,0,0,8"/>
 
-    <!-- ================= 左：档案列表 ================= -->
-    <Border Grid.Column="0"
+          <StackPanel Grid.Row="1">
+            <Button x:Name="NavOverview" Classes="nav" Content="概览"
+                    Tag="overview" Click="Nav_Click"/>
+            <Button x:Name="NavProfiles" Classes="nav" Content="配置档案"
+                    Tag="profiles" Click="Nav_Click"/>
+            <Button x:Name="NavAdvanced" Classes="nav" Content="高级设置"
+                    Tag="advanced" Click="Nav_Click"/>
+            <Button x:Name="NavLogs" Classes="nav" Content="运行日志"
+                    Tag="logs" Click="Nav_Click"/>
+          </StackPanel>
+
+          <Border Grid.Row="2" Height="1" Background="{DynamicResource CnkBorder}"
+                  Margin="4,12"/>
+
+          <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="10,0,0,8">
+            <TextBlock Grid.Column="0" Classes="caption" Text="配置档案"
+                       VerticalAlignment="Center"/>
+            <Button Grid.Column="1" Classes="ghost compact" Content="＋"
+                    Command="{Binding AddProfileCommand}" ToolTip.Tip="新增档案"/>
+          </Grid>
+
+          <ListBox Grid.Row="4"
+                   ItemsSource="{Binding Profiles}"
+                   SelectedItem="{Binding SelectedProfile}"
+                   Background="Transparent" BorderThickness="0">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:ProfileViewModel">
+                <StackPanel Spacing="2" Margin="4,6">
+                  <TextBlock Text="{Binding Name}" FontWeight="Medium"
+                             Foreground="{DynamicResource CnkText}"
+                             TextTrimming="CharacterEllipsis"/>
+                  <TextBlock Classes="caption" Text="{Binding Username}"
+                             TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+
+          <Border Grid.Row="5" Classes="panel" Padding="10" Margin="0,12,0,0">
+            <Grid ColumnDefinitions="Auto,*">
+              <Border Grid.Column="0" Classes="dot"
+                      Classes.online="{Binding DaemonRunning}" Margin="0,0,8,0"/>
+              <StackPanel Grid.Column="1" Spacing="2">
+                <TextBlock Text="守护进程" FontSize="{DynamicResource CnkFontSizeCaption}"
+                           FontWeight="Medium" Foreground="{DynamicResource CnkText}"/>
+                <TextBlock Classes="caption" Text="IPC 连接状态"/>
+              </StackPanel>
+            </Grid>
+          </Border>
+        </Grid>
+      </Border>
+
+      <!-- 四个分区叠放，由 code-behind 切 IsVisible；隐藏的不占布局 -->
+      <Grid Grid.Column="1">
+        <views:OverviewView x:Name="PageOverview" IsVisible="True"/>
+        <views:ProfilesView x:Name="PageProfiles" IsVisible="False"/>
+        <views:AdvancedView x:Name="PageAdvanced" IsVisible="False"/>
+        <views:LogsView x:Name="PageLogs" IsVisible="False"/>
+      </Grid>
+    </Grid>
+
+    <!-- ============ 底栏 ============ -->
+    <Border Grid.Row="2"
             Background="{DynamicResource CnkSurface}"
             BorderBrush="{DynamicResource CnkBorder}"
-            BorderThickness="0,0,1,0"
-            Padding="16">
-      <Grid RowDefinitions="Auto,*,Auto">
-        <TextBlock Grid.Row="0" Classes="heading" Text="配置档案" Margin="0,0,0,12"/>
-
-        <ListBox Grid.Row="1"
-                 ItemsSource="{Binding Profiles}"
-                 SelectedItem="{Binding SelectedProfile}"
-                 Background="Transparent"
-                 BorderThickness="0">
-          <ListBox.ItemTemplate>
-            <DataTemplate x:DataType="vm:ProfileViewModel">
-              <StackPanel Spacing="2" Margin="2,4">
-                <TextBlock Text="{Binding Name}" FontWeight="Medium"
-                           Foreground="{DynamicResource CnkText}"/>
-                <TextBlock Classes="caption" Text="{Binding Username}"/>
-              </StackPanel>
-            </DataTemplate>
-          </ListBox.ItemTemplate>
-        </ListBox>
-
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="0,12,0,0">
-          <Button Classes="outline" Content="新增" Command="{Binding AddProfileCommand}"/>
-          <Button Classes="outline" Content="删除" Command="{Binding RemoveProfileCommand}"/>
+            BorderThickness="0,1,0,0"
+            Padding="18,0">
+      <Grid ColumnDefinitions="*,Auto">
+        <!-- 长错误文案放星号列并截断，绝不把右侧按钮顶出窗口（2026-10-26 回归） -->
+        <TextBlock Grid.Column="0" Classes="error"
+                   Text="{Binding LastError}"
+                   TextTrimming="CharacterEllipsis"
+                   ToolTip.Tip="{Binding LastError}"
+                   VerticalAlignment="Center" Margin="0,0,12,0"/>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                    VerticalAlignment="Center">
+          <Button Classes="ghost" Content="刷新" Command="{Binding RefreshCommand}"/>
+          <Button Classes="outline" Content="测试登录" Command="{Binding TestProfileCommand}"/>
+          <Button Classes="primary" Content="保存" Command="{Binding SaveCommand}"/>
         </StackPanel>
       </Grid>
     </Border>
 
-    <!-- ================= 右：状态条 + 表单 + 操作 ================= -->
-    <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" Margin="20">
-
-      <!-- 顶部状态条：
-           状态文字必须放在「星号列」里——放 Auto 列时，长错误文案会把列撑到无限宽，
-           把右侧的「立即重连」顶出窗口（2026-10-26 用户反馈）。
-           星号列 + TextTrimming 让文字自己截断，按钮永远留在右边。 -->
-      <Border Grid.Row="0" Classes="card">
-        <Grid ColumnDefinitions="Auto,*,Auto,Auto">
-          <Border Grid.Column="0" Classes="dot"
-                  Classes.online="{Binding IsOnline}"
-                  Classes.busy="{Binding IsBusy}"
-                  Classes.failed="{Binding IsFailed}"
-                  VerticalAlignment="Center"/>
-
-          <TextBlock Grid.Column="1" Text="{Binding StatusText}" FontWeight="Medium"
-                     Foreground="{DynamicResource CnkText}" VerticalAlignment="Center"
-                     Margin="10,0,12,0"
-                     TextTrimming="CharacterEllipsis"
-                     ToolTip.Tip="{Binding StatusText}"/>
-
-          <StackPanel Grid.Column="2" Margin="0,0,16,0" VerticalAlignment="Center">
-            <TextBlock Classes="caption">
-              <Run Text="本机 IP："/><Run Text="{Binding LocalIp}"/>
-            </TextBlock>
-            <TextBlock Classes="caption" ToolTip.Tip="ARP 未解析 = 网关不代答，属于二层断，重试登录无效">
-              <Run Text="网关："/><Run Text="{Binding GatewayText}"/>
-            </TextBlock>
-            <TextBlock Classes="caption">
-              <Run Text="上次登录："/><Run Text="{Binding LastSuccessText}"/>
-            </TextBlock>
-          </StackPanel>
-
-          <Button Grid.Column="3" Classes="secondary" Content="立即重连"
-                  Command="{Binding ReconnectNowCommand}"/>
-        </Grid>
-      </Border>
-
-      <!-- 中部表单 -->
-      <ScrollViewer Grid.Row="1" Margin="0,16,0,0">
-        <StackPanel Spacing="16">
-
-          <Border Classes="card">
-            <StackPanel Spacing="14">
-              <TextBlock Classes="heading" Text="账号"/>
-
-              <StackPanel>
-                <TextBlock Classes="label" Text="认证网址"/>
-                <TextBox Text="{Binding SelectedProfile.AuthUrl}"
-                         Watermark="例如 http://10.0.0.1/ 或门户地址"/>
-              </StackPanel>
-
-              <StackPanel>
-                <TextBlock Classes="label" Text="账号"/>
-                <TextBox Text="{Binding SelectedProfile.Username}"
-                         Watermark="学号 / 手机号（可带运营商后缀）"/>
-              </StackPanel>
-
-              <StackPanel>
-                <TextBlock Classes="label" Text="密码"/>
-                <Grid ColumnDefinitions="*,Auto">
-                  <TextBox Grid.Column="0"
-                           Text="{Binding SelectedProfile.PasswordInput}"
-                           PasswordChar="●"
-                           RevealPassword="{Binding SelectedProfile.ShowPassword}"
-                           Watermark="{Binding SelectedProfile.PasswordHint}"/>
-                  <Button Grid.Column="1" Classes="outline" Margin="8,0,0,0" Content="显示"
-                          Command="{Binding TogglePasswordCommand}"/>
-                </Grid>
-                <TextBlock Classes="caption" Margin="0,6,0,0"
-                           Text="留空表示不修改已保存的密码；密码由守护进程加密保存，界面不接触它。"/>
-              </StackPanel>
-
-              <Grid ColumnDefinitions="*,16,*">
-                <StackPanel Grid.Column="0">
-                  <TextBlock Classes="label" Text="运营商"/>
-                  <ComboBox ItemsSource="{Binding AllCarrierOptions}"
-                            SelectedItem="{Binding SelectedCarrier}">
-                    <ComboBox.ItemTemplate>
-                      <DataTemplate x:DataType="svc:CarrierOption">
-                        <TextBlock Text="{Binding Label}"/>
-                      </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                  </ComboBox>
-                </StackPanel>
-                <StackPanel Grid.Column="2">
-                  <TextBlock Classes="label" Text="认证方式"/>
-                  <ComboBox ItemsSource="{Binding Vendors}"
-                            SelectedItem="{Binding SelectedVendor}">
-                    <ComboBox.ItemTemplate>
-                      <DataTemplate x:DataType="vm:VendorOption">
-                        <TextBlock Text="{Binding Label}"/>
-                      </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                  </ComboBox>
-                </StackPanel>
-              </Grid>
-
-              <StackPanel IsVisible="{Binding SelectedProfile.IsCustomCarrier}">
-                <TextBlock Classes="label" Text="自定义运营商"/>
-                <TextBox Text="{Binding SelectedProfile.IspCustom}"
-                         Watermark="例如 @cmcc / @telecom（按学校要求填）"/>
-              </StackPanel>
-            </StackPanel>
-          </Border>
-
-          <!-- 密码迁移：换电脑时把密码「带过去」，靠口令加密，不靠放宽 DPAPI -->
-          <Border Classes="card">
-            <StackPanel Spacing="10">
-              <TextBlock Classes="heading" Text="密码迁移（换电脑时用）"/>
-              <StackPanel>
-                <TextBlock Classes="label" Text="导出文件"/>
-                <TextBox Text="{Binding SecretPath}" Watermark="例如 D:\campusnet-secret.json"/>
-              </StackPanel>
-              <StackPanel>
-                <TextBlock Classes="label" Text="口令"/>
-                <TextBox Text="{Binding SecretPassphrase}" PasswordChar="●"
-                         Watermark="至少 6 位；导出时自己设，导入时填同一个"/>
-              </StackPanel>
-              <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button Classes="outline" Content="导出密码"
-                        Command="{Binding ExportSecretCommand}"/>
-                <Button Classes="outline" Content="导入密码"
-                        Command="{Binding ImportSecretCommand}"/>
-              </StackPanel>
-              <TextBlock Classes="caption"
-                         Text="导出文件用口令加密，可以安全拷到另一台电脑再导入；口令请另走一个渠道告诉对方。"/>
-            </StackPanel>
-          </Border>
-
-          <!-- 高级（可折叠） -->
-          <Border Classes="card">
-            <Expander IsExpanded="{Binding ShowAdvanced}" HorizontalAlignment="Stretch">
-              <Expander.Header>
-                <TextBlock Classes="heading" Text="高级"/>
-              </Expander.Header>
-              <StackPanel Spacing="14" Margin="0,12,0,0">
-                <Grid ColumnDefinitions="*,16,*">
-                  <StackPanel Grid.Column="0">
-                    <TextBlock Classes="label" Text="探测间隔（秒）"/>
-                    <NumericUpDown Value="{Binding ProbeIntervalSeconds}" Minimum="1" Maximum="3600"/>
-                  </StackPanel>
-                  <StackPanel Grid.Column="2">
-                    <TextBlock Classes="label" Text="探测超时（秒）"/>
-                    <NumericUpDown Value="{Binding ProbeTimeoutSeconds}" Minimum="1" Maximum="60"/>
-                  </StackPanel>
-                </Grid>
-
-                <StackPanel>
-                  <TextBlock Classes="label" Text="探测地址"/>
-                  <TextBox Text="{Binding ProbeUrl}"/>
-                  <TextBlock Classes="caption" Margin="0,6,0,0"
-                             Text="换地址后请用「探测一次」确认返回在线，再保存。"/>
-                </StackPanel>
-
-                <StackPanel>
-                  <TextBlock Classes="label" Text="重试退避（秒，逗号分隔）"/>
-                  <TextBox Text="{Binding RetryBackoffText}" Watermark="5, 10, 20, 30, 60"/>
-                </StackPanel>
-
-                <StackPanel Orientation="Horizontal" Spacing="24">
-                  <CheckBox IsChecked="{Binding Autostart}" Content="开机自启"/>
-                  <CheckBox IsChecked="{Binding NotifyOnReconnect}" Content="重连成功时通知"/>
-                </StackPanel>
-              </StackPanel>
-            </Expander>
-          </Border>
-
-          <!-- 日志面板（任务 25）：每 2 秒刷新，自动滚到底 -->
-          <views:LogPanel/>
-
-        </StackPanel>
-      </ScrollViewer>
-
-      <!-- 底部操作：错误文案同样放星号列并截断，避免长文案挤压右侧按钮 -->
-      <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,16,0,0">
-        <TextBlock Grid.Column="0" Classes="error" VerticalAlignment="Center"
-                   Margin="0,0,12,0"
-                   Text="{Binding LastError}"
-                   TextTrimming="CharacterEllipsis"
-                   ToolTip.Tip="{Binding LastError}"/>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-          <Button Classes="outline" Content="测试登录"
-                  Command="{Binding TestProfileCommand}"/>
-          <Button Classes="outline" Content="刷新" Command="{Binding RefreshCommand}"/>
-          <Button Classes="primary" Content="保存" Command="{Binding SaveCommand}"/>
-        </StackPanel>
-      </Grid>
-
-    </Grid>
   </Grid>
 </Window>

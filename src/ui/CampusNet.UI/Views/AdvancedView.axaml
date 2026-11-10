@@ -1,0 +1,104 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CampusNet.UI.ViewModels"
+             x:Class="CampusNet.UI.Views.AdvancedView"
+             x:DataType="vm:MainViewModel">
+
+  <!-- 高级设置：探测节奏、启动行为、跨机密码迁移。全部对应 Settings / VM 真实属性。 -->
+  <ScrollViewer Classes="page">
+    <StackPanel Spacing="16">
+
+      <StackPanel Spacing="4">
+        <TextBlock Classes="title" Text="高级设置"/>
+        <TextBlock Classes="caption" Text="探测节奏、启动行为与跨机密码迁移 · 修改后需保存才生效"/>
+      </StackPanel>
+
+      <!-- 网络探测 -->
+      <Border Classes="card">
+        <StackPanel Spacing="14">
+          <TextBlock Classes="heading" Text="网络探测"/>
+          <Grid ColumnDefinitions="*,16,*">
+            <StackPanel Grid.Column="0">
+              <TextBlock Classes="label" Text="探测间隔（秒）"/>
+              <NumericUpDown Value="{Binding ProbeIntervalSeconds}" Minimum="1" Maximum="3600"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+              <TextBlock Classes="label" Text="探测超时（秒）"/>
+              <NumericUpDown Value="{Binding ProbeTimeoutSeconds}" Minimum="1" Maximum="600"/>
+            </StackPanel>
+          </Grid>
+
+          <StackPanel>
+            <TextBlock Classes="label" Text="探测地址"/>
+            <TextBox Text="{Binding ProbeUrl}"/>
+            <TextBlock Classes="caption" Margin="0,6,0,0" TextWrapping="Wrap"
+                       Text="默认用 generate_204（204）。204 也必须走 AC 复核 + 出网验证，否则僵尸会话检测会被绕过。"/>
+          </StackPanel>
+
+          <Grid ColumnDefinitions="*,16,*">
+            <StackPanel Grid.Column="0">
+              <TextBlock Classes="label" Text="重试退避（秒，逗号分隔）"/>
+              <TextBox Text="{Binding RetryBackoffText}" Watermark="5, 10, 20, 30, 60"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2">
+              <TextBlock Classes="label" Text="日志级别"/>
+              <TextBox Text="{Binding LogLevel}"/>
+            </StackPanel>
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <!-- 常规 -->
+      <Border Classes="card">
+        <StackPanel Spacing="12">
+          <TextBlock Classes="heading" Text="常规"/>
+          <StackPanel Orientation="Horizontal" Spacing="24">
+            <CheckBox IsChecked="{Binding Autostart}" Content="开机自启"/>
+            <CheckBox IsChecked="{Binding NotifyOnReconnect}" Content="重连成功时通知"/>
+          </StackPanel>
+          <TextBlock Classes="caption" TextWrapping="Wrap"
+                     Text="开机自启会静默启动守护进程，不弹出设置窗口。"/>
+        </StackPanel>
+      </Border>
+
+      <!-- 密码迁移 -->
+      <Border Classes="card">
+        <StackPanel Spacing="14">
+          <TextBlock Classes="heading" Text="密码迁移（换电脑时用）"/>
+          <StackPanel>
+            <TextBlock Classes="label" Text="导出文件"/>
+            <TextBox Text="{Binding SecretPath}"/>
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Classes="label" Text="口令"/>
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBox x:Name="SecretPassphraseBox" Grid.Column="0"
+                       Text="{Binding SecretPassphrase}" PasswordChar="●"
+                       Watermark="至少 6 位；导出时自设，导入时填同一个"/>
+              <Button Grid.Column="1" Classes="outline" Content="显示" Margin="8,0,0,0"
+                      Click="ToggleSecret_Click"/>
+            </Grid>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Classes="outline" Content="导出密码"
+                    Command="{Binding ExportSecretCommand}"/>
+            <Button Classes="outline" Content="导入密码"
+                    Command="{Binding ImportSecretCommand}"/>
+          </StackPanel>
+          <Border Classes="alert">
+            <TextBlock Classes="caption" TextWrapping="Wrap"
+                       Text="导出文件用口令加密（PBKDF2-SHA256 + AES-256-GCM），口令不落盘、不进日志。绝不放宽 DPAPI 到本机范围——那等于同机任何账号都能解开密文。"/>
+          </Border>
+        </StackPanel>
+      </Border>
+
+      <Border Classes="card" Padding="14">
+        <Expander Header="为什么界面永远看不到已存密码？" HorizontalAlignment="Stretch">
+          <TextBlock Classes="caption" TextWrapping="Wrap" Margin="0,10,0,0"
+                     Text="配置与密文分开存放：config.json 可漫游但不含本机密文，secret.json 留在本机并用 DPAPI 加密。密文只对「同机 + 同账号」可解。解不开（foreign）时界面保留原密文原样写回，绝不因为点一次保存删掉别人的密码。"/>
+        </Expander>
+      </Border>
+
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

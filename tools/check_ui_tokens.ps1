@@ -77,12 +77,22 @@ if ($missing.Count -eq 0) { Pass "所有 DynamicResource 引用都能解析（�
 Write-Host '5) 布局回归（长文案不撑破 / 按钮文字居中）'
 # 5a：状态条与底部错误提示都必须是「可截断」的——2026-10-26 用户反馈长错误文案
 #     把「立即重连」顶出了窗口。静态钉住：绑定这两个属性的文本必须有 TextTrimming。
-$mw = [xml](Get-Content (Join-Path $ui 'CampusNet.UI\Views\MainWindow.axaml') -Raw)
+#     v2 视图已拆成多个 UserControl，故扫描整个 UI 目录而不是只看 MainWindow.axaml。
+$xamlDocs = @()
+foreach ($f in $xmlFiles | Where-Object { $_.Extension -eq '.axaml' }) {
+    $xamlDocs += ,@($f.Name, ([xml](Get-Content $f.FullName -Raw)))
+}
 foreach ($prop in @('StatusText', 'LastError')) {
-    $node = $mw.SelectSingleNode("//*[@Text='{Binding $prop}']")
-    if (-not $node) { Fail "找不到绑定 $prop 的元素"; continue }
-    if ($node.GetAttribute('TextTrimming') -ne 'CharacterEllipsis') {
-        Fail "$prop 缺 TextTrimming=CharacterEllipsis（长文案会撑破布局、把按钮顶出窗口）"
+    $found = @()
+    foreach ($pair in $xamlDocs) {
+        foreach ($node in $pair[1].SelectNodes("//*[@Text='{Binding $prop}']")) {
+            $found += ,@($pair[0], $node.GetAttribute('TextTrimming'))
+        }
+    }
+    if ($found.Count -eq 0) { Fail "找不到绑定 $prop 的元素"; continue }
+    $bad = @($found | Where-Object { $_[1] -ne 'CharacterEllipsis' })
+    if ($bad.Count -gt 0) {
+        Fail "$prop 缺 TextTrimming=CharacterEllipsis（长文案会撑破布局、把按钮顶出窗口）：$($bad[0][0])"
     } else {
         Pass "$prop 已启用截断（长文案不再撑破布局）"
     }
@@ -90,18 +100,18 @@ foreach ($prop in @('StatusText', 'LastError')) {
 
 # 5b：按钮文字居中必须在基础样式里显式声明。ContentControl 默认左对齐，
 #     只覆盖 Padding 会让短标签贴着左边（用户反馈"文字不居中、没利用两边间隔"）。
-$btnStyles = @($mw.SelectNodes('//*[local-name()="Style"]') |
-               Where-Object { $_.GetAttribute('Selector') -eq 'Button' })
-if ($btnStyles.Count -eq 0) {
-    Fail '缺少基础 Button 样式（按钮文字居中无从保证）'
-} else {
-    $setter = $btnStyles[0].SelectSingleNode('.//*[local-name()="Setter"][@Property="HorizontalContentAlignment"]')
-    if ($setter -and $setter.GetAttribute('Value') -eq 'Center') {
-        Pass '按钮文字水平居中（基础 Button 样式）'
-    } else {
-        Fail '基础 Button 样式未设置 HorizontalContentAlignment=Center'
+#     v2 起控件样式集中在 Controls.axaml，故同样扫描整个 UI 目录。
+$btnOk = $false
+foreach ($pair in $xamlDocs) {
+    $styles = @($pair[1].SelectNodes('//*[local-name()="Style"]') |
+                Where-Object { $_.GetAttribute('Selector') -eq 'Button' })
+    foreach ($st in $styles) {
+        $setter = $st.SelectSingleNode('.//*[local-name()="Setter"][@Property="HorizontalContentAlignment"]')
+        if ($setter -and $setter.GetAttribute('Value') -eq 'Center') { $btnOk = $true }
     }
 }
+if ($btnOk) { Pass '按钮文字水平居中（基础 Button 样式）' }
+else { Fail '任意 axaml 中均未找到含 HorizontalContentAlignment=Center 的基础 Button 样式' }
 
 Write-Host ''
 if ($script:fail -eq 0) { Write-Host 'UI 静态检查：全部通过'; exit 0 }

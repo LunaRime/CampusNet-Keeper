@@ -7,15 +7,14 @@
     <ResourceDictionary>
 
       <!--
-        字体栈：取自 DESIGN.md §3（shadcn/ui 的 sans/mono 栈）。
-        ⚠ Geist 无中日韩字形，故在栈尾追加系统中文字族——这是**平台必需的回退**，
-          不是引入第二套字体（技能明令不得获取专有字体，故不下载 Geist）。
-        刻意不注册 Inter：它不在本设计系统的字体栈里。
+        DESIGN.md v2 §3：Windows 原生字体栈 + 平台必需的中文回退。
+        刻意不注册 Inter / Geist：前者不在本设计系统里，后者是网页设计系统的遗留。
+        SelfTest.cs 会断言两栈分别含 Microsoft YaHei UI 与 Consolas。
       -->
-      <FontFamily x:Key="CnkFontSans">Geist, Geist Sans, Segoe UI, Microsoft YaHei UI, 微软雅黑, sans-serif</FontFamily>
-      <FontFamily x:Key="CnkFontMono">Geist Mono, JetBrains Mono, Consolas, Microsoft YaHei UI, monospace</FontFamily>
+      <FontFamily x:Key="CnkFontSans">Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, 微软雅黑, sans-serif</FontFamily>
+      <FontFamily x:Key="CnkFontMono">Cascadia Code, Cascadia Mono, Consolas, Microsoft YaHei UI, monospace</FontFamily>
 
-      <!-- 明暗双主题：亮/暗各一份令牌字典，键一一对应（见 Theme.Light/Dark.axaml） -->
+      <!-- 明暗双主题：键一一对应（见 Theme.Light/Dark.axaml，静态检查会断言） -->
       <ResourceDictionary.ThemeDictionaries>
         <ResourceInclude x:Key="Light" Source="avares://CampusNet.UI/Theme.Light.axaml"/>
         <ResourceInclude x:Key="Dark" Source="avares://CampusNet.UI/Theme.Dark.axaml"/>
@@ -26,7 +25,7 @@
 
   <Application.Styles>
     <FluentTheme/>
-    <!-- 把 Fluent 里不属于本设计系统的部分（彩色选中态等）改回令牌 -->
+    <!-- 全部控件样式集中在这里；视图文件只写结构与绑定 -->
     <StyleInclude Source="avares://CampusNet.UI/Controls.axaml"/>
   </Application.Styles>
 

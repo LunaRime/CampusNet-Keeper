@@ -1,0 +1,29 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CampusNet.UI.ViewModels"
+             xmlns:views="using:CampusNet.UI.Views"
+             x:Class="CampusNet.UI.Views.LogsView"
+             x:DataType="vm:MainViewModel">
+
+  <!-- 运行日志：独立分区，复用 LogPanel（等宽、可选中、自动滚到底）。 -->
+  <ScrollViewer Classes="page">
+    <StackPanel Spacing="16">
+      <StackPanel Spacing="4">
+        <TextBlock Classes="title" Text="运行日志"/>
+        <TextBlock Classes="caption" Text="守护进程实时输出，用于排查断线与认证问题"/>
+      </StackPanel>
+
+      <views:LogPanel/>
+
+      <Border Classes="card" Padding="14">
+        <StackPanel Spacing="6">
+          <TextBlock Classes="heading" Text="日志位置"/>
+          <TextBlock Classes="caption" TextWrapping="Wrap"
+                     Text="%APPDATA%\CampusNet-Keeper\logs\ · 每 2 秒由界面拉取一次尾部；点击「打开日志目录」可查看完整历史文件。"/>
+          <TextBlock Classes="caption" TextWrapping="Wrap"
+                     Text="日志里的凭据字段由守护进程脱敏；取证快照中的 MAC / IP 标识经过掩码处理。"/>
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

@@ -2,13 +2,147 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
   <!--
-    控件级样式覆盖：把 Fluent 主题里**不属于本设计系统**的部分改回令牌。
-    shadcn/ui 是纯单色系统：选中/悬停靠「面色阶」表达（surface-strong），
-    不用彩色强调；Fluent 默认的青色高亮会直接破坏这个系统（截图里抓到过）。
-    色值一律用 {DynamicResource Cnk*}，本文件不出现裸色值。
+    DESIGN.md v2 §4 的组件规格。**所有控件样式集中在本文件**，
+    视图文件只写结构与绑定，不内联样式、不写裸色值与裸尺寸。
+    Fluent 主题里不属于本设计系统的部分（彩色选中态、青色强调）在这里改回令牌。
   -->
 
-  <!-- 列表项：选中 = 面色阶 + 正文色；悬停 = 面色阶 -->
+  <!-- ============ 按钮 ============ -->
+  <!-- 基础样式：ContentControl 默认左对齐，短标签会贴边、右侧留一大块空白 -->
+  <Style Selector="Button">
+    <Setter Property="HorizontalContentAlignment" Value="Center"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+    <Setter Property="Height" Value="{DynamicResource CnkButtonHeight}"/>
+    <Setter Property="Padding" Value="14,0"/>
+    <Setter Property="MinWidth" Value="72"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeBody}"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+
+  <Style Selector="Button.primary">
+    <Setter Property="Background" Value="{DynamicResource CnkBrand}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkOnBrand}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+  </Style>
+  <Style Selector="Button.primary:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkBrandHover}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkOnBrand}"/>
+  </Style>
+  <Style Selector="Button.primary:pressed /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkBrandActive}"/>
+  </Style>
+
+  <Style Selector="Button.secondary">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+  <Style Selector="Button.secondary:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkBorder}"/>
+  </Style>
+
+  <Style Selector="Button.outline">
+    <Setter Property="Background" Value="{DynamicResource CnkSurface}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkBorderStrong}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+  </Style>
+  <Style Selector="Button.outline:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+  </Style>
+
+  <Style Selector="Button.ghost">
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkTextSecondary}"/>
+  </Style>
+  <Style Selector="Button.ghost:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+  </Style>
+
+  <Style Selector="Button.danger">
+    <Setter Property="Background" Value="{DynamicResource CnkDangerSoft}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkDanger}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkDanger}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+  </Style>
+  <Style Selector="Button.danger:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkDanger}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkOnBrand}"/>
+  </Style>
+
+  <Style Selector="Button.compact">
+    <Setter Property="Height" Value="28"/>
+    <Setter Property="Padding" Value="10,0"/>
+    <Setter Property="MinWidth" Value="0"/>
+  </Style>
+
+  <!-- 图标按钮（应用头 / 卡片工具栏） -->
+  <Style Selector="Button.icon">
+    <Setter Property="Width" Value="32"/>
+    <Setter Property="Height" Value="32"/>
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="Padding" Value="0"/>
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkTextMuted}"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+  </Style>
+  <Style Selector="Button.icon:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+  </Style>
+
+  <!-- ============ 输入类 ============ -->
+  <Style Selector="TextBox">
+    <Setter Property="Height" Value="{DynamicResource CnkControlHeight}"/>
+    <Setter Property="Padding" Value="11,0"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Background" Value="{DynamicResource CnkSurface}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkInputBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeBody}"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+  </Style>
+  <Style Selector="TextBox:focus /template/ Border#PART_BorderElement">
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkBrand}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+  </Style>
+
+  <Style Selector="ComboBox">
+    <Setter Property="Height" Value="{DynamicResource CnkControlHeight}"/>
+    <Setter Property="Padding" Value="11,0"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Background" Value="{DynamicResource CnkSurface}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkInputBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeBody}"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+  </Style>
+  <Style Selector="ComboBox:focus /template/ Border#Background">
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkBrand}"/>
+  </Style>
+
+  <Style Selector="NumericUpDown">
+    <Setter Property="Height" Value="{DynamicResource CnkControlHeight}"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Background" Value="{DynamicResource CnkSurface}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkInputBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeBody}"/>
+    <Setter Property="VerticalContentAlignment" Value="Center"/>
+  </Style>
+
+  <Style Selector="CheckBox">
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeBody}"/>
+  </Style>
+  <Style Selector="ToggleSwitch">
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeBody}"/>
+  </Style>
+
+  <!-- ============ 列表项：选中/悬停只用面色阶，不引入彩色强调 ============ -->
   <Style Selector="ListBoxItem">
     <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
     <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
@@ -22,28 +156,147 @@
     <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
     <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
   </Style>
-  <Style Selector="ListBoxItem:selected:pointerover /template/ ContentPresenter">
-    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
-    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
-  </Style>
-
-  <!-- 下拉项：同一套处理 -->
   <Style Selector="ComboBoxItem:pointerover /template/ ContentPresenter">
     <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
-    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
   </Style>
   <Style Selector="ComboBoxItem:selected /template/ ContentPresenter">
     <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
     <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkText}"/>
   </Style>
 
-  <!-- 输入框聚焦：边框用聚焦环色（完整 2px 环 + offset 见映射 §6，后续在任务 25 补齐） -->
-  <Style Selector="TextBox:focus /template/ Border#PART_BorderElement">
-    <Setter Property="BorderBrush" Value="{DynamicResource CnkRing}"/>
+  <!-- ============ 面与卡片 ============ -->
+  <Style Selector="Border.card">
+    <Setter Property="Background" Value="{DynamicResource CnkSurface}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkBorder}"/>
     <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusMd}"/>
+    <Setter Property="BoxShadow" Value="{DynamicResource CnkShadowCard}"/>
+    <Setter Property="Padding" Value="18"/>
   </Style>
-  <Style Selector="ComboBox:focus /template/ Border#Background">
-    <Setter Property="BorderBrush" Value="{DynamicResource CnkRing}"/>
+  <Style Selector="Border.panel">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceSubtle}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Padding" Value="12"/>
+  </Style>
+  <Style Selector="Border.console">
+    <Setter Property="Background" Value="{DynamicResource CnkConsole}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkBorder}"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Padding" Value="12"/>
+  </Style>
+
+  <!-- 状态点：颜色随状态切类 -->
+  <Style Selector="Border.dot">
+    <Setter Property="Width" Value="9"/>
+    <Setter Property="Height" Value="9"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusPill}"/>
+    <Setter Property="Background" Value="{DynamicResource CnkOffline}"/>
+    <Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
+  <Style Selector="Border.dot.online"><Setter Property="Background" Value="{DynamicResource CnkSuccess}"/></Style>
+  <Style Selector="Border.dot.busy"><Setter Property="Background" Value="{DynamicResource CnkInfo}"/></Style>
+  <Style Selector="Border.dot.failed"><Setter Property="Background" Value="{DynamicResource CnkDanger}"/></Style>
+  <Style Selector="Border.dot.warn"><Setter Property="Background" Value="{DynamicResource CnkWarning}"/></Style>
+
+  <!-- 胶囊 / 徽标 -->
+  <Style Selector="Border.pill">
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusPill}"/>
+    <Setter Property="Padding" Value="10,3"/>
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+  </Style>
+  <Style Selector="Border.brandbar">
+    <Setter Property="Width" Value="3"/>
+    <Setter Property="Background" Value="{DynamicResource CnkBrand}"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusXs}"/>
+  </Style>
+
+  <!-- ============ 文本层级 ============ -->
+  <Style Selector="TextBlock.title">
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeTitle}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+  <Style Selector="TextBlock.heading">
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeHeading}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkText}"/>
+  </Style>
+  <Style Selector="TextBlock.label">
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeLabel}"/>
+    <Setter Property="FontWeight" Value="Medium"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkTextSecondary}"/>
+    <Setter Property="Margin" Value="0,0,0,6"/>
+  </Style>
+  <Style Selector="TextBlock.caption">
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeCaption}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkTextMuted}"/>
+  </Style>
+  <Style Selector="TextBlock.mono">
+    <Setter Property="FontFamily" Value="{DynamicResource CnkFontMono}"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeMono}"/>
+  </Style>
+  <Style Selector="TextBlock.error">
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeCaption}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkDanger}"/>
+    <Setter Property="TextWrapping" Value="Wrap"/>
+  </Style>
+
+  <!-- 日志正文：等宽、可选中 -->
+  <Style Selector="SelectableTextBlock.logtext">
+    <Setter Property="FontFamily" Value="{DynamicResource CnkFontMono}"/>
+    <Setter Property="FontSize" Value="{DynamicResource CnkFontSizeMono}"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkTextSecondary}"/>
+  </Style>
+
+  <!-- ============ 侧栏导航项 ============ -->
+  <Style Selector="Button.nav">
+    <Setter Property="HorizontalAlignment" Value="Stretch"/>
+    <Setter Property="HorizontalContentAlignment" Value="Left"/>
+    <Setter Property="Height" Value="36"/>
+    <Setter Property="MinWidth" Value="0"/>
+    <Setter Property="Padding" Value="12,0"/>
+    <Setter Property="Margin" Value="0,0,0,2"/>
+    <Setter Property="Background" Value="Transparent"/>
+    <Setter Property="Foreground" Value="{DynamicResource CnkTextSecondary}"/>
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+  </Style>
+  <Style Selector="Button.nav:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkSurfaceStrong}"/>
+  </Style>
+  <Style Selector="Button.nav.active /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource CnkBrandSoft}"/>
+    <Setter Property="TextElement.Foreground" Value="{DynamicResource CnkBrand}"/>
+  </Style>
+  <Style Selector="Button.nav.active">
+    <Setter Property="Foreground" Value="{DynamicResource CnkBrand}"/>
+    <Setter Property="FontWeight" Value="SemiBold"/>
+  </Style>
+
+  <!-- ============ 提示条（三态由视图层切 Classes） ============ -->
+  <Style Selector="Border.alert">
+    <Setter Property="CornerRadius" Value="{DynamicResource CnkRadiusSm}"/>
+    <Setter Property="Padding" Value="12"/>
+    <Setter Property="BorderThickness" Value="1"/>
+    <Setter Property="Background" Value="{DynamicResource CnkInfoSoft}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkInfo}"/>
+  </Style>
+  <Style Selector="Border.alert.warn">
+    <Setter Property="Background" Value="{DynamicResource CnkWarningSoft}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkWarning}"/>
+  </Style>
+  <Style Selector="Border.alert.bad">
+    <Setter Property="Background" Value="{DynamicResource CnkDangerSoft}"/>
+    <Setter Property="BorderBrush" Value="{DynamicResource CnkDanger}"/>
+  </Style>
+
+  <!-- 页面内容区：每个分区自己滚动，Shell 不滚 -->
+  <Style Selector="ScrollViewer.page">
+    <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+    <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
+    <Setter Property="Padding" Value="20,18"/>
   </Style>
 
 </Styles>

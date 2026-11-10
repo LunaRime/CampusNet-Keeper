@@ -1,170 +1,121 @@
-# Avalonia 设计令牌映射（DESIGN.md → Avalonia）
+# Avalonia 设计令牌映射（DESIGN.md v2 → Avalonia）
 
-**来源**：`design-md` MCP 目录的 `shadcn/ui`（spec `webdesignhot/0.2`，更新于 2026-05-06），
-已按其原文安装为项目根的 `DESIGN.md`（52,450 字节，含 YAML frontmatter）。
-
-**本文件是什么**：把那份 Web 设计系统落到 **Avalonia** 上的落地桥——Avalonia 没有 CSS 变量，
-主题、圆角、字号、组件状态都必须显式建资源与样式。这里只做**翻译**，不新增任何设计值。
-
-**三条技能规矩（本文件全程遵守）**：
-1. **不得自造 token**：下面每个颜色/尺寸/圆角/阴影都来自 `DESIGN.md`；它没定义的，本文件明说"未定义"。
-2. **一次只用一套设计系统**：只映射 shadcn/ui，不掺别的。
-3. **不得静默覆盖**：本仓库此前没有 `DESIGN.md`，安装前已确认。
+**真源**：项目根 `DESIGN.md`（v2 现代桌面原生，2026-11-10）。本文件只做**翻译**，不新增设计值。
+**取代**：原 shadcn/ui 映射（纯黑白、Geist、零阴影、网页 36px 控件）。
 
 ---
 
-## 1. 颜色角色（明 / 暗）→ Avalonia 资源键
+## 1. 资源键（明暗两份必须一一对应）
 
-暗色主题是亮色的**数学反转**（DESIGN.md §12），不是另配一套色。
+`Theme.Light.axaml` / `Theme.Dark.axaml`，由 `App.axaml` 的 `ResourceDictionary.ThemeDictionaries` 挂载。
+色值**只能**出现在这两份文件里。
 
-| 角色 | 亮色 | 暗色 | 建议资源键 |
+| 键 | 亮色 | 暗色 | 角色 |
 |---|---|---|---|
-| 画布 / 背景 | `#ffffff` | `#0a0a0a` | `CnkBg` |
-| 正文 / 前景 | `#0a0a0a` | `#fafafa` | `CnkText` |
-| 次级文本 | `#3f3f46` | `#d4d4d8` | `CnkTextSecondary` |
-| 弱化文本（说明、占位） | `#71717a` | `#a1a1aa` | `CnkTextMuted` |
-| 最弱（禁用、caption） | `#a1a1aa` | `#71717a` | `CnkTextFaint` |
-| 主操作（品牌） | `#0a0a0a` | `#fafafa` | `CnkBrand` |
-| 主操作 hover | `#1a1a1a` | `#e4e4e7` | `CnkBrandHover` |
-| 主操作 pressed | `#27272a` | `#d4d4d8` | `CnkBrandActive` |
-| 主操作上的文字 | `#fafafa` | `#0a0a0a` | `CnkOnBrand` |
-| 面（浅底：代码块、表头） | `#fafafa` | `#171717` | `CnkSurface` |
-| 面-强（hover、次级按钮） | `#f4f4f5` | `#27272a` | `CnkSurfaceStrong` |
-| 面-浮层（弹层、对话框） | `#ffffff` | `#18181b` | `CnkSurfaceElevated` |
-| 边框（发丝线） | `#e4e4e7` | `#27272a` | `CnkBorder` |
-| 边框-弱（行分隔） | `#f4f4f5` | `#18181b` | `CnkBorderSoft` |
-| 边框-强 | `#d4d4d8` | `#3f3f46` | `CnkBorderStrong` |
-| 输入框边框 | `#e4e4e7` | `#27272a` | `CnkInputBorder` |
-| 聚焦环 | `#0a0a0a` | `#fafafa` | `CnkRing` |
-| 危险（删除类操作） | `#ef4444` | `#7f1d1d` | `CnkDanger` |
-| 危险 hover | `#dc2626` | `#991b1b` | `CnkDangerHover` |
-| 成功 | `#10b981` | 同 | `CnkSuccess` |
-| 警告 | `#f59e0b` | 同 | `CnkWarning` |
-| 信息 | `#3b82f6` | 同 | `CnkInfo` |
-| 文本选区 | `rgba(10,10,10,0.1)` | `rgba(250,250,250,0.12)` | `CnkSelection` |
-| 阴影-环境 | `rgba(0,0,0,0.05)` | `rgba(0,0,0,0.30)` | `CnkShadowAmbient` |
-| 阴影-标准（浮层） | `rgba(0,0,0,0.08)` | `rgba(0,0,0,0.45)` | `CnkShadowStandard` |
-| 阴影-深（对话框） | `rgba(0,0,0,0.15)` | `rgba(0,0,0,0.60)` | `CnkShadowDeep` |
+| `CnkBg` | `#f3f5f9` | `#0f1218` | 工作区画布 |
+| `CnkTitleBar` | `#fbfcfe` | `#151a22` | 应用头 |
+| `CnkSurface` | `#ffffff` | `#1a1f28` | 卡片 / 弹层 |
+| `CnkSurfaceStrong` | `#eff3f9` | `#252c39` | 悬停 / 次级按钮 |
+| `CnkSurfaceSubtle` | `#f7f9fc` | `#202632` | 链路图底 / 折叠区 |
+| `CnkConsole` | `#f8fafc` | `#141922` | 日志控制台 |
+| `CnkSidebar` | `#f9fafc` | `#161b23` | 导航区 |
+| `CnkText` | `#16202e` | `#edf2f9` | 正文 |
+| `CnkTextSecondary` | `#46566b` | `#b2bfd0` | 次级文字 |
+| `CnkTextMuted` | `#7b8b9f` | `#8593a6` | 弱化文字 |
+| `CnkTextFaint` | `#a8b4c3` | `#5c6a7c` | 禁用 / 装饰 |
+| `CnkBrand` | `#2f6bff` | `#5b8cff` | 品牌主色 |
+| `CnkBrandHover` | `#1f56e0` | `#7aa2ff` | 主按钮 hover |
+| `CnkBrandActive` | `#1846c2` | `#93b4ff` | 主按钮 pressed |
+| `CnkBrandSoft` | `#e8efff` | `#1e2c4a` | 选中项底 / 徽标底 |
+| `CnkOnBrand` | `#ffffff` | `#0f1218` | 品牌色上的文字 |
+| `CnkBorder` | `#e2e8f1` | `#2a3240` | 发丝线 |
+| `CnkBorderStrong` | `#cbd5e3` | `#3b4657` | 强边框 |
+| `CnkInputBorder` | `#cbd5e3` | `#3b4657` | 输入控件边框 |
+| `CnkRing` | `#612f6bff` | `#785b8cff` | 聚焦环（AARRGGBB） |
+| `CnkSuccess` / `CnkSuccessSoft` | `#16a34a` / `#e7f6ec` | `#3ecf7a` / `#14301f` | 在线 |
+| `CnkInfo` / `CnkInfoSoft` | `#2563eb` / `#e9f0ff` | `#6f9bff` / `#1b2a4a` | 进行中 |
+| `CnkWarning` / `CnkWarningSoft` | `#d97706` / `#fef2df` | `#f0a942` / `#34250e` | 警告 |
+| `CnkDanger` / `CnkDangerHover` / `CnkDangerSoft` | `#dc2626` / `#b91c1c` / `#fdeaea` | `#ff6b6b` / `#ff8f8f` / `#3a1a1c` | 失败 / 删除 |
+| `CnkOffline` / `CnkOfflineSoft` | `#64748b` / `#eef1f5` | `#94a3b8` / `#242c38` | 离线（中性） |
+| `CnkSelection` | `#1a2f6bff` | `#245b8cff` | 文本选区 |
 
-**不使用的 token**：`chart-1..5`（本项目无图表）、`link/link-hover`（窗口内不用超链接，
-需要时取 `CnkText` + 下划线，见 DESIGN.md §2 Interactive）。
+**阴影**（`BoxShadows` 资源，非画刷）：
 
-## 2. 圆角（单一 `--radius = 8px` 派生）
-
-| 档 | 值 | 用途 | 资源键 |
-|---|---|---|---|
-| micro | 2px | 复选框勾选区 | `CnkRadiusMicro` |
-| xs | 4px | tooltip、kbd、小内联块 | `CnkRadiusXs` |
-| **sm** | **6px** | **按钮、输入框、下拉、徽标** | `CnkRadiusSm` |
-| **md** | **8px** | **卡片、代码块/日志面板、浮层** | `CnkRadiusMd` |
-| lg | 12px | 对话框、大面 | `CnkRadiusLg` |
-| pill | 9999px | 圆形状态点 | `CnkRadiusPill` |
-
-## 3. 字体与字号
-
-**字族**（按 DESIGN.md 给的栈，**不要**去获取 Geist —— 技能明确禁止获取专有字体）：
-
-- 无衬线：`"Geist", "Geist Sans", -apple-system, "system-ui", "Segoe UI", Helvetica, Arial, sans-serif`
-- 等宽：`"Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`
-
-> **中文回退（平台必需，非新增 token）**：Geist 无中日韩字形。本产品界面是中文，
-> 故在栈尾追加系统中文字族：无衬线补 `"Microsoft YaHei UI", "微软雅黑"`，
-> 等宽栈已含 `Consolas` 可显示中文（观感一般，日志以英文/数字为主）。
-> 这是"让既有栈在中文环境可读"，不是引入第二套字体。
-
-**字号**（只取 DESIGN.md 的 type scale）：
-
-| 用途 | token | 值 |
+| 键 | 亮色 | 暗色 |
 |---|---|---|
-| 窗口标题 | `display-h3` | 24 / 600 / -0.01em |
-| 区块标题 | `title-sm` | 16 / 600 |
-| 表单标签、按钮文字 | `label` | 14 / 500 |
-| 正文、输入内容、说明 | `body-small` | 14 / 400 |
-| 辅助说明、时间戳 | `caption` | 12 / 400 |
-| 日志正文（等宽） | `code-block` | 13.6 / 400 / 行高 1.55 |
-| 状态徽标（等宽） | `badge` | 12 / 500 |
+| `CnkShadowCard` | `0 1 2 0 #0A102038, 0 4 14 0 #0A102038` | `0 1 2 0 #28000000, 0 6 18 0 #28000000` |
+| `CnkShadowRaised` | `0 2 6 0 #12102038, 0 12 28 0 #12102038` | `0 2 8 0 #36000000, 0 14 30 0 #36000000` |
 
-## 4. 本窗口需要的组件规格（全部来自 DESIGN.md §4）
+## 2. 形状 / 尺寸 / 字阶
 
-| 组件 | 关键数值 |
-|---|---|
-| `input-text` | 高 36，圆角 **6**，内边距 8×12，边框 `1px CnkInputBorder`；聚焦→边框变 `CnkRing` + 2px 环（2px offset） |
-| `textarea` | 同边框与圆角，最小 4 行高 |
-| `select`（下拉） | 与 input 同高同边框，右侧 16px chevron |
-| `checkbox` / `radio` | 16×16，圆角 4（radio 为圆），选中填充 `CnkBrand` |
-| `switch` | 轨道 24×40，滑块 20×20 圆；关 `CnkBorder`、开 `CnkBrand`；滑块位移 16px / 150ms |
-| `button-primary` | 填充 `CnkBrand`，文字 `CnkOnBrand`，圆角 6，内边距 8×16，高 36；hover `CnkBrandHover`、pressed `CnkBrandActive` |
-| `button-secondary` | 填充 `CnkSurfaceStrong`，文字 `CnkText` |
-| `button-outline` | 填充 `CnkBg` + `1px CnkBorder` |
-| `button-ghost` | 透明无边框，hover→`CnkSurfaceStrong`（工具栏/图标按钮） |
-| `button-destructive` | 填充 `CnkDanger`，文字 `CnkOnBrand`；**只用于删除类操作** |
-| `card` | 填充 `CnkBg` + `1px CnkBorder` + 圆角 **8** + 内边距 24；**无阴影**（深度靠"发丝线 + 面色阶"） |
-| `tabs` | 下划线式：1px `CnkBorder` 基线，选中项 2px `CnkBrand` 下划线；标签 `label`（14/500） |
-| `badge-default` | 填充 `CnkBrand`，文字 `CnkOnBrand`，等宽 12/500，内边距 2×8，圆角 6 |
-| `badge-secondary` | 填充 `CnkSurfaceStrong`，文字 `CnkText` |
-| `badge-outline` | `CnkBg` + `1px CnkBorder` |
-| `code-block`（**日志面板**） | 填充 `CnkSurface`，`1px CnkBorder`，圆角 8，内边距 16，等宽 13.6/1.55 |
-| `dialog` | 圆角 **12**，`1px CnkBorder`，阴影 `CnkShadowDeep`，背景遮罩 50% 黑，入场 200ms |
-| `toast` | 卡片式：`CnkBg` + 1px 边框 + 圆角 8 + 标准阴影；4 秒自动消失，hover 暂停 |
-| `tooltip` | 填充 `CnkBrand`，文字 `CnkOnBrand`，等宽 12/500，内边距 6，圆角 4 |
-| `separator` | 1px `CnkBorder` |
-| `kbd` | 填充 `CnkSurfaceStrong` + `1px CnkBorder`，圆角 4，等宽 12/500 |
-
-**深度阶梯**（DESIGN.md §7）：0 平面 → 1 发丝线边框 → 2 面色阶（`CnkSurface`）→ 3 软阴影 →
-4 标准阴影（浮层）→ 5 深阴影 + 遮罩（对话框）。**卡片默认在 1 层**，不要给卡片加阴影。
-
-## 5. 产品状态 → 设计语义（只用上表 token）
-
-| 网络状态 | 语义 | 呈现 |
+| 键 | 值 | 用途 |
 |---|---|---|
-| 在线 | `CnkSuccess` | 状态点 + `badge-outline` 文案 |
-| 被劫持 | `CnkWarning` | 同上 |
-| 离线 | `CnkTextMuted` | 同上（中性灰，不用红色——离线不是错误） |
-| 认证失败（凭据错） | `CnkDanger` | 同上 + 顶部 Alert 行内提示 |
-| 登录中 / 探测中 | `CnkInfo` | 徽标 + 进行中状态 |
+| `CnkRadiusXs` / `Sm` / `Md` / `Lg` / `Pill` | 4 / 8 / 12 / 16 / 9999 | 小徽标 / 控件 / 卡片 / 大面 / 状态点 |
+| `CnkFontSizeTitle` | 20 | 页面标题 |
+| `CnkFontSizeHeading` | 14 | 卡片标题 |
+| `CnkFontSizeLabel` | 12 | 表单标签 |
+| `CnkFontSizeBody` | 13.5 | 正文 / 按钮 |
+| `CnkFontSizeCaption` | 11.5 | 辅助说明 |
+| `CnkFontSizeMono` | 11.5 | 日志 |
+| `CnkControlHeight` / `CnkButtonHeight` | 34 / 36 | 输入 / 按钮 |
 
-## 6. 交互与无障碍硬要求（DESIGN.md §8/§9）
+## 3. 字体栈（`App.axaml` 应用级资源）
 
-- **聚焦环**：2px 实色 `CnkRing` + 2px offset + 2px 内晕；**只在键盘聚焦时出现**
-  （Avalonia 用 `FocusAdorner`，鼠标点击不显示）。
-- **时长/缓动**：hover 150ms、输入聚焦 100ms、弹层 250ms、对话框 200ms；
-  标准缓动 `cubic-bezier(0.4,0,0.2,1)`、强调缓动 `cubic-bezier(0.16,1,0.3,1)`
-  （Avalonia 用 `KeySpline`）。
-- **减少动画**：系统开启"减少动画"时，去掉位移与缩放，只保留颜色/透明度。
-- **对比度**：正文/背景 19.5:1、弱化文本 4.6:1（AA）。`CnkTextFaint` 只用于禁用与
-  装饰性文字，**不得承载正文**。
-- **键盘**：Tab 顺序覆盖所有交互元素；对话框捕获焦点、Esc 关闭、焦点归还触发者；
-  Tab 控件用方向键切换。
+```
+CnkFontSans : Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI, 微软雅黑, sans-serif
+CnkFontMono : Cascadia Code, Cascadia Mono, Consolas, Microsoft YaHei UI, monospace
+```
 
-## 7. 与 Web 原版的差异（有意为之，不是混搭）
+中文回退是平台必需；`SelfTest.cs` 会断言两栈分别含 `Microsoft YaHei UI` 与 `Consolas`。
 
-1. **布局不照搬**：DESIGN.md 描述的是文档站（1400px 容器、240px 侧栏、56px 顶栏）。
-   桌面设置窗口的**布局**由本项目计划的任务 24 决定；本映射只固定**视觉语言**。
-2. **保留其控件尺寸**：36px 高、6px 圆角在桌面上依然合适（点击目标足够）。
-3. **不使用其图表色与营销版式**（hero/lead/prose-width 等）。
-4. 中文回退见 §3，属于平台必需。
+## 4. 组件 → 样式类（`Controls.axaml`）
 
-## 8. 交由任务 23 实现的清单
-
-1. `Theme.Light.axaml` / `Theme.Dark.axaml`：`ResourceDictionary`，键名取 §1，
-   用 Avalonia 的 `ThemeVariant` 挂载（`Application.Styles` / `ResourceInclude`）。
-2. `Controls.axaml`：把 §4 做成样式——`Button` 五态、`TextBox`、`ComboBox`、`CheckBox`、
-   `ToggleSwitch`、`TabControl`、`Border`(card)、徽标、日志用等宽 `SelectableTextBlock`。
-3. **首屏验收**：明/暗/键盘焦点三态截图，与 §1–§4 的数值逐项核对。
-4. **自动化检查**（可测的部分）：
-   - 资源键齐全性单测（§1 的键必须都能在明暗两个字典里解析）
-   - 切换主题后无残留旧值（同一键在暗色下解析为 §1 的暗色值）
-   - 圆角/字号取自资源而非硬编码（grep 断言 XAML 里不出现裸 `#RRGGBB` 与裸 `36`）
-5. **字体**：按 §3 的栈；不下载 Geist。
-
-## 9. MCP 工具输出差异记录（一律以 DESIGN.md 为准）
-
-| 现象 | 处理 |
+| 类 | 关键点 |
 |---|---|
-| `export_design(format=css)` 把圆角导出成 `--radius-button: 8px`、`--radius-card: 12px`，与 frontmatter 的 `sm: 6 / md: 8 / lg: 12` 不符 | 按 **frontmatter + §6 表**（按钮 6、卡片 8、对话框 12） |
-| frontmatter 的 `aliases` 块写 `ring: border-strong`，而 `colors` 里显式 `ring: '#0a0a0a'` | 按 **`colors.ring`**；`evaluate_token("ring")` 返回 `#0a0a0a` 可证 |
-| `get_component(state=hover)` 返回的仍是基础值，不区分状态增量 | 状态值取调色板的 `brand-hover` / `brand-active` |
-| `evaluate_token` 不接受 `theme.ring` 写法，只接受裸 token 名 | 用 `ring`、`bg`、`border` 这类裸名 |
+| `Button`（基础） | 显式 `HorizontalContentAlignment=Center`、高 36、圆角 8 |
+| `.primary` / `.secondary` / `.outline` / `.ghost` / `.danger` | 五态，hover 走 `/template/ ContentPresenter` 覆盖 Fluent 默认 |
+| `TextBox` / `ComboBox` / `NumericUpDown` | 高 34、圆角 8、聚焦改品牌色边框 |
+| `CheckBox` / `ToggleSwitch` | 选中填充 `CnkBrand`，不用 Fluent 青色强调 |
+| `Border.card` | 面色 + 1px 边框 + 12px 圆角 + `CnkShadowCard` |
+| `Border.dot` + `.online/.busy/.failed` | 状态点，颜色随状态切令牌 |
+| `TextBlock.title/.heading/.label/.caption/.error` | 字阶与前景层级 |
+| `ListBoxItem` | 选中 = `CnkSurfaceStrong` + 面色阶，不引入彩色高亮 |
 
-> 顺带记：`DESIGN.md` 安装前本仓库无同名文件；`npx design-md install` 亦可安装，
-> 本机改用「MCP 原文直接落盘」以避免正文二次搬运。
+## 5. 状态语义 → 资源
+
+| 守护状态 | 令牌 | 呈现位置 |
+|---|---|---|
+| `online` | `CnkSuccess` + `CnkSuccessSoft` | 胶囊、大卡状态点、链路节点 |
+| `authenticating` | `CnkInfo` + `CnkInfoSoft` | 同上 |
+| `auth_failed` / `not_campus` | `CnkDanger` / `CnkWarning` | 同上 + 底栏错误行 |
+| `offline` / 守护未运行 | `CnkOffline` + `CnkOfflineSoft` | 中性灰，绝不用红 |
+
+状态切换在视图层用 `Classes` / `IsVisible` 完成，**不新增 ViewModel 属性**。
+
+## 6. 静态与运行时检查
+
+| 检查 | 位置 | 断言 |
+|---|---|---|
+| XML 良构 | `tools/check_ui_tokens.ps1` | 所有 `.axaml/.csproj/.manifest` |
+| 明暗键一致 | 同上 | 两份字典 `x:Key` 集合差集为空 |
+| 禁裸色值 | 同上 | 除 `Theme.*.axaml` 外无 `#[0-9a-fA-F]{3,8}` |
+| 引用可解析 | 同上 | 所有 `{DynamicResource Cnk*}` 在键池内 |
+| 布局回归 | 同上 | `StatusText` / `LastError` 有 `TextTrimming`；基础 Button 样式居中 |
+| 逐值断言 | `SelfTest.cs`（`--self-test`） | 每个色值 / 圆角 / 字号 / 字体栈 / 窗口图标 |
+| CI | `.github/workflows/ci.yml` 的 `ui` job | 构建 + ContractCheck + 静态检查 |
+
+> 改任何色值、圆角、字号或字体栈，必须**同时**更新 `SelfTest.cs` 的期望值，
+> 否则 `--self-test` 会失败——这是刻意的，防止"看着对"的占位实现混过去。
+
+## 7. 与 v1（shadcn/ui）的差异
+
+| 维度 | v1 | v2 |
+|---|---|---|
+| 色彩 | 纯黑白，零品牌色 | 中性面 + 克制品牌蓝 + 语义色 |
+| 暗色 | 亮色数学反转（纯黑 `#0a0a0a`） | 独立调校的深灰阶，品牌提亮 |
+| 深度 | 卡片零阴影，仅发丝线 | 发丝线 + 两级轻阴影 |
+| 圆角 | 6 / 8 / 12 | 8 / 12 / 16 |
+| 控件高 | 36 | 34 / 36 |
+| 字体 | Geist + 中文回退 | Segoe UI Variable + 中文回退（原生） |
+| 布局 | 248px 档案栏 + 单页长滚动 | 208px 导航侧栏 + 四分区 |
+| 状态 | 10px 圆点 | 状态胶囊 + 大卡 + 四段链路 + 四指标 |

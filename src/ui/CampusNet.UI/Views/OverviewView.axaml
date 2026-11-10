@@ -1,0 +1,166 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:CampusNet.UI.ViewModels"
+             x:Class="CampusNet.UI.Views.OverviewView"
+             x:DataType="vm:MainViewModel">
+
+  <!-- 概览：状态优先。全部绑定 MainViewModel 的真实属性，不编造指标。 -->
+  <ScrollViewer Classes="page">
+    <StackPanel Spacing="16">
+
+      <StackPanel Spacing="4">
+        <TextBlock Classes="title" Text="概览"/>
+        <TextBlock Classes="caption" Text="网络状态、链路健康与当前配置一眼可查"/>
+      </StackPanel>
+
+      <!-- 状态大卡 -->
+      <Border Classes="card">
+        <Grid ColumnDefinitions="Auto,*">
+          <Border Grid.Column="0" Classes="brandbar" Margin="0,0,14,0"/>
+          <StackPanel Grid.Column="1" Spacing="12">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+              <Border Grid.Column="0" Classes="dot"
+                      Classes.online="{Binding IsOnline}"
+                      Classes.busy="{Binding IsBusy}"
+                      Classes.failed="{Binding IsFailed}"
+                      Margin="0,0,10,0"/>
+              <TextBlock Grid.Column="1" Text="{Binding StatusText}"
+                         FontSize="{DynamicResource CnkFontSizeTitle}"
+                         FontWeight="SemiBold"
+                         Foreground="{DynamicResource CnkText}"
+                         VerticalAlignment="Center"
+                         TextTrimming="CharacterEllipsis"
+                         ToolTip.Tip="{Binding StatusText}"/>
+              <Border Grid.Column="2" Classes="pill">
+                <TextBlock Classes="caption" Text="实时状态"/>
+              </Border>
+            </Grid>
+
+            <TextBlock Classes="caption"
+                       Text="探测 → AC 复核 → 出网验证：三层判定都通过才会显示在线（204 也不直接判在线）"/>
+
+            <!-- 四段链路：节点颜色跟随当前状态，标签为固定的判定层次 -->
+            <Border Classes="panel" Padding="12">
+              <Grid ColumnDefinitions="Auto,*,Auto,*,Auto,*,Auto">
+                <StackPanel Grid.Column="0" Spacing="6" HorizontalAlignment="Center">
+                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
+                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <TextBlock Classes="caption" Text="本机"/>
+                </StackPanel>
+                <Border Grid.Column="1" Height="2" Background="{DynamicResource CnkBorder}"
+                        VerticalAlignment="Top" Margin="8,4"/>
+                <StackPanel Grid.Column="2" Spacing="6" HorizontalAlignment="Center">
+                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
+                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <TextBlock Classes="caption" Text="网关"/>
+                </StackPanel>
+                <Border Grid.Column="3" Height="2" Background="{DynamicResource CnkBorder}"
+                        VerticalAlignment="Top" Margin="8,4"/>
+                <StackPanel Grid.Column="4" Spacing="6" HorizontalAlignment="Center">
+                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
+                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <TextBlock Classes="caption" Text="门户认证"/>
+                </StackPanel>
+                <Border Grid.Column="5" Height="2" Background="{DynamicResource CnkBorder}"
+                        VerticalAlignment="Top" Margin="8,4"/>
+                <StackPanel Grid.Column="6" Spacing="6" HorizontalAlignment="Center">
+                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
+                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <TextBlock Classes="caption" Text="互联网"/>
+                </StackPanel>
+              </Grid>
+            </Border>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Classes="primary" Content="立即重连"
+                      Command="{Binding ReconnectNowCommand}"/>
+              <Button Classes="outline" Content="刷新状态"
+                      Command="{Binding RefreshCommand}"/>
+              <TextBlock Classes="caption" VerticalAlignment="Center" Margin="6,0,0,0"
+                         Text="测试登录会真的发起一次认证"/>
+            </StackPanel>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <!-- 四项指标：WrapPanel 在窗口收窄时自动折行 -->
+      <WrapPanel>
+        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="caption" Text="本机 IP"/>
+            <TextBlock Classes="mono" Text="{Binding LocalIp}" TextTrimming="CharacterEllipsis"/>
+            <TextBlock Classes="caption" Text="WAN 侧地址"/>
+          </StackPanel>
+        </Border>
+        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="caption" Text="网关"/>
+            <TextBlock Classes="mono" Text="{Binding GatewayText}"
+                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding GatewayText}"/>
+            <TextBlock Classes="caption" Text="ARP 状态见提示"/>
+          </StackPanel>
+        </Border>
+        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="caption" Text="上次登录"/>
+            <TextBlock Classes="mono" Text="{Binding LastSuccessText}"
+                       TextTrimming="CharacterEllipsis"/>
+            <TextBlock Classes="caption" Text="守护进程记录"/>
+          </StackPanel>
+        </Border>
+        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="caption" Text="守护进程"/>
+            <TextBlock Classes="mono" Text="常驻服务"/>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Border Classes="dot" Classes.online="{Binding DaemonRunning}"/>
+              <TextBlock Classes="caption" Text="IPC 连接"/>
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </WrapPanel>
+
+      <!-- 最近事件 / 当前配置 -->
+      <Grid ColumnDefinitions="*,240">
+        <Border Grid.Column="0" Classes="card" Margin="0,0,8,0">
+          <StackPanel Spacing="10">
+            <TextBlock Classes="heading" Text="最近事件"/>
+            <Border Classes="console" Padding="12">
+              <TextBlock Classes="mono" Text="{Binding LogText}" MaxLines="6"
+                         TextTrimming="CharacterEllipsis"/>
+            </Border>
+            <Button Classes="ghost compact" Content="查看全部日志 →" Click="GoLogs_Click"
+                    HorizontalAlignment="Left"/>
+          </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Column="1" Spacing="8">
+          <Border Classes="card" Padding="12">
+            <StackPanel Spacing="8">
+              <TextBlock Classes="heading" Text="当前档案"/>
+              <TextBlock Classes="caption" Text="{Binding SelectedProfile.Name}"/>
+              <TextBlock Classes="caption" Text="{Binding SelectedProfile.Username}"/>
+              <TextBlock Classes="caption" Text="{Binding SelectedProfile.PasswordHint}"
+                         TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border Classes="card" Padding="12">
+            <StackPanel Spacing="8">
+              <TextBlock Classes="heading" Text="探测参数"/>
+              <TextBlock Classes="caption" Text="{Binding ProbeIntervalSeconds, StringFormat='间隔 {0} 秒'}"/>
+              <TextBlock Classes="caption" Text="{Binding ProbeTimeoutSeconds, StringFormat='超时 {0} 秒'}"/>
+              <TextBlock Classes="caption" Text="{Binding RetryBackoffText, StringFormat='退避 {0}'}"
+                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RetryBackoffText}"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </Grid>
+
+      <Border Classes="card" Padding="14">
+        <TextBlock Classes="caption" TextWrapping="Wrap"
+                   Text="已存密码由守护进程以 DPAPI 加密保存，界面只显示状态、永不读取明文。跨机迁移请到「高级设置」用显式导出 / 导入。"/>
+      </Border>
+
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

@@ -2,52 +2,75 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
   <!--
-    亮色主题令牌。**本文件是唯一的色值来源**：所有数值取自 DESIGN.md（shadcn/ui），
-    对照表见 docs/design/avalonia-mapping.md §1–§3。其它 XAML 里不得出现裸色值
-    （有一条检查脚本会断言这一点）。
-    暗色主题是亮色的数学反转（DESIGN.md §12），见 Theme.Dark.axaml —— 两份文件的键必须一一对应。
+    DESIGN.md v2（现代桌面原生）亮色令牌。**本文件是唯一的亮色色值来源**。
+    对照表见 docs/design/avalonia-mapping.md §1–§2。
+    其它 XAML 不得出现裸色值（tools/check_ui_tokens.ps1 会断言）。
+    键必须与 Theme.Dark.axaml 逐项一一对应。
   -->
 
-  <!-- §1 颜色角色 -->
-  <SolidColorBrush x:Key="CnkBg" Color="#ffffff"/>
-  <SolidColorBrush x:Key="CnkText" Color="#0a0a0a"/>
-  <SolidColorBrush x:Key="CnkTextSecondary" Color="#3f3f46"/>
-  <SolidColorBrush x:Key="CnkTextMuted" Color="#71717a"/>
-  <SolidColorBrush x:Key="CnkTextFaint" Color="#a1a1aa"/>
-  <SolidColorBrush x:Key="CnkBrand" Color="#0a0a0a"/>
-  <SolidColorBrush x:Key="CnkBrandHover" Color="#1a1a1a"/>
-  <SolidColorBrush x:Key="CnkBrandActive" Color="#27272a"/>
-  <SolidColorBrush x:Key="CnkOnBrand" Color="#fafafa"/>
-  <SolidColorBrush x:Key="CnkSurface" Color="#fafafa"/>
-  <SolidColorBrush x:Key="CnkSurfaceStrong" Color="#f4f4f5"/>
-  <SolidColorBrush x:Key="CnkSurfaceElevated" Color="#ffffff"/>
-  <SolidColorBrush x:Key="CnkBorder" Color="#e4e4e7"/>
-  <SolidColorBrush x:Key="CnkBorderSoft" Color="#f4f4f5"/>
-  <SolidColorBrush x:Key="CnkBorderStrong" Color="#d4d4d8"/>
-  <SolidColorBrush x:Key="CnkInputBorder" Color="#e4e4e7"/>
-  <SolidColorBrush x:Key="CnkRing" Color="#0a0a0a"/>
-  <SolidColorBrush x:Key="CnkDanger" Color="#ef4444"/>
-  <SolidColorBrush x:Key="CnkDangerHover" Color="#dc2626"/>
-  <SolidColorBrush x:Key="CnkSuccess" Color="#10b981"/>
-  <SolidColorBrush x:Key="CnkWarning" Color="#f59e0b"/>
-  <SolidColorBrush x:Key="CnkInfo" Color="#3b82f6"/>
-  <!-- rgba(10,10,10,0.1)：Avalonia 用 #AARRGGBB -->
-  <SolidColorBrush x:Key="CnkSelection" Color="#1a0a0a0a"/>
+  <!-- 面 -->
+  <SolidColorBrush x:Key="CnkBg" Color="#f3f5f9"/>
+  <SolidColorBrush x:Key="CnkTitleBar" Color="#fbfcfe"/>
+  <SolidColorBrush x:Key="CnkSurface" Color="#ffffff"/>
+  <SolidColorBrush x:Key="CnkSurfaceStrong" Color="#eff3f9"/>
+  <SolidColorBrush x:Key="CnkSurfaceSubtle" Color="#f7f9fc"/>
+  <SolidColorBrush x:Key="CnkConsole" Color="#f8fafc"/>
+  <SolidColorBrush x:Key="CnkSidebar" Color="#f9fafc"/>
 
-  <!-- §2 圆角：由单一 radius 基准 8px 派生（按钮 6 / 卡片 8 / 对话框 12） -->
-  <CornerRadius x:Key="CnkRadiusMicro">2</CornerRadius>
+  <!-- 文字 -->
+  <SolidColorBrush x:Key="CnkText" Color="#16202e"/>
+  <SolidColorBrush x:Key="CnkTextSecondary" Color="#46566b"/>
+  <SolidColorBrush x:Key="CnkTextMuted" Color="#7b8b9f"/>
+  <SolidColorBrush x:Key="CnkTextFaint" Color="#a8b4c3"/>
+
+  <!-- 品牌 -->
+  <SolidColorBrush x:Key="CnkBrand" Color="#2f6bff"/>
+  <SolidColorBrush x:Key="CnkBrandHover" Color="#1f56e0"/>
+  <SolidColorBrush x:Key="CnkBrandActive" Color="#1846c2"/>
+  <SolidColorBrush x:Key="CnkBrandSoft" Color="#e8efff"/>
+  <SolidColorBrush x:Key="CnkOnBrand" Color="#ffffff"/>
+
+  <!-- 线 / 聚焦 -->
+  <SolidColorBrush x:Key="CnkBorder" Color="#e2e8f1"/>
+  <SolidColorBrush x:Key="CnkBorderStrong" Color="#cbd5e3"/>
+  <SolidColorBrush x:Key="CnkInputBorder" Color="#cbd5e3"/>
+  <SolidColorBrush x:Key="CnkRing" Color="#612f6bff"/>
+  <SolidColorBrush x:Key="CnkSelection" Color="#1a2f6bff"/>
+
+  <!-- 语义 -->
+  <SolidColorBrush x:Key="CnkSuccess" Color="#16a34a"/>
+  <SolidColorBrush x:Key="CnkSuccessSoft" Color="#e7f6ec"/>
+  <SolidColorBrush x:Key="CnkInfo" Color="#2563eb"/>
+  <SolidColorBrush x:Key="CnkInfoSoft" Color="#e9f0ff"/>
+  <SolidColorBrush x:Key="CnkWarning" Color="#d97706"/>
+  <SolidColorBrush x:Key="CnkWarningSoft" Color="#fef2df"/>
+  <SolidColorBrush x:Key="CnkDanger" Color="#dc2626"/>
+  <SolidColorBrush x:Key="CnkDangerHover" Color="#b91c1c"/>
+  <SolidColorBrush x:Key="CnkDangerSoft" Color="#fdeaea"/>
+  <SolidColorBrush x:Key="CnkOffline" Color="#64748b"/>
+  <SolidColorBrush x:Key="CnkOfflineSoft" Color="#eef1f5"/>
+
+  <!-- 阴影（BoxShadows 资源，色值同样只在这里出现） -->
+  <BoxShadows x:Key="CnkShadowCard">0 1 2 0 #0A102038, 0 4 14 0 #0A102038</BoxShadows>
+  <BoxShadows x:Key="CnkShadowRaised">0 2 6 0 #12102038, 0 12 28 0 #12102038</BoxShadows>
+
+  <!-- 形状 -->
   <CornerRadius x:Key="CnkRadiusXs">4</CornerRadius>
-  <CornerRadius x:Key="CnkRadiusSm">6</CornerRadius>
-  <CornerRadius x:Key="CnkRadiusMd">8</CornerRadius>
-  <CornerRadius x:Key="CnkRadiusLg">12</CornerRadius>
+  <CornerRadius x:Key="CnkRadiusSm">8</CornerRadius>
+  <CornerRadius x:Key="CnkRadiusMd">12</CornerRadius>
+  <CornerRadius x:Key="CnkRadiusLg">16</CornerRadius>
   <CornerRadius x:Key="CnkRadiusPill">9999</CornerRadius>
 
-  <!-- §3 字号（只取 DESIGN.md 的 type scale） -->
-  <x:Double x:Key="CnkFontSizeTitle">24</x:Double>
-  <x:Double x:Key="CnkFontSizeHeading">16</x:Double>
-  <x:Double x:Key="CnkFontSizeLabel">14</x:Double>
-  <x:Double x:Key="CnkFontSizeBody">14</x:Double>
-  <x:Double x:Key="CnkFontSizeCaption">12</x:Double>
-  <x:Double x:Key="CnkFontSizeMono">13.6</x:Double>
+  <!-- 字阶 -->
+  <x:Double x:Key="CnkFontSizeTitle">20</x:Double>
+  <x:Double x:Key="CnkFontSizeHeading">14</x:Double>
+  <x:Double x:Key="CnkFontSizeLabel">12</x:Double>
+  <x:Double x:Key="CnkFontSizeBody">13.5</x:Double>
+  <x:Double x:Key="CnkFontSizeCaption">11.5</x:Double>
+  <x:Double x:Key="CnkFontSizeMono">11.5</x:Double>
+
+  <!-- 尺寸 -->
+  <x:Double x:Key="CnkControlHeight">34</x:Double>
+  <x:Double x:Key="CnkButtonHeight">36</x:Double>
 
 </ResourceDictionary>
