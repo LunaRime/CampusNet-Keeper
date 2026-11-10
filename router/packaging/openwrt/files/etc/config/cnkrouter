@@ -26,8 +26,9 @@ config main 'main'
 	option probe_expect ''
 	option probe_timeout '6'
 
-	# 在线时的巡检间隔（秒）；<=10 会被钳到 60
-	option probe_interval '60'
+	# 在线时的巡检间隔（秒）；<10 会被钳回 30（与 config_defaults / init.d 一致）
+	# 排查期曾临时设 10：真机一天刷出 88 条「域名解析失败」，而黑洞发现并不更快
+	option probe_interval '30'
 
 	# 多 WAN 时指定出口源地址（一般留空，走默认路由）
 	option bind_ip ''
@@ -50,10 +51,11 @@ config main 'main'
 	# 返回 Success，会导致守护进程"假在线"而不去重连（已实测发生过）。
 	option verify_ac '1'
 
-	# 僵尸会话自动处置级别（0=只记录，这是默认）
-	# 处置含"换 IP / 换 MAC"这类主动断网动作，误报会亲手制造故障。
+	# 僵尸会话自动处置级别（0=只记录，这是默认，2 秒后继续探测）
+	# 处置含"换 MAC"这类主动断网动作，误报会亲手制造故障。
 	# 先让程序把现场记清楚（日志里有完整判定链），确认是僵尸会话后再调高：
-	#   1=发注销  2=+重启WAN换IP  3=+改MAC
+	#   1=发注销  2=保留（换 IP 统一由 link_recovery 软拔插负责）  3=+改MAC
+	# 2026-11-10 起 0 档不再睡 60 秒；换 IP 的 ubus 实现已删除，避免两套自愈并存。
 	option inuse_action '0'
 
 	# 1 = 链路层故障时自动做「软拔插」（ip link set dev wan down/up）

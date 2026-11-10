@@ -19,6 +19,7 @@
 #include <time.h>
 #ifndef _WIN32
 #include <unistd.h>   /* unlink：软拔插标记文件（见 replug_flag_*） */
+#include <sys/stat.h> /* chmod：日志文件含现场信息，不能是默认 644 */
 #endif
 
 static int   g_level = LOG_INFO;
@@ -65,6 +66,11 @@ static void log_open_today(void) {
         snprintf(cmd, sizeof cmd, "mkdir -p '%s' 2>/dev/null", g_log_dir);
         if (system(cmd) == 0) g_logf = fopen(path, "a");
     }
+#ifndef _WIN32
+    /* 日志里有 WAN IP / AC 字段 / 门户地址，不能是默认的 644。
+     * 只改自己刚打开的这一份，不动进程 umask（避免影响其他文件操作）。 */
+    if (g_logf) chmod(path, 0600);
+#endif
     if (!g_logf) fprintf(stderr, "[warn] 无法打开日志 %s\n", path);
 }
 
@@ -168,6 +174,13 @@ static void copy_field(char *dst, size_t cap, const char *v) {
     snprintf(dst, cap, "%s", v);
 }
 
+/* 探测间隔下限：小于 10 秒一律回到默认值 30 秒。
+ * 真机 10 秒间隔时一天刷出 88 条「域名解析失败」，而黑洞发现并不更快 ——
+ * 链路层判定本来就要连续 2 次离线才动手。三处默认值（代码 / UCI 模板 /
+ * init.d）必须一致，否则渲染出来的配置和文档说的不是一回事。
+ * 抽成纯函数是为了让 --selftest 独立断言，不依赖配置文件。 */
+static int clamp_interval(int v) { return v < 10 ? 30 : v; }
+
 /* 网卡名会拼进 system() 执行的命令行里。配置文件是 600，但仍然只放行
  * 字母数字和 . _ - ：既防注入，也顺便挡掉拼错的怪名字。 */
 static int iface_name_ok(const char *s) {
@@ -239,7 +252,7 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
     fclose(f);
 
     if (c->probe_timeout <= 0 || c->probe_timeout > 60) c->probe_timeout = 6;
-    if (c->probe_interval < 10) c->probe_interval = 60;
+    c->probe_interval = clamp_interval(c->probe_interval);
     if (c->link_after < 1) c->link_after = 2;
     if (c->link_cooldown < 60) c->link_cooldown = 900;
     return 0;
@@ -318,8 +331,13 @@ static int run_once(Config *c) {
  *
  * 这里按代价从低到高复刻人工做的三件事，每级都限流，避免反复断网：
  *   ① 注销会话            不中断连接
- *   ② 重启 WAN 换 IP      断 3~5 秒，≈ 拔插网线
+ *   ② 换 IP              已废弃：统一由 link_recovery 的软拔插负责
  *   ③ 改 MAC 换身份       最重，30 分钟最多一次
+ *
+ * ⚠ 默认 inuse_action=0 时只记录、几乎立即返回（2026-11-10 修）：
+ *   原来是 sleep 60 秒，判出僵尸会话后整整一分钟不探测；真机 09:52:44 判僵尸
+ *   → 09:53:49 才复探 → 09:55:11 才恢复，端到端 3m28s。故障会自己从「认证侧」
+ *   恶化到「二层」，守护进程必须持续采样，不能在最需要观察的时候失明。
  */
 #ifndef _WIN32
 /* 把 wan MAC 的最后一个字节 +1：保持 OUI 前缀不变，只让服务器认为是"新设备" */
@@ -356,18 +374,23 @@ static int bump_wan_mac(void) {
 #endif
 
 static void handle_inuse(Config *c) {
-    static time_t t_logout = 0, t_ifup = 0, t_mac = 0;
+    static time_t t_logout = 0;
+#ifndef _WIN32
+    static time_t t_mac = 0;
+#endif
     time_t now = time(NULL);
 
     /* 默认只记录。处置里含"换 IP / 换 MAC"这类主动断网动作，
      * 判定一旦误报就会亲手制造故障 —— 在拿到真实故障的日志证据之前，
      * 程序只负责把现场记清楚，不替用户做决定。需要它动手时把
-     * /etc/config/cnkrouter 的 inuse_action 调到 1/2/3。 */
+     * /etc/config/cnkrouter 的 inuse_action 调到 1/3。 */
     if (c->inuse_action <= 0) {
         log_write(LOG_WARN,
                   "疑似僵尸会话：服务器说已在线但实际不通。"
-                  "inuse_action=0，只记录不动作（要自动处置请调高该项）");
-        sleep_slices(60000);
+                  "inuse_action=0，只记录并立即进入下一轮故障分层");
+        /* 2026-11-10 修：原来是 sleep_slices(60000)。留 2 秒把日志刷完即可，
+         * 之后由 run_daemon 继续探测；链路层若恶化，下一轮就能触发软拔插。 */
+        sleep_slices(2000);
         return;
     }
 
@@ -383,16 +406,14 @@ static void handle_inuse(Config *c) {
     }
 
 #ifndef _WIN32
-    /* ② 换 IP（≈ 拔插网线）。Windows 上没有 ubus，编译期就排除 */
-    if (c->inuse_action >= 2 && now - t_ifup >= 1800) {
-        t_ifup = now;
-        log_write(LOG_WARN, "僵尸会话处置②：重启 WAN 接口换 IP（会断 3~5 秒）");
-        if (system("ubus call network.interface.wan down >/dev/null 2>&1; sleep 2; "
-                   "ubus call network.interface.wan up >/dev/null 2>&1") != 0)
-            log_write(LOG_WARN, "重启 WAN 的命令执行失败");
-        sleep_slices(12000);
-        return;
-    }
+    /* ② 换 IP：不再自己跑 ubus down/up（2026-11-10 收敛）。
+     * 它和 handle_link_down 的软拔插是两套并存的换 IP 实现：命令不同
+     * （ubus vs ip link）、冷却不同（1800s vs link_cooldown）、日志不同、
+     * replug_flag 也不同，而真机上从未启用过 inuse_action>=2。
+     * 现在统一交给链路层（默认 link_recovery=1）：它有故障分层判定、冷却、
+     * 结构化「链路自愈」日志，还会抑制自家 ifup 触发的服务重启。 */
+    if (c->inuse_action >= 2)
+        log_write(LOG_INFO, "僵尸会话处置②：换 IP 由链路层自愈统一处理，此处不重复动作");
 
     /* ③ 换 MAC */
     if (c->inuse_action >= 3 && now - t_mac >= 1800) {
@@ -405,8 +426,9 @@ static void handle_inuse(Config *c) {
     }
 #endif
 
-    log_write(LOG_WARN, "僵尸会话处置手段已用尽，5 分钟后再试一轮");
-    sleep_slices(300000);
+    /* 手段都在冷却中：同样不能长睡，否则链路层自愈会被一起拖住。 */
+    log_write(LOG_WARN, "僵尸会话处置手段均在冷却中，10 秒后重新判层");
+    sleep_slices(10000);
 }
 
 /* ---------------- 链路层诊断与自愈 ----------------
@@ -991,6 +1013,38 @@ static int selftest(void) {
         else log_write(LOG_INFO, "自检通过：iface_name_ok（网卡名白名单）");
     }
 
+    /* 探测间隔下限（纯函数，不依赖配置文件） */
+    {
+        int ok = 1;
+        ok &= clamp_interval(1) == 30;
+        ok &= clamp_interval(9) == 30;
+        ok &= clamp_interval(10) == 10;
+        ok &= clamp_interval(30) == 30;
+        ok &= clamp_interval(60) == 60;
+        if (!ok) { log_write(LOG_ERR, "自检失败：clamp_interval 下限"); ++fails; }
+        else log_write(LOG_INFO, "自检通过：探测间隔钳制（<10 秒回到 30 秒）");
+    }
+
+    /* 取证掩码：同一输入恒定、不同输入不同、且不泄露原值 */
+    {
+        char a[16], b[16], c[16];
+        mask_id("1004c101ed75", a, sizeof a);
+        mask_id("1004c101ed75", b, sizeof b);
+        mask_id("0010f371831f", c, sizeof c);
+        if (strcmp(a, b) != 0 || strcmp(a, c) == 0 ||
+            strstr(a, "1004c101ed75") != NULL || strlen(a) != 8) {
+            log_write(LOG_ERR, "自检失败：mask_id 稳定哈希脱敏"); ++fails;
+        } else log_write(LOG_INFO, "自检通过：mask_id（取证字段稳定脱敏）");
+    }
+
+    /* 构建身份：CI 用 strings 校验它确实烧进了交叉产物 */
+    {
+        const char *id = CNK_BUILD_ID;
+        if (!strstr(id, "git ") || !strstr(id, "built ")) {
+            log_write(LOG_ERR, "自检失败：构建身份缺失"); ++fails;
+        } else log_write(LOG_INFO, "自检通过：构建身份 %s", id);
+    }
+
     if (fails) log_write(LOG_ERR, "自检未通过：%d 项失败", fails);
     else       log_write(LOG_INFO, "自检全部通过");
     return fails ? 1 : 0;
@@ -1024,7 +1078,7 @@ static void usage(void) {
         "  --verbose         输出调试日志\n"
         "  --quiet           只输出错误\n"
         "  --selftest        本地自检（AES/Base64/URL/JSON，不联网）\n"
-        "  --version         显示版本\n"
+        "  --version         显示版本（含 git 提交与构建时间）\n"
         "  --help            显示本帮助\n",
         CNK_VERSION);
 }
@@ -1054,7 +1108,7 @@ int main(int argc, char **argv) {
         else if (strncmp(a, "--pass=", 7) == 0) pass = a + 7;
         else if (strcmp(a, "--verbose") == 0) cfg.log_level = LOG_DBG;
         else if (strcmp(a, "--quiet") == 0) cfg.log_level = LOG_ERR;
-        else if (strcmp(a, "--version") == 0) { printf("cnkrouter %s\n", CNK_VERSION); return 0; }
+        else if (strcmp(a, "--version") == 0) { printf("cnkrouter %s\n", CNK_BUILD_ID); return 0; }
         else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) { usage(); return 0; }
         else { fprintf(stderr, "无法识别的参数：%s\n\n", a); usage(); return 64; }
     }

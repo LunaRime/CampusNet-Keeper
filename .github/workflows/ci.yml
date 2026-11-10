@@ -124,6 +124,7 @@ jobs:
         run: |
           cd router
           make OUT=build-ci
+          ./build-ci/cnkrouter --version
           ./build-ci/cnkrouter --selftest
           python3 tests/e2e_test.py ./build-ci/cnkrouter
 
@@ -177,6 +178,13 @@ jobs:
             echo "!! 二进制有动态依赖，不是静态链接"; readelf -d build-aarch64/cnkrouter | head -10; exit 1
           fi
           echo "NEEDED=0（纯静态）"
+          # 版本戳必须真的烧进交叉产物：真机 --version 才能核对跑的是哪个提交
+          COMMIT=$(git rev-parse --short HEAD)
+          if ! strings build-aarch64/cnkrouter | grep -F "(git $COMMIT, built " >/dev/null; then
+            echo "!! 版本戳未烧进交叉产物（期望 git $COMMIT）"
+            exit 1
+          fi
+          echo "版本戳已核对：git $COMMIT"
 
       - name: 上传 aarch64 产物
         uses: actions/upload-artifact@v4

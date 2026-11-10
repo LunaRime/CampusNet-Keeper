@@ -85,7 +85,11 @@ start_service() {
 }
 
 reload_service() {
-	# SIGHUP 让进程重读配置并重置退避状态；配置没变时等价于"立刻重试一次"
+	# 先重新渲染 /var/etc/cnkrouter.conf（2026-11-10 修）。
+	# 旧实现只发 SIGHUP：改完 UCI 执行 reload，进程读到的仍是上次 start 渲染的
+	# 旧文件 —— 看起来"重载了"，其实配置根本没变。必须在发信号前 render。
+	# SIGHUP 让进程重读配置并重置退避状态；配置没变时等价于"立刻重试一次"。
+	render_config || return 1
 	pidof cnkrouter >/dev/null 2>&1 && kill -HUP $(pidof cnkrouter)
 }
 

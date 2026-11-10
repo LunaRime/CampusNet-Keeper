@@ -19,6 +19,11 @@ set "ROOT=%~dp0.."
 set "OUT=%ROOT%\build"
 if not exist "%OUT%" mkdir "%OUT%"
 
+rem DEV 构建也带上提交哈希，方便 --version 核对；git 不在 PATH 时退化为 unknown
+set "GITCOMMIT=unknown"
+for /f "delims=" %%g in ('git -C "%ROOT%" rev-parse --short HEAD 2^>nul') do set "GITCOMMIT=%%g"
+echo git commit: %GITCOMMIT%
+
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" goto no_vs
 rem 用临时文件取值：for /f 里带引号且含空格的 exe 路径会被 cmd 拆词
@@ -44,7 +49,7 @@ set "PATH=%MSVC%\bin\Hostx64\x64;%PATH%"
 echo MSVC %MSVCVER% / SDK %SDKVER%
 
 pushd "%OUT%"
-cl -nologo -W3 -O2 -utf-8 -D_CRT_SECURE_NO_WARNINGS -Fe:cnkrouter.exe ^
+cl -nologo -W3 -O2 -utf-8 -D_CRT_SECURE_NO_WARNINGS -DCNK_BUILD_COMMIT=\"%GITCOMMIT%\" -Fe:cnkrouter.exe ^
    "%ROOT%\src\crypto.c" "%ROOT%\src\net.c" "%ROOT%\src\portal.c" "%ROOT%\src\main.c" ^
    -link -SUBSYSTEM:CONSOLE
 if errorlevel 1 goto fail

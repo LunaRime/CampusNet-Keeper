@@ -10,6 +10,10 @@ PKG_NAME:=cnkrouter
 PKG_VERSION:=0.1.0
 PKG_RELEASE:=1
 
+# SDK 的 package/ 副本里没有 .git，提交哈希由 scripts/build_openwrt.sh
+# 以环境变量传入（构建时间用编译器 __DATE__ 兜底），让 `--version` 仍可追溯。
+CNK_GIT_COMMIT ?= unknown
+
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 PKG_BUILD_PARALLEL:=1
 
@@ -40,7 +44,9 @@ define Build/Prepare
 endef
 
 define Build/Compile
-	$(TARGET_CC) $(TARGET_CFLAGS) -Os -std=c99 -o $(PKG_BUILD_DIR)/cnkrouter \
+	$(TARGET_CC) $(TARGET_CFLAGS) -Os -std=c99 \
+		-DCNK_BUILD_COMMIT='"$(CNK_GIT_COMMIT)"' \
+		-o $(PKG_BUILD_DIR)/cnkrouter \
 		$(PKG_BUILD_DIR)/crypto.c \
 		$(PKG_BUILD_DIR)/net.c \
 		$(PKG_BUILD_DIR)/portal.c \

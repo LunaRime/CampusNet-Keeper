@@ -39,6 +39,19 @@
 
 #define CNK_VERSION "0.1.0"
 
+/* 构建身份（2026-11-10 审查补）：CI / make / CMake 通过 -D 注入 git 短哈希，
+ * 没注入时是 unknown；构建时间用编译器内置宏兜底，保证任何构建路径都可追溯。
+ * 起因：真机上跑的二进制 sha256 与仓库里 4 份留存产物全不同，而 `--version`
+ * 只有 "0.1.0"，无法证明它对应哪个提交。现在 `cnkrouter --version` 直接给出答案。 */
+#ifndef CNK_BUILD_COMMIT
+#  define CNK_BUILD_COMMIT "unknown"
+#endif
+#ifndef CNK_BUILD_TIME
+#  define CNK_BUILD_TIME __DATE__ " " __TIME__
+#endif
+/* 拼成单个字符串常量：CI 可以用 strings 断言「版本戳确实烧进了交叉产物」。 */
+#define CNK_BUILD_ID CNK_VERSION " (git " CNK_BUILD_COMMIT ", built " CNK_BUILD_TIME ")"
+
 /* 固定上限：配置与报文的最大尺寸（路由器上避免堆碎片） */
 #define CNK_URL_MAX   256
 #define CNK_HOST_MAX  96
@@ -109,6 +122,9 @@ int has_i(const char *s, const char *needle);
 /* 把 s 里出现的 secret 全部抹成 *（等长、原地安全），用于日志脱敏。
  * 账号/密码绝不可落盘（学号属敏感信息，与密码同等对待）。 */
 void redact_secret(char *s, const char *secret);
+/* 稳定哈希掩码：把 MAC / 设备标识变成 8 位十六进制摘要后落日志。
+ * 不泄露原值，但同一输入永远同一输出 —— 取证的「字段有没有突变」仍然判得出来。 */
+void mask_id(const char *s, char *out, size_t cap);
 
 /* ---------------- 配置 ---------------- */
 typedef struct {
@@ -134,9 +150,9 @@ typedef struct {
     /* 僵尸会话的自动处置级别。**默认 0 = 只记录不动作**：
      * 处置里有换 IP / 换 MAC 这类主动断网操作，一旦判定误报就会亲手制造故障。
      * 在拿到真实故障的日志证据之前，程序只负责记录，不替用户做决定。
-     *   0 = 只记录（默认）
+     *   0 = 只记录（默认，2 秒后继续探测；原来是睡 60 秒，见 main.c）
      *   1 = 额外发注销（断 3~5 秒）
-     *   2 = 额外重启 WAN 换 IP（断 3~5 秒）
+     *   2 = 保留档位，换 IP 统一交给 link_recovery 的软拔插（不再另跑 ubus）
      *   3 = 额外改 MAC 换身份（最重） */
     int  inuse_action;
     /* ---- 链路层诊断与自愈（2026-11-01 真机取证后新增）----
@@ -185,10 +201,13 @@ void probe_set_quiet(int q);
 
 /* AC（Dr.COM）复核的取证：记录最近若干次 chkstatus 的关键字段（result / olmac / ss1 /
  * oltime / v4ip），离线动手前 dump 出来，用于定位「会话被频繁回收」的根因。
- * 三种根因的指纹：
- *   · 会话到期      → result 从 1 突变 0，oltime 复位；
+ * 三种根因的指纹（按 2026-11-10 真机 8 天日志修正后的可靠性排序）：
+ *   · 共享封禁/黑洞   → result 一直 1、字段不变，但出网/门户/AC 突然全部不可达（最常见）；
  *   · MAC 绑定冲突   → olmac（当前在线 MAC）与 ss1（历史绑定 MAC）对不上或突变；
- *   · 共享封禁/黑洞   → result 一直 1、字段不变，但出网/门户/AC 突然全部不可达。 */
+ *   · 会话到期      → result 从 1 突变 0（唯一可靠判据，8 天里只出现过 1 次）。
+ * ⚠ 本部署的 oltime **恒为固定值 864060**，跨多次换 IP 也不复位，不能拿「oltime 复位」
+ *   当会话到期的判据；v4ip 随 WAN 换 IP 变化，同样不是会话指纹。
+ *   打印时 olmac/ss1 会做稳定哈希脱敏（只保留「是否突变」的可比对性）。 */
 void ac_forensics_dump(const Config *c);
 
 /* ---------------- 登录 ---------------- */

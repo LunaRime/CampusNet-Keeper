@@ -27,6 +27,11 @@ cp "$HERE"/src/*.c "$HERE"/src/*.h "$PKG/src/"
 rm -rf "$SDK/package/cnkrouter"
 cp -r "$PKG" "$SDK/package/cnkrouter"
 
+# package/ 副本不带 .git，取不到提交哈希 —— 在这里从仓库取好，用环境变量
+# 传给 SDK 的 Build/Compile，让产物 `--version` 仍能对上是哪次提交编的。
+export CNK_GIT_COMMIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "构建身份：git $CNK_GIT_COMMIT"
+
 cd "$SDK"
 make package/cnkrouter/compile V=s
 make package/cnkrouter/install V=s

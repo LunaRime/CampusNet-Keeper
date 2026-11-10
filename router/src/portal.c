@@ -208,6 +208,20 @@ void redact_secret(char *s, const char *secret) {
     }
 }
 
+/* FNV-1a 32 位稳定哈希：取证里的 olmac/ss1 是设备标识，不该明文落盘
+ * （日志目录里还有 WAN IP / 门户地址，文件已 chmod 600）。
+ * 哈希后「字段有没有突变」照样能比 —— 这正是取证要的，原值反而用不上。 */
+void mask_id(const char *s, char *out, size_t cap) {
+    uint32_t h = 2166136261u;
+    const unsigned char *p = (const unsigned char *)(s ? s : "");
+    if (cap < 9) { if (cap) out[0] = '\0'; return; }
+    for (; *p; ++p) {
+        h ^= *p;
+        h *= 16777619u;
+    }
+    snprintf(out, cap, "%08x", (unsigned)h);
+}
+
 /* ---------------- 探测 ---------------- */
 
 const char *net_state_name(NetState s) {
@@ -284,12 +298,16 @@ void ac_forensics_dump(const Config *c) {
     for (i = 0; i < g_ac_hist_n; ++i) {
         int idx = (g_ac_hist_pos - g_ac_hist_n + i + AC_FORENSIC_MAX) % AC_FORENSIC_MAX;
         const AcForensicEntry *e = &g_ac_hist[idx];
+        char mb1[16], mb2[16];
+        const char *om = "-", *sm = "-";
+        if (e->olmac[0]) { mask_id(e->olmac, mb1, sizeof mb1); om = mb1; }
+        if (e->ss1[0])  { mask_id(e->ss1,  mb2, sizeof mb2); sm = mb2; }
         fmt_hmstime(e->ts, tbuf, sizeof tbuf);
+        /* olmac/ss1 只以稳定摘要出现：字段突变仍一眼可见，真实 MAC 不落盘。
+         * v4ip 保留 —— 运维要靠它确认软拔插是否真的换到了新地址。 */
         log_write(LOG_INFO,
                   "  #%d %s result=%ld olmac=%s ss1=%s v4ip=%s oltime=%ld",
-                  i + 1, tbuf, e->result,
-                  e->olmac[0] ? e->olmac : "-",
-                  e->ss1[0] ? e->ss1 : "-",
+                  i + 1, tbuf, e->result, om, sm,
                   e->v4ip[0] ? e->v4ip : "-",
                   e->oltime);
         ++n;
@@ -394,7 +412,19 @@ static int can_reach_internet(const Config *c) {
         memset(&resp, 0, sizeof resp);
         if (http_request("GET", urls[i], NULL, NULL, c->bind_ip, 5000,
                          &resp, err, sizeof err) != 0) {
-            log_write(LOG_DBG, "出网验证：%s 请求失败（%s）", urls[i], err);
+            /* 上游 DNS 就是 AC，短黑洞时「域名解析失败」会每轮刷一条
+             * （真机一天 47 条来自 MIUI，占当天 DNS 失败的一半以上）。
+             * 这类瞬时抖动限频 60 秒打一条；超时/连接失败是排障依据，照常全打。 */
+            if (has_i(err, "域名解析失败")) {
+                static time_t t_last_dns = 0;
+                time_t now = time(NULL);
+                if (now - t_last_dns >= 60) {
+                    t_last_dns = now;
+                    log_write(LOG_DBG, "出网验证：%s 请求失败（%s）", urls[i], err);
+                }
+            } else {
+                log_write(LOG_DBG, "出网验证：%s 请求失败（%s）", urls[i], err);
+            }
             continue;
         }
         got_response = 1;
@@ -469,6 +499,19 @@ ProbeResult probe_once(const Config *c) {
                          "探测目标可达但实际出不了网（疑似僵尸会话）");
                 http_resp_free(&resp);
                 return r;
+            }
+            /* net < 0 且 ac < 0：三层里只有第 1 层给了「可达」，AC 与出网
+             * 都查不出来。维持在线是保守策略（不主动断网），但必须留痕 ——
+             * 否则又是「程序说在线、用户上不了网」而日志里什么都查不到。
+             * 限频 60 秒，避免瞬时抖动刷屏。 */
+            if (net < 0 && ac < 0) {
+                static time_t t_last_blind = 0;
+                time_t now = time(NULL);
+                if (now - t_last_blind >= 60) {
+                    t_last_blind = now;
+                    log_write(LOG_WARN,
+                              "三层判定均无法确认（AC 复核与出网验证都不可达），暂时维持在线");
+                }
             }
             /* net < 0：两个目标都够不着，判不出来，维持在线（宁可不折腾） */
         }

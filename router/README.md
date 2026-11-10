@@ -141,7 +141,14 @@ logread -e cnkrouter -f
 cnkrouter --config=/var/etc/cnkrouter.conf --probe   # 0=在线 2=门户 3=离线
 cnkrouter --config=/var/etc/cnkrouter.conf --once    # 完整走一遍并复测
 cnkrouter --selftest                                  # 不联网，验 AES/Base64/URL/JSON
+cnkrouter --version                                  # 版本 + git 提交 + 构建时间
 ```
+
+> **换版先核对身份**：`--version` 输出形如 `0.1.0 (git d7e234d, built 2026-11-10T05:30:00Z)`，
+> 短哈希与构建时间由 Makefile / CMake / SDK 在编译时注入，CI 会用 `strings` 断言版本戳
+> 确实烧进了 aarch64 产物。真机上跑一次 `--version` 与发版产物对照，就能确认跑的是哪个提交 ——
+> 2026-11-10 审查发现真机二进制与仓库里 4 份留存产物的哈希全不同，而旧版 `--version` 只有
+> `0.1.0`，完全无法追溯，这条就是为此加的。
 
 ---
 
@@ -196,7 +203,7 @@ scp 不适用时用 exec + base64 分块：见仓库 build/.rput.py（本地工�
 | `--probe` | `online 探测目标可达（HTTP 204）`，退出码 0 |
 | 常驻内存 | **VSZ 284 KB**（ps 的 VSZ 列；RSS 更低） |
 | 启动到稳定 | 秒级；日志只有两行（启动参数 + 网络在线） |
-| 在线时行为 | **只巡检、不登录**（探测间隔可配，默认 30 s；本机部署 10 s），对现有会话零干扰 |
+| 在线时行为 | **只巡检、不登录**（探测间隔默认 30 s；排查期本机曾临时设 10 s，2026-11-10 已统一回 30 s），对现有会话零干扰 |
 | 断网恢复 | 由 `hotplug` 在 `wan ifup` 后 restart，恢复时间从"最多 5 分钟"压到秒级 |
 
 ### 三个真机才暴露的坑
@@ -350,7 +357,22 @@ AC 偶发把路由器 WAN IP 的转发面黑洞（表现为手机/电脑「加�
 grep -A 12 "【取证】AC 复核历史" /mnt/data/log/cnkrouter/$(date +%F).log
 ```
 
-三种死法：`result 1→0` = 会话到期；`olmac/ss1` 突变 = MAC 绑定冲突；字段纹丝不动但转发面断 = 共享封禁/黑洞。
+三种死法（按 2026-11-10 真机 8 天日志的可靠性排序）：
+
+1. **共享封禁/黑洞**（最常见）：`result` 恒为 1、各字段纹丝不动，但出网 / 门户 / AC 突然全不可达；
+2. **MAC 绑定冲突**：`olmac` / `ss1` 突变；
+3. **会话到期**：`result 1→0`（8 天里只出现过 1 次）。
+
+⚠ 两个字段别再用错：`oltime` 在本部署**恒为固定值 864060**，跨多次换 IP 也不复位，不能当
+「会话到期复位」的信号；`v4ip` 随 WAN 换 IP 变化，是链路信息而不是会话指纹。
+日志里的 `olmac` / `ss1` 现在打印成 8 位稳定哈希摘要 —— 真实 MAC 不落盘，但「有没有突变」
+照样能比；守护进程新写的日志文件也会 `chmod 600`（里面还有 WAN IP 与门户地址，别外发原始日志）。
+
+**恢复时延实测**：单次软拔插本身 7~10 秒（09:54 那次 71 秒，因为第一次 down/up 后 WAN
+40 秒没就绪，又拉了一次）。但 11-10 09:51 那次端到端是 **3 分 28 秒**：旧版判出「僵尸会话」
+后会硬睡 60 秒，期间完全不探测，正好错过门户从「可达」恶化到「不可达」的窗口，链路层自愈
+因此被推迟。现在 0 档只等 2 秒就继续采样，换 IP 统一由 `link_recovery` 负责（删掉了
+`inuse_action>=2` 那套 ubus 实现），不再有两套自愈并存。
 
 ### 探测地址与三层判定（2026-11-09 改造）
 
@@ -390,8 +412,12 @@ option probe_expect ''
 
 默认值同步改了 4 处：`src/main.c` 的 `config_defaults()`、UCI 模板
 `files/etc/config/cnkrouter`、`files/etc/init.d/cnkrouter` 的 `config_get`，以及本地部署脚本
-`build/.deploy_conf.py`。**注意真机上的 init.d 不会随二进制自动更新**：换默认探测地址时
-必须单独推一次并 `restart`（`reload` 只发 SIGHUP，不重新渲染 `/var/etc/cnkrouter.conf`）。
+`build/.deploy_conf.py`。2026-11-10 把探测间隔三处统一回 **30 s**（`config_load` 对 <10 也钳回 30）：
+排查期那个 10 s 会让 DNS 抖动一天刷出 88 条失败日志，而黑洞发现并不更快。
+
+**注意真机上的 init.d 不会随二进制自动更新**：换默认探测地址或换二进制时必须单独推一次 init.d
+并 `restart`。`reload` 现在会先重新渲染 `/var/etc/cnkrouter.conf` 再发 SIGHUP（旧版只发信号，
+改完 UCI 执行 reload 其实读的还是上次 start 渲染的旧文件），但它**不会替换二进制**。
 
 ### 检查网络是否正常连通：7 种手段（真机实测）
 

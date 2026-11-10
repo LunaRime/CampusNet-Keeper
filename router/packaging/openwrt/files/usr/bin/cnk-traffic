@@ -36,6 +36,14 @@ STATE="$TRAFFIC_DIR/state"
 LEASE=/tmp/dhcp.leases
 
 mkdir -p "$TRAFFIC_DIR" 2>/dev/null || exit 0
+
+# cron 每 5 分钟一次：上一轮若还没跑完，直接跳过本轮。两个实例并发会互相
+# flush chain、覆盖同名 state.tmp，增量计数就废了。
+# busybox flock 的 -n = Fail rather than wait（真机 Kwrt 24.10.4 / BusyBox v1.36.1
+# 已跑 `flock --help` 确认支持 -sxun，不是凭印象写的）。
+exec 9>"$TRAFFIC_DIR/.lock" || exit 0
+flock -n 9 || exit 0
+
 [ -f "$LEASE" ] || exit 0
 [ -f "$STATE" ] || : > "$STATE"    # 首次运行建立空状态文件
 
