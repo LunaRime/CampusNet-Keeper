@@ -114,6 +114,21 @@ jobs:
           dotnet build src/ui/CampusNet.UI -c Release
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      - name: 窗口构造自检（编译通过不等于界面能起来）
+        shell: pwsh
+        run: |
+          # v0.1.7 事故：运行时 XAML 加载下 x:Name 字段为 null，编译全绿但构造 MainWindow
+          # 时抛 NullReferenceException，完整版 exe 点「设置」毫无反应。--self-test 会真正
+          # 构造窗口、解析控件树并走一遍分区导航；结果落盘，WinExe 退出码在 PowerShell
+          # 里不可靠，故两个都核对。
+          . .\scripts\invoke_cli.ps1
+          $exe = ".\build-ui\bin\CampusNet.UI\Release\net10.0-windows\CampusNet.UI.exe"
+          $r = Invoke-CnkCli -Exe $exe -CliArgs @('--self-test')
+          if ($r.ExitCode -ne 0) { Write-Error "UI 自检退出码 $($r.ExitCode)"; exit 1 }
+          $verdict = (Get-Content ".\build-ui\bin\CampusNet.UI\Release\net10.0-windows\ui-selftest.txt" -Raw).Trim()
+          if ($verdict -ne 'PASS') { Write-Error "UI 自检结果：$verdict"; exit 1 }
+          Write-Host "UI 自检 PASS：$($r.Lines -join ' / ')"
+
       - name: 核心自检（配置镜像 / 密码规则 / 运营商合并）
         shell: pwsh
         run: |

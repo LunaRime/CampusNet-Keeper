@@ -9,10 +9,15 @@
   <ScrollViewer Classes="page">
     <StackPanel Spacing="16">
 
-      <Grid ColumnDefinitions="*,Auto">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
         <StackPanel Grid.Column="0" Spacing="4">
           <TextBlock Classes="title" Text="配置档案"/>
-          <TextBlock Classes="caption" Text="一个档案对应一套账号与认证策略，切换后立即用于自连"/>
+          <TextBlock Classes="caption" TextWrapping="Wrap"
+                     Text="一个档案对应一套账号与认证策略，切换后立即用于自连"/>
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
           <Button Classes="outline compact" Content="新增档案"
@@ -22,6 +27,7 @@
         </StackPanel>
       </Grid>
 
+      <!-- 档案 chips：绿点表示「已保存密码」，与原型一致 -->
       <ListBox ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
                Background="Transparent" BorderThickness="0">
         <ListBox.ItemsPanel>
@@ -30,8 +36,13 @@
         <ListBox.ItemTemplate>
           <DataTemplate x:DataType="vm:ProfileViewModel">
             <Border Classes="pill" Margin="0,0,8,4">
-              <TextBlock Text="{Binding Name}"
-                         FontSize="{DynamicResource CnkFontSizeCaption}"/>
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <Border Classes="dot online" IsVisible="{Binding HasPassword}"
+                        ToolTip.Tip="已保存密码"/>
+                <TextBlock Text="{Binding Name}"
+                           FontSize="{DynamicResource CnkFontSizeCaption}"
+                           TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
             </Border>
           </DataTemplate>
         </ListBox.ItemTemplate>
@@ -42,7 +53,12 @@
         <StackPanel Spacing="14">
           <TextBlock Classes="heading" Text="连接信息"/>
 
-          <Grid ColumnDefinitions="*,16,*" RowDefinitions="Auto,Auto,Auto">
+          <Grid RowDefinitions="Auto,Auto,Auto">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+              <ColumnDefinition Width="16"/>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+            </Grid.ColumnDefinitions>
             <StackPanel Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,0,0,14">
               <TextBlock Classes="label" Text="认证网址"/>
               <TextBox Text="{Binding SelectedProfile.AuthUrl}" Watermark="例如门户地址"/>
@@ -60,7 +76,11 @@
 
             <StackPanel Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,14,0,0">
               <TextBlock Classes="label" Text="密码"/>
-              <Grid ColumnDefinitions="*,Auto">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" MinWidth="0"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
                 <TextBox Grid.Column="0"
                          Text="{Binding SelectedProfile.PasswordInput}"
                          PasswordChar="●"
@@ -69,7 +89,7 @@
                 <Button Grid.Column="1" Classes="outline" Content="显示" Margin="8,0,0,0"
                         Command="{Binding TogglePasswordCommand}"/>
               </Grid>
-              <TextBlock Classes="caption" Margin="0,6,0,0"
+              <TextBlock Classes="caption" Margin="0,6,0,0" TextWrapping="Wrap"
                          Text="留空表示不修改已保存的密码；界面不会读取已存明文。"/>
             </StackPanel>
           </Grid>
@@ -86,7 +106,12 @@
       <Border Classes="card">
         <StackPanel Spacing="14">
           <TextBlock Classes="heading" Text="认证策略"/>
-          <Grid ColumnDefinitions="*,16,*">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+              <ColumnDefinition Width="16"/>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+            </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0">
               <TextBlock Classes="label" Text="运营商"/>
               <ComboBox ItemsSource="{Binding AllCarrierOptions}"
@@ -94,7 +119,7 @@
                         HorizontalAlignment="Stretch">
                 <ComboBox.ItemTemplate>
                   <DataTemplate x:DataType="svc:CarrierOption">
-                    <TextBlock Text="{Binding Label}"/>
+                    <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"/>
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>
@@ -106,7 +131,7 @@
                         HorizontalAlignment="Stretch">
                 <ComboBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:VendorOption">
-                    <TextBlock Text="{Binding Label}"/>
+                    <TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis"/>
                   </DataTemplate>
                 </ComboBox.ItemTemplate>
               </ComboBox>

@@ -5,25 +5,28 @@
              x:Class="CampusNet.UI.Views.LogsView"
              x:DataType="vm:MainViewModel">
 
-  <!-- 运行日志：独立分区，复用 LogPanel（等宽、可选中、自动滚到底）。 -->
-  <ScrollViewer Classes="page">
-    <StackPanel Spacing="16">
-      <StackPanel Spacing="4">
-        <TextBlock Classes="title" Text="运行日志"/>
-        <TextBlock Classes="caption" Text="守护进程实时输出，用于排查断线与认证问题"/>
-      </StackPanel>
-
-      <views:LogPanel/>
-
-      <Border Classes="card" Padding="14">
-        <StackPanel Spacing="6">
-          <TextBlock Classes="heading" Text="日志位置"/>
-          <TextBlock Classes="caption" TextWrapping="Wrap"
-                     Text="%APPDATA%\CampusNet-Keeper\logs\ · 每 2 秒由界面拉取一次尾部；点击「打开日志目录」可查看完整历史文件。"/>
-          <TextBlock Classes="caption" TextWrapping="Wrap"
-                     Text="日志里的凭据字段由守护进程脱敏；取证快照中的 MAC / IP 标识经过掩码处理。"/>
-        </StackPanel>
-      </Border>
+  <!--
+    运行日志：整页**不套 ScrollViewer**。
+    原来外层 page 滚动 + LogPanel 内层滚动会同时出现两条垂直滚动条，
+    且内层固定 300px 会把下面的说明卡挤出可视区。现在用 Grid 把剩余高度
+    全部交给 LogPanel，只保留控制台内部一条滚动条；长行在控制台内换行。
+  -->
+  <Grid RowDefinitions="Auto,*,Auto" Margin="20,18">
+    <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,16">
+      <TextBlock Classes="title" Text="运行日志"/>
+      <TextBlock Classes="caption" Text="守护进程实时输出，用于排查断线与认证问题"/>
     </StackPanel>
-  </ScrollViewer>
+
+    <views:LogPanel Grid.Row="1"/>
+
+    <Border Grid.Row="2" Classes="card" Padding="14" Margin="0,16,0,0">
+      <StackPanel Spacing="6">
+        <TextBlock Classes="heading" Text="日志位置"/>
+        <TextBlock Classes="caption" TextWrapping="Wrap"
+                   Text="%APPDATA%\CampusNet-Keeper\logs\keeper-YYYY-MM-DD.log · 按天分文件，保留最近 3 天；界面每 2 秒拉取一次尾部，点「打开日志目录」查看完整历史。"/>
+        <TextBlock Classes="caption" TextWrapping="Wrap"
+                   Text="日志里的凭据字段由守护进程脱敏；取证快照中的 MAC / IP 标识经过掩码处理。"/>
+      </StackPanel>
+    </Border>
+  </Grid>
 </UserControl>

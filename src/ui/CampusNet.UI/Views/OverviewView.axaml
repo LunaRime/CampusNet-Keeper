@@ -10,15 +10,25 @@
 
       <StackPanel Spacing="4">
         <TextBlock Classes="title" Text="概览"/>
-        <TextBlock Classes="caption" Text="网络状态、链路健康与当前配置一眼可查"/>
+        <TextBlock Classes="caption" Text="网络状态、链路健康与当前配置一眼可查"
+                   TextWrapping="Wrap"/>
       </StackPanel>
 
       <!-- 状态大卡 -->
       <Border Classes="card">
-        <Grid ColumnDefinitions="Auto,*">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*" MinWidth="0"/>
+          </Grid.ColumnDefinitions>
           <Border Grid.Column="0" Classes="brandbar" Margin="0,0,14,0"/>
           <StackPanel Grid.Column="1" Spacing="12">
-            <Grid ColumnDefinitions="Auto,*,Auto">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
               <Border Grid.Column="0" Classes="dot"
                       Classes.online="{Binding IsOnline}"
                       Classes.busy="{Binding IsBusy}"
@@ -31,17 +41,29 @@
                          VerticalAlignment="Center"
                          TextTrimming="CharacterEllipsis"
                          ToolTip.Tip="{Binding StatusText}"/>
-              <Border Grid.Column="2" Classes="pill">
+              <Border Grid.Column="2" Classes="pill"
+                      Classes.online="{Binding IsOnline}"
+                      Classes.busy="{Binding IsBusy}"
+                      Classes.failed="{Binding IsFailed}" Margin="8,0,0,0">
                 <TextBlock Classes="caption" Text="实时状态"/>
               </Border>
             </Grid>
 
-            <TextBlock Classes="caption"
+            <TextBlock Classes="caption" TextWrapping="Wrap"
                        Text="探测 → AC 复核 → 出网验证：三层判定都通过才会显示在线（204 也不直接判在线）"/>
 
             <!-- 四段链路：节点颜色跟随当前状态，标签为固定的判定层次 -->
             <Border Classes="panel" Padding="12">
-              <Grid ColumnDefinitions="Auto,*,Auto,*,Auto,*,Auto">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*" MinWidth="0"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*" MinWidth="0"/>
+                  <ColumnDefinition Width="Auto"/>
+                  <ColumnDefinition Width="*" MinWidth="0"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Spacing="6" HorizontalAlignment="Center">
                   <Border Classes="dot" Classes.online="{Binding IsOnline}"
                           Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
@@ -71,14 +93,17 @@
               </Grid>
             </Border>
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-              <Button Classes="primary" Content="立即重连"
+            <!-- 与原型一致：立即重连 + 测试登录两个快捷操作 -->
+            <WrapPanel Orientation="Horizontal">
+              <Button Classes="primary" Content="立即重连" Margin="0,0,8,4"
                       Command="{Binding ReconnectNowCommand}"/>
-              <Button Classes="outline" Content="刷新状态"
+              <Button Classes="outline" Content="刷新状态" Margin="0,0,8,4"
                       Command="{Binding RefreshCommand}"/>
-              <TextBlock Classes="caption" VerticalAlignment="Center" Margin="6,0,0,0"
-                         Text="测试登录会真的发起一次认证"/>
-            </StackPanel>
+              <Button Classes="outline" Content="测试登录" Margin="0,0,8,4"
+                      Command="{Binding TestProfileCommand}"/>
+              <TextBlock Classes="caption" VerticalAlignment="Center" Margin="0,0,0,4"
+                         TextWrapping="Wrap" Text="测试登录会真的发起一次认证"/>
+            </WrapPanel>
           </StackPanel>
         </Grid>
       </Border>
@@ -89,7 +114,7 @@
           <StackPanel Spacing="6">
             <TextBlock Classes="caption" Text="本机 IP"/>
             <TextBlock Classes="mono" Text="{Binding LocalIp}" TextTrimming="CharacterEllipsis"/>
-            <TextBlock Classes="caption" Text="WAN 侧地址"/>
+            <TextBlock Classes="caption" Text="WAN 侧地址" TextTrimming="CharacterEllipsis"/>
           </StackPanel>
         </Border>
         <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
@@ -97,7 +122,7 @@
             <TextBlock Classes="caption" Text="网关"/>
             <TextBlock Classes="mono" Text="{Binding GatewayText}"
                        TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding GatewayText}"/>
-            <TextBlock Classes="caption" Text="ARP 状态见提示"/>
+            <TextBlock Classes="caption" Text="ARP 状态见提示" TextTrimming="CharacterEllipsis"/>
           </StackPanel>
         </Border>
         <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
@@ -105,7 +130,7 @@
             <TextBlock Classes="caption" Text="上次登录"/>
             <TextBlock Classes="mono" Text="{Binding LastSuccessText}"
                        TextTrimming="CharacterEllipsis"/>
-            <TextBlock Classes="caption" Text="守护进程记录"/>
+            <TextBlock Classes="caption" Text="守护进程记录" TextTrimming="CharacterEllipsis"/>
           </StackPanel>
         </Border>
         <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
@@ -114,20 +139,25 @@
             <TextBlock Classes="mono" Text="常驻服务"/>
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Border Classes="dot" Classes.online="{Binding DaemonRunning}"/>
-              <TextBlock Classes="caption" Text="IPC 连接"/>
+              <TextBlock Classes="caption" Text="IPC 连接" TextTrimming="CharacterEllipsis"/>
             </StackPanel>
           </StackPanel>
         </Border>
       </WrapPanel>
 
       <!-- 最近事件 / 当前配置 -->
-      <Grid ColumnDefinitions="*,240">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+          <ColumnDefinition Width="240"/>
+        </Grid.ColumnDefinitions>
         <Border Grid.Column="0" Classes="card" Margin="0,0,8,0">
           <StackPanel Spacing="10">
             <TextBlock Classes="heading" Text="最近事件"/>
             <Border Classes="console" Padding="12">
+              <!-- 长日志行必须换行，否则会把左列撑开、把右侧 240 列挤出容器 -->
               <TextBlock Classes="mono" Text="{Binding LogText}" MaxLines="6"
-                         TextTrimming="CharacterEllipsis"/>
+                         TextWrapping="Wrap" TextTrimming="CharacterEllipsis"/>
             </Border>
             <Button Classes="ghost compact" Content="查看全部日志 →" Click="GoLogs_Click"
                     HorizontalAlignment="Left"/>
@@ -138,8 +168,10 @@
           <Border Classes="card" Padding="12">
             <StackPanel Spacing="8">
               <TextBlock Classes="heading" Text="当前档案"/>
-              <TextBlock Classes="caption" Text="{Binding SelectedProfile.Name}"/>
-              <TextBlock Classes="caption" Text="{Binding SelectedProfile.Username}"/>
+              <TextBlock Classes="caption" Text="{Binding SelectedProfile.Name}"
+                         TextTrimming="CharacterEllipsis"/>
+              <TextBlock Classes="caption" Text="{Binding SelectedProfile.Username}"
+                         TextTrimming="CharacterEllipsis"/>
               <TextBlock Classes="caption" Text="{Binding SelectedProfile.PasswordHint}"
                          TextWrapping="Wrap"/>
             </StackPanel>
@@ -147,10 +179,13 @@
           <Border Classes="card" Padding="12">
             <StackPanel Spacing="8">
               <TextBlock Classes="heading" Text="探测参数"/>
-              <TextBlock Classes="caption" Text="{Binding ProbeIntervalSeconds, StringFormat='间隔 {0} 秒'}"/>
-              <TextBlock Classes="caption" Text="{Binding ProbeTimeoutSeconds, StringFormat='超时 {0} 秒'}"/>
-              <TextBlock Classes="caption" Text="{Binding RetryBackoffText, StringFormat='退避 {0}'}"
-                         TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RetryBackoffText}"/>
+              <TextBlock Classes="caption" TextTrimming="CharacterEllipsis"
+                         Text="{Binding ProbeIntervalSeconds, StringFormat='间隔 {0} 秒'}"/>
+              <TextBlock Classes="caption" TextTrimming="CharacterEllipsis"
+                         Text="{Binding ProbeTimeoutSeconds, StringFormat='超时 {0} 秒'}"/>
+              <TextBlock Classes="caption" TextTrimming="CharacterEllipsis"
+                         ToolTip.Tip="{Binding RetryBackoffText}"
+                         Text="{Binding RetryBackoffText, StringFormat='退避 {0}'}"/>
             </StackPanel>
           </Border>
         </StackPanel>

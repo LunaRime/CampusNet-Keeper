@@ -88,6 +88,7 @@ internal static class SelfTest
         // 窗口图标：ApplicationIcon 只作用于 exe，Window.Icon 走的是 avares 资源。
         // 少了 csproj 的 AvaloniaResource，标题栏左上角就退回系统默认图标。
         CheckWindowIcon(ref failed);
+        CheckWindowConstruction(ref failed);
 
         Console.WriteLine(failed == 0
             ? $"  [PASS] {ExpectedBrushes.Length} 个颜色键 × 明暗 + 圆角/字号/字体全部符合 DESIGN.md"
@@ -170,6 +171,73 @@ internal static class SelfTest
         if (family.ToString().IndexOf(mustContain, StringComparison.OrdinalIgnoreCase) < 0)
         {
             Console.WriteLine($"  [FAIL] {key} = {family}，其中不含 {mustContain}（中文回退缺失）");
+            failed++;
+        }
+    }
+
+    /// <summary>
+    /// 真正构造一次主窗口并走一遍分区导航。编译通过不等于窗口能起来：
+    /// v0.1.7 就是 XAML 运行时加载下 x:Name 字段为 null，在 DataContext 赋值时
+    /// 抛 NullReferenceException，完整版 exe 点「设置」毫无反应。
+    /// 这里不 Show 窗口，只验证构造 + 控件解析 + 导航，适合无人值守/CI。
+    /// </summary>
+    private static void CheckWindowConstruction(ref int failed)
+    {
+        try
+        {
+            var window = new Views.MainWindow();
+            string[] required =
+            {
+                "Crumb",
+                "NavOverview", "NavProfiles", "NavAdvanced", "NavLogs",
+                "PageOverview", "PageProfiles", "PageAdvanced", "PageLogs",
+            };
+            foreach (var name in required)
+            {
+                if (window.FindControl<Control>(name) is null)
+                {
+                    Console.WriteLine($"  [FAIL] 主窗口控件树缺 {name}（x:Name 未解析）");
+                    failed++;
+                }
+            }
+            // 子 UserControl 有各自的 NameScope，要在子视图上查，不能从窗口直接找
+            var profiles = window.FindControl<Control>("PageProfiles");
+            if (profiles is null ||
+                profiles.FindControl<Control>("PwdAlert") is null ||
+                profiles.FindControl<Control>("PwdAlertText") is null)
+            {
+                Console.WriteLine("  [FAIL] 配置档案视图的密码三态控件缺失");
+                failed++;
+            }
+            window.NavigateTo("logs");
+            window.NavigateTo("overview");
+
+            // v0.1.8 布局回归：日志页只能有一条垂直滚动条，长日志行必须换行。
+            // 之前内层 ScrollViewer 固定 300px + 不换行，外层又套一层 page 滚动，
+            // 结果长行把星号列撑开、右侧按钮和卡片被切出窗口。
+            var logsView = window.FindControl<Control>("PageLogs");
+            var logScroll = logsView?.FindControl<ScrollViewer>("LogScroll");
+            if (logScroll is not null)
+            {
+                // 用字符串比较，避免 Avalonia 版本间 ScrollBarVisibility 命名空间差异
+                if (!string.Equals(logScroll.HorizontalScrollBarVisibility.ToString(),
+                                   "Disabled", StringComparison.Ordinal))
+                {
+                    Console.WriteLine("  [FAIL] 日志控制台仍允许横向滚动条");
+                    failed++;
+                }
+                var logText = logsView?.FindControl<SelectableTextBlock>("LogTextBlock");
+                if (logText is not null && logText.TextWrapping != TextWrapping.Wrap)
+                {
+                    Console.WriteLine("  [FAIL] 日志长行未换行，会撑破卡片");
+                    failed++;
+                }
+            }
+            Console.WriteLine("  [PASS] 主窗口可构造，四分区导航与日志滚动布局无回归");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [FAIL] 主窗口构造/导航失败：{ex.GetType().Name}: {ex.Message}");
             failed++;
         }
     }

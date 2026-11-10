@@ -10,14 +10,20 @@
 
       <StackPanel Spacing="4">
         <TextBlock Classes="title" Text="高级设置"/>
-        <TextBlock Classes="caption" Text="探测节奏、启动行为与跨机密码迁移 · 修改后需保存才生效"/>
+        <TextBlock Classes="caption" TextWrapping="Wrap"
+                   Text="探测节奏、启动行为与跨机密码迁移 · 修改后需保存才生效"/>
       </StackPanel>
 
       <!-- 网络探测 -->
       <Border Classes="card">
         <StackPanel Spacing="14">
           <TextBlock Classes="heading" Text="网络探测"/>
-          <Grid ColumnDefinitions="*,16,*">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+              <ColumnDefinition Width="16"/>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+            </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0">
               <TextBlock Classes="label" Text="探测间隔（秒）"/>
               <NumericUpDown Value="{Binding ProbeIntervalSeconds}" Minimum="1" Maximum="3600"/>
@@ -35,7 +41,12 @@
                        Text="默认用 generate_204（204）。204 也必须走 AC 复核 + 出网验证，否则僵尸会话检测会被绕过。"/>
           </StackPanel>
 
-          <Grid ColumnDefinitions="*,16,*">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+              <ColumnDefinition Width="16"/>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+            </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0">
               <TextBlock Classes="label" Text="重试退避（秒，逗号分隔）"/>
               <TextBox Text="{Binding RetryBackoffText}" Watermark="5, 10, 20, 30, 60"/>
@@ -48,16 +59,16 @@
         </StackPanel>
       </Border>
 
-      <!-- 常规 -->
+      <!-- 常规：与原型一致用开关，不用复选框 -->
       <Border Classes="card">
-        <StackPanel Spacing="12">
+        <StackPanel Spacing="10">
           <TextBlock Classes="heading" Text="常规"/>
-          <StackPanel Orientation="Horizontal" Spacing="24">
-            <CheckBox IsChecked="{Binding Autostart}" Content="开机自启"/>
-            <CheckBox IsChecked="{Binding NotifyOnReconnect}" Content="重连成功时通知"/>
-          </StackPanel>
-          <TextBlock Classes="caption" TextWrapping="Wrap"
-                     Text="开机自启会静默启动守护进程，不弹出设置窗口。"/>
+          <ToggleSwitch IsChecked="{Binding Autostart}" Content="开机自启"/>
+          <TextBlock Classes="caption" Margin="34,0,0,0" TextWrapping="Wrap"
+                     Text="登录后静默启动守护进程，不弹出设置窗口。"/>
+          <ToggleSwitch IsChecked="{Binding NotifyOnReconnect}" Content="重连成功时通知"/>
+          <TextBlock Classes="caption" Margin="34,0,0,0" TextWrapping="Wrap"
+                     Text="断线恢复后弹出系统通知。"/>
         </StackPanel>
       </Border>
 
@@ -71,7 +82,11 @@
           </StackPanel>
           <StackPanel>
             <TextBlock Classes="label" Text="口令"/>
-            <Grid ColumnDefinitions="*,Auto">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" MinWidth="0"/>
+                <ColumnDefinition Width="Auto"/>
+              </Grid.ColumnDefinitions>
               <TextBox x:Name="SecretPassphraseBox" Grid.Column="0"
                        Text="{Binding SecretPassphrase}" PasswordChar="●"
                        Watermark="至少 6 位；导出时自设，导入时填同一个"/>
@@ -79,12 +94,12 @@
                       Click="ToggleSecret_Click"/>
             </Grid>
           </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <Button Classes="outline" Content="导出密码"
+          <WrapPanel Orientation="Horizontal">
+            <Button Classes="outline" Content="导出密码" Margin="0,0,8,4"
                     Command="{Binding ExportSecretCommand}"/>
-            <Button Classes="outline" Content="导入密码"
+            <Button Classes="outline" Content="导入密码" Margin="0,0,8,4"
                     Command="{Binding ImportSecretCommand}"/>
-          </StackPanel>
+          </WrapPanel>
           <Border Classes="alert">
             <TextBlock Classes="caption" TextWrapping="Wrap"
                        Text="导出文件用口令加密（PBKDF2-SHA256 + AES-256-GCM），口令不落盘、不进日志。绝不放宽 DPAPI 到本机范围——那等于同机任何账号都能解开密文。"/>

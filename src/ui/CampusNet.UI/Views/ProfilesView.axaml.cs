@@ -42,28 +42,35 @@ public partial class ProfilesView : UserControl
 
     private void UpdateAlert()
     {
-        PwdAlert.Classes.Remove("warn");
-        PwdAlert.Classes.Remove("bad");
+        // ⚠ XAML 是运行时加载，x:Name 字段不会自动赋值；一律 FindControl，
+        // 且 DataContextChanged 可能在控件树尚未就绪时触发，取不到就安静返回。
+        // v0.1.7 曾因直接用 PwdAlert 字段抛 NullReferenceException，导致整个窗口构造失败。
+        var alert = this.FindControl<Border>("PwdAlert");
+        var text = this.FindControl<TextBlock>("PwdAlertText");
+        if (alert is null || text is null) return;
+
+        alert.Classes.Remove("warn");
+        alert.Classes.Remove("bad");
 
         var p = _profile;
         if (p is null)
         {
-            PwdAlertText.Text = "请先选择一个配置档案。";
+            text.Text = "请先选择一个配置档案。";
             return;
         }
         if (p.HasPassword)
         {
-            PwdAlertText.Text = "已保存密码：守护进程持有 DPAPI 密文，界面只显示状态；留空即不修改。";
+            text.Text = "已保存密码：守护进程持有 DPAPI 密文，界面只显示状态；留空即不修改。";
         }
         else if (p.PasswordState == "foreign")
         {
-            PwdAlert.Classes.Add("warn");
-            PwdAlertText.Text = "密码来自其他电脑 / 账号：本机解不开，界面会原样保留密文、不会删除；请重新输入密码后保存。";
+            alert.Classes.Add("warn");
+            text.Text = "密码来自其他电脑 / 账号：本机解不开，界面会原样保留密文、不会删除；请重新输入密码后保存。";
         }
         else
         {
-            PwdAlert.Classes.Add("bad");
-            PwdAlertText.Text = "当前档案还没有密码：保存后自连会提示「密码为空」，请在密码框输入后再保存。";
+            alert.Classes.Add("bad");
+            text.Text = "当前档案还没有密码：保存后自连会提示「密码为空」，请在密码框输入后再保存。";
         }
     }
 

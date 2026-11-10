@@ -16,6 +16,9 @@
     色值只在 Theme.*.axaml；控件样式只在 Controls.axaml；本文件只写结构与绑定。
     分区导航是**纯视图层状态**（code-behind 切 IsVisible / Classes），不新增 VM 字段。
     保留系统标题栏：避免无边框窗口在 Win11 上的 DPI / 拖动 / 圆角兼容问题。
+
+    布局约束：所有星号列显式 MinWidth=0 —— 否则长状态文案/错误文案会按
+    DesiredSize 撑开星号列，把右侧按钮或侧栏内容顶出可视区（v0.1.8 修复）。
   -->
   <Grid RowDefinitions="48,*,64">
 
@@ -25,7 +28,17 @@
             BorderBrush="{DynamicResource CnkBorder}"
             BorderThickness="0,0,0,1"
             Padding="14,0">
-      <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+
         <Border Grid.Column="0" Width="26" Height="26"
                 CornerRadius="{DynamicResource CnkRadiusSm}"
                 Background="{DynamicResource CnkBrand}"
@@ -37,14 +50,26 @@
 
         <TextBlock Grid.Column="1" Text="校园网助手" FontSize="13.5" FontWeight="SemiBold"
                    Foreground="{DynamicResource CnkText}"
-                   VerticalAlignment="Center" Margin="10,0,14,0"/>
+                   VerticalAlignment="Center" Margin="10,0,8,0"/>
 
-        <TextBlock x:Name="Crumb" Grid.Column="2" Classes="caption" Text="概览 · 设置"
-                   VerticalAlignment="Center"/>
+        <!-- 发版时与 src/native/core/Version.h 同步 -->
+        <Border Grid.Column="2" Classes="pill" VerticalAlignment="Center" Margin="0,0,14,0">
+          <TextBlock Classes="caption" Text="v0.1.8"/>
+        </Border>
 
-        <Border Grid.Column="4" Classes="pill" VerticalAlignment="Center" Margin="0,0,8,0"
-                MaxWidth="240">
-          <Grid ColumnDefinitions="Auto,*">
+        <TextBlock x:Name="Crumb" Grid.Column="3" Classes="caption" Text="概览 · 设置"
+                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+
+        <Border Grid.Column="5" Classes="pill" VerticalAlignment="Center" Margin="0,0,8,0"
+                MaxWidth="240"
+                Classes.online="{Binding IsOnline}"
+                Classes.busy="{Binding IsBusy}"
+                Classes.failed="{Binding IsFailed}">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+            </Grid.ColumnDefinitions>
             <Border Grid.Column="0" Classes="dot"
                     Classes.online="{Binding IsOnline}"
                     Classes.busy="{Binding IsBusy}"
@@ -60,13 +85,18 @@
           </Grid>
         </Border>
 
-        <Button Grid.Column="5" Classes="outline compact" Content="切换主题"
+        <Button Grid.Column="6" Classes="outline compact" Content="切换主题"
                 Click="Theme_Click" VerticalAlignment="Center"/>
       </Grid>
     </Border>
 
     <!-- ============ 侧栏 + 内容区 ============ -->
-    <Grid Grid.Row="1" ColumnDefinitions="208,*">
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="208"/>
+        <ColumnDefinition Width="*" MinWidth="0"/>
+      </Grid.ColumnDefinitions>
+
       <Border Grid.Column="0"
               Background="{DynamicResource CnkSidebar}"
               BorderBrush="{DynamicResource CnkBorder}"
@@ -90,9 +120,13 @@
           <Border Grid.Row="2" Height="1" Background="{DynamicResource CnkBorder}"
                   Margin="4,12"/>
 
-          <Grid Grid.Row="3" ColumnDefinitions="*,Auto" Margin="10,0,0,8">
+          <Grid Grid.Row="3" Margin="10,0,0,8">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" MinWidth="0"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Classes="caption" Text="配置档案"
-                       VerticalAlignment="Center"/>
+                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
             <Button Grid.Column="1" Classes="ghost compact" Content="＋"
                     Command="{Binding AddProfileCommand}" ToolTip.Tip="新增档案"/>
           </Grid>
@@ -100,28 +134,43 @@
           <ListBox Grid.Row="4"
                    ItemsSource="{Binding Profiles}"
                    SelectedItem="{Binding SelectedProfile}"
-                   Background="Transparent" BorderThickness="0">
+                   Background="Transparent" BorderThickness="0"
+                   HorizontalAlignment="Stretch">
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="vm:ProfileViewModel">
-                <StackPanel Spacing="2" Margin="4,6">
-                  <TextBlock Text="{Binding Name}" FontWeight="Medium"
-                             Foreground="{DynamicResource CnkText}"
-                             TextTrimming="CharacterEllipsis"/>
-                  <TextBlock Classes="caption" Text="{Binding Username}"
-                             TextTrimming="CharacterEllipsis"/>
-                </StackPanel>
+                <Grid Margin="4,6">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*" MinWidth="0"/>
+                  </Grid.ColumnDefinitions>
+                  <Border Grid.Column="0" Classes="avatar" Margin="0,0,8,0">
+                    <Border Classes="dot online" IsVisible="{Binding HasPassword}"/>
+                  </Border>
+                  <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Name}" FontWeight="Medium"
+                               Foreground="{DynamicResource CnkText}"
+                               TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Classes="caption" Text="{Binding Username}"
+                               TextTrimming="CharacterEllipsis"/>
+                  </StackPanel>
+                </Grid>
               </DataTemplate>
             </ListBox.ItemTemplate>
           </ListBox>
 
           <Border Grid.Row="5" Classes="panel" Padding="10" Margin="0,12,0,0">
-            <Grid ColumnDefinitions="Auto,*">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="0"/>
+              </Grid.ColumnDefinitions>
               <Border Grid.Column="0" Classes="dot"
                       Classes.online="{Binding DaemonRunning}" Margin="0,0,8,0"/>
               <StackPanel Grid.Column="1" Spacing="2">
                 <TextBlock Text="守护进程" FontSize="{DynamicResource CnkFontSizeCaption}"
                            FontWeight="Medium" Foreground="{DynamicResource CnkText}"/>
-                <TextBlock Classes="caption" Text="IPC 连接状态"/>
+                <TextBlock Classes="caption" Text="IPC 连接状态"
+                           TextTrimming="CharacterEllipsis"/>
               </StackPanel>
             </Grid>
           </Border>
@@ -143,7 +192,11 @@
             BorderBrush="{DynamicResource CnkBorder}"
             BorderThickness="0,1,0,0"
             Padding="18,0">
-      <Grid ColumnDefinitions="*,Auto">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
         <!-- 长错误文案放星号列并截断，绝不把右侧按钮顶出窗口（2026-10-26 回归） -->
         <TextBlock Grid.Column="0" Classes="error"
                    Text="{Binding LastError}"
