@@ -10,7 +10,7 @@
 
 namespace cnk {
 
-inline const char* VersionString() { return "0.1.8"; }
+inline const char* VersionString() { return "0.1.9"; }
 
 // 托盘菜单只展示短哈希，构建时间放在 --version 里，避免菜单项过长
 inline const char* BuildCommitString() { return CNK_BUILD_COMMIT; }

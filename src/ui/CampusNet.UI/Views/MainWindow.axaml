@@ -54,7 +54,7 @@
 
         <!-- 发版时与 src/native/core/Version.h 同步 -->
         <Border Grid.Column="2" Classes="pill" VerticalAlignment="Center" Margin="0,0,14,0">
-          <TextBlock Classes="caption" Text="v0.1.8"/>
+          <TextBlock Classes="caption" Text="v0.1.9"/>
         </Border>
 
         <TextBlock x:Name="Crumb" Grid.Column="3" Classes="caption" Text="概览 · 设置"
