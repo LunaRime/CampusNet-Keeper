@@ -5,8 +5,8 @@
              x:DataType="vm:MainViewModel">
 
   <!-- 概览：状态优先。全部绑定 MainViewModel 的真实属性，不编造指标。 -->
-  <ScrollViewer Classes="page">
-    <StackPanel Spacing="16">
+  <ScrollViewer x:Name="PageScroll" Classes="page" Padding="0">
+    <StackPanel x:Name="PageContent" Spacing="16" Margin="20,18,20,32">
 
       <StackPanel Spacing="4">
         <TextBlock Classes="title" Text="概览"/>
@@ -108,16 +108,25 @@
         </Grid>
       </Border>
 
-      <!-- 四项指标：WrapPanel 在窗口收窄时自动折行 -->
-      <WrapPanel>
-        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+      <!-- 四项指标：四列等宽，左右与上下容器严格对齐；窗口拉伸时一起伸缩 -->
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+          <ColumnDefinition Width="8"/>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+          <ColumnDefinition Width="8"/>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+          <ColumnDefinition Width="8"/>
+          <ColumnDefinition Width="*" MinWidth="0"/>
+        </Grid.ColumnDefinitions>
+        <Border Grid.Column="0" Classes="card" Padding="12">
           <StackPanel Spacing="6">
             <TextBlock Classes="caption" Text="本机 IP"/>
             <TextBlock Classes="mono" Text="{Binding LocalIp}" TextTrimming="CharacterEllipsis"/>
             <TextBlock Classes="caption" Text="WAN 侧地址" TextTrimming="CharacterEllipsis"/>
           </StackPanel>
         </Border>
-        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+        <Border Grid.Column="2" Classes="card" Padding="12">
           <StackPanel Spacing="6">
             <TextBlock Classes="caption" Text="网关"/>
             <TextBlock Classes="mono" Text="{Binding GatewayText}"
@@ -125,7 +134,7 @@
             <TextBlock Classes="caption" Text="ARP 状态见提示" TextTrimming="CharacterEllipsis"/>
           </StackPanel>
         </Border>
-        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+        <Border Grid.Column="4" Classes="card" Padding="12">
           <StackPanel Spacing="6">
             <TextBlock Classes="caption" Text="上次登录"/>
             <TextBlock Classes="mono" Text="{Binding LastSuccessText}"
@@ -133,7 +142,7 @@
             <TextBlock Classes="caption" Text="守护进程记录" TextTrimming="CharacterEllipsis"/>
           </StackPanel>
         </Border>
-        <Border Classes="card" Width="172" Padding="12" Margin="0,0,8,8">
+        <Border Grid.Column="6" Classes="card" Padding="12">
           <StackPanel Spacing="6">
             <TextBlock Classes="caption" Text="守护进程"/>
             <TextBlock Classes="mono" Text="常驻服务"/>
@@ -143,19 +152,18 @@
             </StackPanel>
           </StackPanel>
         </Border>
-      </WrapPanel>
+      </Grid>
 
-      <!-- 最近事件 / 当前配置 -->
+      <!-- 最近事件 / 当前配置：两列按比例伸缩，压到最小宽度时左右一起收，不贴边 -->
       <Grid>
         <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="2*" MinWidth="0"/>
           <ColumnDefinition Width="*" MinWidth="0"/>
-          <ColumnDefinition Width="240"/>
         </Grid.ColumnDefinitions>
         <Border Grid.Column="0" Classes="card" Margin="0,0,8,0">
           <StackPanel Spacing="10">
             <TextBlock Classes="heading" Text="最近事件"/>
             <Border Classes="console" Padding="12">
-              <!-- 长日志行必须换行，否则会把左列撑开、把右侧 240 列挤出容器 -->
               <TextBlock Classes="mono" Text="{Binding LogText}" MaxLines="6"
                          TextWrapping="Wrap" TextTrimming="CharacterEllipsis"/>
             </Border>

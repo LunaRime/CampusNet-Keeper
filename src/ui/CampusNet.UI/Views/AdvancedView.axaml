@@ -5,8 +5,8 @@
              x:DataType="vm:MainViewModel">
 
   <!-- 高级设置：探测节奏、启动行为、跨机密码迁移。全部对应 Settings / VM 真实属性。 -->
-  <ScrollViewer Classes="page">
-    <StackPanel Spacing="16">
+  <ScrollViewer x:Name="PageScroll" Classes="page" Padding="0">
+    <StackPanel x:Name="PageContent" Spacing="16" Margin="20,18,20,32">
 
       <StackPanel Spacing="4">
         <TextBlock Classes="title" Text="高级设置"/>
@@ -63,10 +63,12 @@
       <Border Classes="card">
         <StackPanel Spacing="10">
           <TextBlock Classes="heading" Text="常规"/>
-          <ToggleSwitch IsChecked="{Binding Autostart}" Content="开机自启"/>
+          <ToggleSwitch IsChecked="{Binding Autostart}" Content="开机自启"
+                        OnContent="" OffContent=""/>
           <TextBlock Classes="caption" Margin="34,0,0,0" TextWrapping="Wrap"
                      Text="登录后静默启动守护进程，不弹出设置窗口。"/>
-          <ToggleSwitch IsChecked="{Binding NotifyOnReconnect}" Content="重连成功时通知"/>
+          <ToggleSwitch IsChecked="{Binding NotifyOnReconnect}" Content="重连成功时通知"
+                        OnContent="" OffContent=""/>
           <TextBlock Classes="caption" Margin="34,0,0,0" TextWrapping="Wrap"
                      Text="断线恢复后弹出系统通知。"/>
         </StackPanel>
@@ -107,11 +109,15 @@
         </StackPanel>
       </Border>
 
-      <Border Classes="card" Padding="14">
-        <Expander Header="为什么界面永远看不到已存密码？" HorizontalAlignment="Stretch">
-          <TextBlock Classes="caption" TextWrapping="Wrap" Margin="0,10,0,0"
+      <!-- 与「密码迁移」里的提示统一成常显 alert 信息条。
+           刻意不用 Expander：展开后 ScrollViewer 的可滚动高度算不准，底部内容会被
+           固定操作栏切掉（v0.1.8 实机截图），常显既不会被遮也统一了提示样式。 -->
+      <Border Classes="alert" Padding="14">
+        <StackPanel Spacing="6">
+          <TextBlock Classes="heading" Text="为什么界面永远看不到已存密码？"/>
+          <TextBlock Classes="caption" TextWrapping="Wrap"
                      Text="配置与密文分开存放：config.json 可漫游但不含本机密文，secret.json 留在本机并用 DPAPI 加密。密文只对「同机 + 同账号」可解。解不开（foreign）时界面保留原密文原样写回，绝不因为点一次保存删掉别人的密码。"/>
-        </Expander>
+        </StackPanel>
       </Border>
 
     </StackPanel>

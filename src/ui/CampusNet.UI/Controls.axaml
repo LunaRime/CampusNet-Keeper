@@ -315,7 +315,9 @@
   <Style Selector="ScrollViewer.page">
     <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
     <Setter Property="VerticalScrollBarVisibility" Value="Auto"/>
-    <Setter Property="Padding" Value="20,18"/>
+    <!-- Padding 统一由各页内容的 Margin 负责（LayoutHelper 按视口宽度钉内容宽度），
+         ScrollViewer 自身留白不会参与该计算，留着会再次把右侧内容顶出窗口。 -->
+    <Setter Property="Padding" Value="0"/>
   </Style>
 
 </Styles>

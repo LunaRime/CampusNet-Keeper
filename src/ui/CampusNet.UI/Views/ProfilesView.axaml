@@ -6,8 +6,8 @@
              x:DataType="vm:MainViewModel">
 
   <!-- 配置档案：账号与认证策略。所有字段对应 ProfileViewModel 的真实属性。 -->
-  <ScrollViewer Classes="page">
-    <StackPanel Spacing="16">
+  <ScrollViewer x:Name="PageScroll" Classes="page" Padding="0">
+    <StackPanel x:Name="PageContent" Spacing="16" Margin="20,18,20,32">
 
       <Grid>
         <Grid.ColumnDefinitions>

@@ -11,7 +11,7 @@
     且内层固定 300px 会把下面的说明卡挤出可视区。现在用 Grid 把剩余高度
     全部交给 LogPanel，只保留控制台内部一条滚动条；长行在控制台内换行。
   -->
-  <Grid RowDefinitions="Auto,*,Auto" Margin="20,18">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="20,18,20,24">
     <StackPanel Grid.Row="0" Spacing="4" Margin="0,0,0,16">
       <TextBlock Classes="title" Text="运行日志"/>
       <TextBlock Classes="caption" Text="守护进程实时输出，用于排查断线与认证问题"/>

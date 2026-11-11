@@ -24,6 +24,11 @@ bool LaunchUiProcess();
 // 托盘连点/双击时用它挡住"开出一堆窗口"；--ui 自己也用它兜底。
 bool UiProcessRunning();
 
+// 守护退出时请已打开的设置界面窗口关闭（发 WM_CLOSE）。
+// 界面是独立子进程，Windows 不会级联终止；不主动关就会残留一个 IPC 已断、
+// 所有操作都失败的空窗口。返回是否找到并成功投递消息。
+bool CloseExistingUiWindow();
+
 // 供 --ui-info（诊断）与自检使用：解析 hostfxr.dll 的完整路径（UTF-8）。
 bool ResolveHostfxrPath(const std::string& ui_dir, std::string& out_path,
                         std::string& error);

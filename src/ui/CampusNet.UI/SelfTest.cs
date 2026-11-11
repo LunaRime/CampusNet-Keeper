@@ -212,6 +212,20 @@ internal static class SelfTest
             window.NavigateTo("logs");
             window.NavigateTo("overview");
 
+            // v0.1.9 布局回归：每个可滚动分区都必须有 PageScroll / PageContent，
+            // 由 LayoutHelper 把内容宽度钉到视口；漏掉就会让长文本把右侧内容顶出窗口。
+            foreach (var name in new[] { "PageOverview", "PageProfiles", "PageAdvanced" })
+            {
+                var page = window.FindControl<Control>(name);
+                if (page is null ||
+                    page.FindControl<ScrollViewer>("PageScroll") is null ||
+                    page.FindControl<Control>("PageContent") is null)
+                {
+                    Console.WriteLine($"  [FAIL] {name} 未按视口宽度约束内容（缺 PageScroll/PageContent）");
+                    failed++;
+                }
+            }
+
             // v0.1.8 布局回归：日志页只能有一条垂直滚动条，长日志行必须换行。
             // 之前内层 ScrollViewer 固定 300px + 不换行，外层又套一层 page 滚动，
             // 结果长行把星号列撑开、右侧按钮和卡片被切出窗口。

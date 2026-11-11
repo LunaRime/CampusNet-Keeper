@@ -426,7 +426,12 @@ int RunDaemon(cnk::AppConfig& cfg, HINSTANCE hinst, bool open_ui_on_start) {
     std::fflush(stdout);
     HideConsoleIfStandalone();
     if (open_ui_on_start) cnk::LogInfo("启动后自动打开设置界面（双击意图）");
-    if (!cnk::RunDaemonLoop(hinst, cfg, open_ui_on_start)) {
+    const bool loop_ok = cnk::RunDaemonLoop(hinst, cfg, open_ui_on_start);
+    // 界面是独立子进程，守护退出（托盘菜单 / WM_CLOSE / 关机 / Ctrl+C）时 Windows
+    // 不会级联终止它。不主动关就会残留一个 IPC 已断、点什么都没反应的窗口。
+    // 放在 RunDaemonLoop 返回之后，覆盖它内部所有退出路径。
+    cnk::CloseExistingUiWindow();
+    if (!loop_ok) {
         std::printf("守护循环启动失败\n");
         return 1;
     }

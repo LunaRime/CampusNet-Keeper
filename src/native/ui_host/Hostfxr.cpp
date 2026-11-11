@@ -465,27 +465,44 @@ BOOL CALLBACK EnumUiWindowsProc(HWND hwnd, LPARAM lp) {
     return FALSE;   // 找到一个就停
 }
 
-bool ActivateExistingUiWindow() {
+HWND FindUiWindow() {
     const std::string exe = ExecutablePath();
-    if (exe.empty()) return false;
+    if (exe.empty()) return nullptr;
     FindUiWindowCtx ctx;
     ctx.exe_lower = Utf8ToWide(exe);
     std::transform(ctx.exe_lower.begin(), ctx.exe_lower.end(), ctx.exe_lower.begin(),
                    [](wchar_t c) { return (wchar_t)towlower(c); });
     ctx.self_pid = GetCurrentProcessId();
-
     EnumWindows(EnumUiWindowsProc, reinterpret_cast<LPARAM>(&ctx));
-    if (!ctx.found) return false;
+    return ctx.found;
+}
+
+bool ActivateExistingUiWindow() {
+    const HWND hwnd = FindUiWindow();
+    if (!hwnd) return false;
 
     // 最小化的先还原，隐藏的（理论上没有）也拉出来
-    ShowWindow(ctx.found, IsIconic(ctx.found) ? SW_RESTORE : SW_SHOW);
-    const BOOL ok = SetForegroundWindow(ctx.found);
+    ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
+    const BOOL ok = SetForegroundWindow(hwnd);
     LogInfo(std::string("已请求把设置界面切换到前台：") +
             (ok ? "成功" : "系统拒绝（窗口已在任务栏闪烁）"));
     return true;
 }
 
 }  // namespace
+
+bool CloseExistingUiWindow() {
+    const HWND hwnd = FindUiWindow();
+    if (!hwnd) return false;
+    // WM_CLOSE 走 Avalonia 的正常关闭流程（窗口关闭后托管入口 Environment.Exit）。
+    // 不用 TerminateProcess：那会跳过退出留痕与资源清理。
+    if (!PostMessageW(hwnd, WM_CLOSE, 0, 0)) {
+        LogWarn("关闭设置界面窗口失败：PostMessage(WM_CLOSE) 未成功");
+        return false;
+    }
+    LogInfo("守护退出：已请求关闭设置界面窗口");
+    return true;
+}
 
 int RunUiMode() {
     // 已经有一个界面在跑就不再开第二个：托盘被连点时不该堆出一串窗口。

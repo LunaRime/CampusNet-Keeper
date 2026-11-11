@@ -14,6 +14,7 @@ public partial class ProfilesView : UserControl
     {
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
+        LayoutHelper.BindContentWidth(this);
     }
 
     // 密码三态只由视图层呈现：不新增 ViewModel 字段，也不向守护进程索取明文。
