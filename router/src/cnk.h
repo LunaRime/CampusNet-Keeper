@@ -155,7 +155,12 @@ typedef struct {
     char portal_host[CNK_HOST_MAX];  /* 可选：强制认证端口/主机（留空按 auth_url） */
     char probe_url[CNK_URL_MAX];
     char probe_expect[64];
-    int  probe_timeout;        /* 秒 */
+    int  probe_timeout;        /* 秒：常态探测的 HTTP 超时 */
+    /* 登录成功后「复测」专用的探测超时（秒），默认 2。
+     * 常态 6 秒是为容忍链路抖动；但复测里一次失败探测要等满 6 秒，
+     * 会把会话回收后的恢复拖到 10 秒以上（2026-11-12 13:07 真机实测 13 秒）。
+     * 只作用于 wait_online 的 Config 副本，不改常态判定；设为 0 或 >60 会回退默认 2。 */
+    int  recheck_timeout;
     int  probe_interval;       /* 秒 */
     char bind_ip[64];
     int  log_level;

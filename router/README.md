@@ -479,6 +479,25 @@ DNS 挂掉时依然可用。第 1 层因 DNS 失败时，只有「AC 复核 `res
 
 ---
 
+### cnk-blip —— 短中断取证（2026-11-13 新增）
+
+主程序 `probe_interval=30` + 在线静默 + traffic 5 分钟采样，抓不到 1~2 秒的转发面瞬时中断。
+`cnk-blip`（随 ipk 装到 `/usr/bin/`）是**纯观测**探针，不干预状态机、不触发登录/换 IP：
+
+- 每秒 ICMP RTT、每 5 秒 DNS、每 10 秒 HTTP（项目自己的 `generate_204`）；
+  **≥2 个维度同时异常、连续 2 轮**才记事件，单维度（ICMP 被限速、单目标超时）不报；
+- 每 30 秒一条 `HEARTBEAT` 基线，无故障也有数据；事件时 dump 前 60 秒逐秒采样 +
+  ARP / AC `chkstatus` / conntrack / load / WAN IP 快照；
+- 日志 `/mnt/data/log/cnkrouter/blips-YYYY-MM-DD.log`，`flock` 保证单实例。
+
+启用（crond 自动重读，不用 `restart cnkrouter`）：
+
+    echo '* * * * * /bin/sh /usr/bin/cnk-blip' >> /etc/crontabs/root
+
+停用：删掉该行并 kill 进程即可，不必改 UCI。判读：`rtt` 抬升=转发面变慢；
+`dns_max` 抬升=上游 AC DNS；`http` 单独失败要对照主日志确认，别直接当断网；
+`ct` 逼近 65535 或 `load` 飙升才是路由器自身瓶颈。
+
 ## 八、已知限制
 
 | 限制 | 说明 |

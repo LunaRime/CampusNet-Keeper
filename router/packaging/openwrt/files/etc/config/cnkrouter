@@ -26,6 +26,12 @@ config main 'main'
 	option probe_expect ''
 	option probe_timeout '6'
 
+	# 登录成功后的「复测」专用探测超时（秒），默认 2。
+	# 常态 6 秒用来容忍链路抖动；但复测时一次失败探测要等满 6 秒，会把
+	# AC 会话回收后的恢复拖到 10 秒以上。改大（如 6）即可还原旧行为。
+	# 改完执行：/etc/init.d/cnkrouter restart（reload 不会重新渲染配置）
+	option recheck_timeout '2'
+
 	# 在线时的巡检间隔（秒）；<10 会被钳回 30（与 config_defaults / init.d 一致）
 	# 排查期曾临时设 10：真机一天刷出 88 条「域名解析失败」，而黑洞发现并不更快
 	option probe_interval '30'

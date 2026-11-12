@@ -135,6 +135,7 @@ void config_defaults(Config *c) {
     snprintf(c->probe_url, sizeof c->probe_url, "http://connectivitycheck.platform.hicloud.com/generate_204");
     snprintf(c->probe_expect, sizeof c->probe_expect, "");
     c->probe_timeout = 6;
+    c->recheck_timeout = 2;   /* 登录后复测：失败探测最多等 2 秒，不再拖满 6 秒 */
     c->probe_interval = 30;
     /* 默认开 DEBUG：2026-11-01 排查时才发现 log_level=2 把 AC 复核、出网验证这些
      * 关键判据全滤掉了，日志里只剩一句"域名解析失败"，根本定位不到故障层次。
@@ -229,6 +230,7 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
         else if (strcmp(key, "probe_url") == 0)  copy_field(c->probe_url, sizeof c->probe_url, val);
         else if (strcmp(key, "probe_expect") == 0) copy_field(c->probe_expect, sizeof c->probe_expect, val);
         else if (strcmp(key, "probe_timeout") == 0)  c->probe_timeout = atoi(val);
+        else if (strcmp(key, "recheck_timeout") == 0) c->recheck_timeout = atoi(val);
         else if (strcmp(key, "probe_interval") == 0) c->probe_interval = atoi(val);
         else if (strcmp(key, "bind_ip") == 0)    copy_field(c->bind_ip, sizeof c->bind_ip, val);
         else if (strcmp(key, "log_level") == 0)  c->log_level = atoi(val);
@@ -252,6 +254,7 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
     fclose(f);
 
     if (c->probe_timeout <= 0 || c->probe_timeout > 60) c->probe_timeout = 6;
+    if (c->recheck_timeout <= 0 || c->recheck_timeout > 60) c->recheck_timeout = 2;
     c->probe_interval = clamp_interval(c->probe_interval);
     if (c->link_after < 1) c->link_after = 2;
     if (c->link_cooldown < 60) c->link_cooldown = 900;
@@ -279,11 +282,18 @@ static const char *masked_account(const Config *c) {
 
 static int wait_online(const Config *c, int tries, int interval_ms) {
     int i;
+    /* 复测用更短的探测超时：常态 6 秒是为容忍链路抖动，但登录后复测时
+     * 一次失败探测就要等满 6 秒，把会话回收的恢复拖到 10 秒以上
+     * （2026-11-12 13:07 真机：13:07:32 登录成功 → 13:07:44 才复测通过）。
+     * 这里只改 Config 副本，常态 probe_once 仍用原配置，判定口径不变。 */
+    Config fast = *c;
+    if (fast.recheck_timeout > 0 && fast.recheck_timeout < fast.probe_timeout)
+        fast.probe_timeout = fast.recheck_timeout;
     for (i = 0; i < tries; ++i) {
         ProbeResult pr;
         if (i) sleep_ms(interval_ms);
         if (g_stop) return 0;
-        pr = probe_once(c);
+        pr = probe_once(&fast);
         if (pr.state == NET_ONLINE) {
             log_write(LOG_INFO, "复测结果：已在线 OK（第 %d 次探测）", i + 1);
             return 1;
@@ -967,6 +977,19 @@ static int selftest(void) {
     int fails = 0;
     uint8_t key[16], pt[16], ct[16], exp[16];
     char buf[128];
+
+    /* 复测短超时的默认值：改坏了不会报错，只会让会话回收后的恢复悄悄变慢 */
+    {
+        Config c;
+        config_defaults(&c);
+        if (c.recheck_timeout != 2 || c.probe_timeout != 6) {
+            log_write(LOG_ERR, "自检失败：复测超时默认值不对（recheck=%d probe=%d）",
+                      c.recheck_timeout, c.probe_timeout);
+            ++fails;
+        } else {
+            log_write(LOG_INFO, "自检通过：复测超时默认值（recheck=2s / probe=6s）");
+        }
+    }
 
     /* FIPS-197 C.1：AES-128 单块向量 */
     {

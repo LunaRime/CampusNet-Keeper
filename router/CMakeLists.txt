@@ -50,5 +50,7 @@ if(WIN32)
     src)
   target_compile_options(aes_crosscheck PRIVATE /utf-8 /EHsc)
   target_compile_definitions(aes_crosscheck PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_link_libraries(aes_crosscheck PRIVATE bcrypt)
+  # CryptBinaryToStringA / CryptStringToBinaryA 在 crypt32.lib，BCRYPT 在 bcrypt.lib；
+  # 只链 bcrypt 会在链接期报 LNK2019（本地 VS 构建实测）。
+  target_link_libraries(aes_crosscheck PRIVATE bcrypt crypt32)
 endif()

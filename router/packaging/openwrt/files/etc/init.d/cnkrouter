@@ -28,6 +28,7 @@ render_config() {
 	config_get probe_url     main probe_url     "http://connectivitycheck.platform.hicloud.com/generate_204"
 	config_get probe_expect  main probe_expect  ""
 	config_get probe_timeout main probe_timeout 6
+	config_get recheck_timeout main recheck_timeout 2
 	config_get probe_interval main probe_interval 30
 	config_get bind_ip       main bind_ip       ""
 	config_get log_level     main log_level     3
@@ -55,6 +56,7 @@ render_config() {
 		echo "probe_url=$probe_url"
 		echo "probe_expect=$probe_expect"
 		echo "probe_timeout=$probe_timeout"
+		echo "recheck_timeout=$recheck_timeout"
 		echo "probe_interval=$probe_interval"
 		echo "bind_ip=$bind_ip"
 		echo "log_level=$log_level"

@@ -101,8 +101,10 @@ std::string Base64Encode(const std::string& bytes) {
                               &chars))
         return {};
     std::string out(chars, '\0');
+    // 用 &out[0] 而非 out.data()：低于 C++17 时 data() 返回 const char*，
+    // 而 CryptBinaryToStringA 要的是 LPSTR（router 的 aes_crosscheck target 会因此编译失败）。
     if (!CryptBinaryToStringA((const BYTE*)bytes.data(), (DWORD)bytes.size(),
-                              CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, out.data(),
+                              CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, &out[0],
                               &chars))
         return {};
     while (!out.empty() && out.back() == '\0') out.pop_back();
