@@ -168,6 +168,8 @@ v0.1.7 起界面**全面推倒重写**，设计真源是 `DESIGN.md` v2「现代
 
 `.github/workflows/ci.yml`：推送/PR 走「构建精简版 → 测试 → `--ui-info` 退 3 → 脱敏审计 → UI 令牌/契约检查 → 窗口构造自检」；推 `v*` tag 时先校验 tag 与 `Version.h` 一致，再用 `scripts/package.ps1` 构建两个包、解包自检后上传 GitHub Release（配 `CODESIGN_PFX_BASE64` / `CODESIGN_PFX_PASSWORD` 时自动签名）。
 
+> **代理（端口每轮会变；先确认代理软件已开启）**：本机每轮会话注入的 `HTTPS_PROXY` 端口都不同，**不要在 `git config` 里写死 `http.proxy`**（曾写死 `127.0.0.1:7897`，导致 push 报 TLS EOF）。全局与仓库级已清除该配置，git 会自动跟随环境变量，端口再变也不用改。**代理软件没开时**环境变量指向未监听端口，会交替报 `502 / Empty reply / HTTP2 framing / TLS EOF` —— 这不是配置问题，脚本也救不了，先把代理开起来。代理刚启动尚未就绪的短暂失败用 `git pp <子命令>`（等价 `sh scripts/git-proxy.sh ...`，显式指定当前端口并最多重试 4 次）兜住，例如 `git pp push origin master:main`；PowerShell 用 `pwsh -File scripts/git-proxy.ps1 push ...`。
+
 发版流程（**README 的「最新发布」链接必须与 tag 同一次提交**）：
 
     git push origin master:main
