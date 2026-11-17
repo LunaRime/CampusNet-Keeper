@@ -2,9 +2,9 @@
 
 校园网自动重连守护：会话失效时自动重新登录，让你在游戏里感觉不到掉线。
 
-一个仓库两部分：**Windows 守护 + Avalonia 设置界面**（同一个 exe 双形态）、**路由器端子工程**（`router/`，在 OpenWrt 上自己认证并共享会话）。当前版本 **0.1.9**。
+一个仓库两部分：**Windows 守护 + Avalonia 设置界面**（同一个 exe 双形态）、**路由器端子工程**（`router/`，在 OpenWrt 上自己认证并共享会话）。当前版本 **0.2.0**。
 
-**最新发布**：[v0.1.9](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.9)（完整版 + 精简版两个 zip；SHA256 见对应 Release 页）。历史：[v0.1.8](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.8) / [v0.1.7](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.7) / [v0.1.6](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.6) / [v0.1.4](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.4) / [v0.1.3](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.3) / [v0.1.1](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.1) / [v0.1.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0)。
+**最新发布**：[v0.2.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.2.0)（完整版 + 精简版两个 zip；SHA256 见对应 Release 页）。历史：[v0.1.9](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.9) / [v0.1.8](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.8) / [v0.1.7](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.7) / [v0.1.6](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.6) / [v0.1.4](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.4) / [v0.1.3](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.3) / [v0.1.1](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.1) / [v0.1.0](https://github.com/LunaRime/CampusNet-Keeper/releases/tag/v0.1.0)。
 
 | 部分 | 目录 | 语言 / 运行位置 | 说明 |
 |---|---|---|---|
@@ -40,7 +40,7 @@
 - **会话异常自愈**：「终端 IP 已在线 / inuse」判成功后复测；僵尸会话、账号被占会先注销再重登，连续 3 次无效即停手并提示去门户处理，不做无意义空转。
 - **网络感知**：`NotifyAddrChange` 监听地址变化，切网/睡眠唤醒立即探测；网关 ARP 状态写进 `get_status`，`ARP 未解析` 表示二层断，此时重试登录无效。
 - **退出留痕**：`last_exit.txt` 记录正常退出的来源（托盘菜单 / WM_CLOSE / 关机 / Ctrl+C），读不到且非首次会 WARN；排查「守护进程莫名消失」先看日志开头。
-- **构建戳**：`--version` 第一行 `CampusNet-Keeper 0.1.9`，第二行 `git <短哈希>, built <UTC 时间>`（CMake 注入），用于证明真机跑的是哪次产物。
+- **构建戳**：`--version` 第一行 `CampusNet-Keeper 0.2.0`，第二行 `git <短哈希>, built <UTC 时间>`（CMake 注入），用于证明真机跑的是哪次产物。
 
 ### 托盘（v0.1.7 起统一）
 
@@ -49,7 +49,7 @@
 | 菜单项 | 行为 |
 |---|---|
 | `状态：<中文状态> · <调度器消息>` | 灰显；暂停时追加「已暂停自动重连」 |
-| `版本 0.1.9 · git <短哈希>` | 灰显，便于对照产物 |
+| `版本 0.2.0 · git <短哈希>` | 灰显，便于对照产物 |
 | 打开设置… | 启动 `--ui`；界面已在跑则还原并置前；精简版弹气泡说明 |
 | 立即重连 | 立即触发一次探测/重连，**暂停态下也放行** |
 | 暂停自动重连 / 恢复自动重连 | 暂停时仍探测、仍显示状态，只是**不自动发起登录** |
@@ -173,8 +173,8 @@ v0.1.7 起界面**全面推倒重写**，设计真源是 `DESIGN.md` v2「现代
 发版流程（**README 的「最新发布」链接必须与 tag 同一次提交**）：
 
     git push origin master:main
-    git tag -a v0.1.9 -m "说明"
-    git push origin v0.1.9
+    git tag -a v0.2.0 -m "说明"
+    git push origin v0.2.0
 
 推送前跑 `python docs/evidence/audit_redaction.py`（CI 也会跑）：全仓文本查学号样数字串 / MAC / 私有网段，图片与压缩包资产须登记白名单。**新截图必须逐张打开看过**——栅格图里的文字文本审计看不见。发布说明里的 SHA256 必须取 **CI 产物**，不能取本地包。
 
