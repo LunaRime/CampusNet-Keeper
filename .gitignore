@@ -15,3 +15,6 @@ build-ui/
 
 # 路由器端 CI 交叉编译的输出目录（不随仓库走）
 router/build-*/
+
+# 现场问题取证日志：含 Windows SID / 内网 IP / 门户地址，只留本地排查，绝不入库
+logs/

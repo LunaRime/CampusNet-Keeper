@@ -326,7 +326,7 @@ void SimServer::Impl::HandleClient(SOCKET client) {
                 query.find("a=Logout") != std::string::npos)) {
         // 注销：两个候选端点都要认（客户端会依次试），注销后「会话被占/僵尸」消失
         ++logout_count;
-        session_cleared.store(true);
+        if (!opts.logout_ineffective) session_cleared.store(true);
         content_type = "application/javascript; charset=utf-8";
         resp_body = JsonpWrap(query, "{\"result\":1,\"msg\":\"注销成功\"}");
     } else if (!opts.disable_new_api && path == "/eportal/portal/page/loadConfig") {
@@ -341,7 +341,7 @@ void SimServer::Impl::HandleClient(SOCKET client) {
         content_type = "application/javascript; charset=utf-8";
         resp_body = JsonpWrap(query,
                               std::string("{\"result\":") +
-                                  (logged_in.load() ? "1" : "0") +
+                                  ((logged_in.load() || opts.logout_ineffective) ? "1" : "0") +
                                   ",\"v46ip\":\"127.0.0.1\",\"myv6ip\":\"\","
                                   "\"domain\":\"[::]\",\"ss5\":\"127.0.0.1\",\"ss6\":\"127.0.0.1\"}");
     } else if (!opts.disable_new_api && !opts.new_api_login_broken &&

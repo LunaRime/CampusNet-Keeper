@@ -25,6 +25,33 @@ TEST_CASE("Settings 默认值与 DefaultProbeTarget 一致") {
     CHECK(s.probe_expect == t.expect);
 }
 
+TEST_CASE("废弃探测地址与空探测地址自动迁移（2026-11-17 真机）") {
+    // 旧 UI 模型默认值仍是 captive.apple.com + Success，每次点「保存」都会写回守护；
+    // 界面清空探测地址则会让守护停在「未配置探测地址」，既不探测也不登录。
+    // 只迁移已知的废弃默认值，用户自定义探测页绝不能被改写。
+    auto parse = [](const char* json) {
+        cnk::AppConfig cfg;
+        std::string err;
+        REQUIRE(cnk::ConfigFromJson(json, cfg, err));
+        return cfg.settings;
+    };
+    const cnk::Settings defaults;
+    const char* legacy_cases[] = {
+        R"({"settings":{"probe_url":"http://captive.apple.com/hotspot-detect.html","probe_expect":"Success"}})",
+        R"({"settings":{"probe_url":"http://www.msftncsi.com/ncsi.txt","probe_expect":"Microsoft NCSI"}})",
+        R"({"settings":{"probe_url":"","probe_expect":"Success"}})",
+    };
+    for (const char* json : legacy_cases) {
+        const auto s = parse(json);
+        CHECK(s.probe_url == defaults.probe_url);
+        CHECK(s.probe_expect.empty());
+    }
+    const auto custom =
+        parse(R"({"settings":{"probe_url":"http://10.0.0.1/probe","probe_expect":"OK"}})");
+    CHECK(custom.probe_url == "http://10.0.0.1/probe");
+    CHECK(custom.probe_expect == "OK");
+}
+
 TEST_CASE("探测间隔钳制：<10 或 >3600 回落到 30，合法值原样保留") {
     // 对齐 router 端：一轮探测最多发 3~4 个 HTTP，间隔过短会压 AC 并放大 DNS 抖动。
     auto parse_interval = [](const char* json) {

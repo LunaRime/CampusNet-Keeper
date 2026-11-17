@@ -191,7 +191,7 @@ v0.1.7 起界面**全面推倒重写**，设计真源是 `DESIGN.md` v2「现代
 2. 自包含界面载荷只在装了 .NET 的机器验证过，真「零依赖」还需一台无 .NET 的机器实测。
 3. 契约自检的 `echo` / `blob` 是探针专用命令，对真守护跑会误报。
 4. 路由器端 UA 维度未处理（需 UA2F/UA3F）；IPv6 未暴露；AC 黑洞频率不受客户端版本影响。
-5. `captive.apple.com` 在本网被 DNS 劫持，旧配置里若还留着该地址需手动改；`connectivitycheck.gstatic.com`（历史实测 0/5）与新默认 `platform.hicloud.com` 是不同域名。
+5. `captive.apple.com` 在本网被 DNS 劫持；旧配置或旧界面模型写回的该地址、本网 0/4 可达的 `www.msftncsi.com`、以及被清空的探测地址，都会在加载时自动迁移到 `generate_204`（`probe_expect` 同步置空），用户自定义探测地址不受影响。`connectivitycheck.gstatic.com`（历史实测 0/5）与新默认 `platform.hicloud.com` 是不同域名。
 6. 托盘菜单仍是原生 Win32 样式（0.1.7 统一了功能与文案，未做自绘），视觉与 v2 界面不完全一致。
 
 ## 许可证

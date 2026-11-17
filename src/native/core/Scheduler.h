@@ -49,6 +49,9 @@ public:
     long long LastSuccessUnix() const;
     long long LastProbeUnix() const;
     int ConsecutiveAuthFailures() const;
+    // 连续无效的注销次数（诊断/回归用）：达到上限后调度器必须停手，
+    // 且不得被网络变更通告清零。
+    int IneffectiveLogoutCount() const;
 
     // 最近一次探测取回的门户页面（已转 UTF-8）。
     // 供 IPC 的 get_carrier_options 解析服务器下发的运营商列表。

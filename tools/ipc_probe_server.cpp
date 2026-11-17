@@ -51,9 +51,9 @@ int main(int argc, char** argv) {
                 r.ok = true;
                 r.data_json =
                     R"({"version":1,"active_profile":"默认","settings":{)"
-                    R"("probe_interval_seconds":5,"probe_timeout_seconds":6,)"
-                    R"("probe_url":"http://captive.apple.com/hotspot-detect.html",)"
-                    R"("probe_expect":"Success","retry_backoff_seconds":[5,10,20,30,60],)"
+                    R"("probe_interval_seconds":30,"probe_timeout_seconds":6,)"
+                    R"("probe_url":"http://connectivitycheck.platform.hicloud.com/generate_204",)"
+                    R"("probe_expect":"","retry_backoff_seconds":[5,10,20,30,60],)"
                     R"("autostart":true,"notify_on_reconnect":true,"log_level":"info",)"
                     R"("log_max_kb":512,"log_keep_files":3},"profiles":[{)"
                     R"("name":"默认","auth_url":"http://10.0.0.1/","username":"202400000001@cmcc",)"

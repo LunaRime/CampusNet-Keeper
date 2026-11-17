@@ -363,6 +363,67 @@ TEST_CASE("僵尸会话（终端已在线但上不了网）会注销后重登") 
     srv.Stop();
 }
 
+TEST_CASE("网络变更通告不得重置僵尸会话的注销限次（真机 8 分钟 24 次登录事故）") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    o.zombie_online = true;
+    o.logout_ineffective = true;   // 注销端点回 200 成功页，AC 会话却清不掉
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
+    cfg.settings.probe_url = srv.BaseUrl() + "/sim_probe";
+    cfg.settings.probe_expect = "Microsoft NCSI";
+    cnk::Scheduler sch(cfg);
+    sch.ForceReconnect();
+    sch.Tick();   // 复测 3 次后判僵尸 → 注销一次
+
+    const int first = sch.IneffectiveLogoutCount();
+    REQUIRE(first >= 1);
+    const int logouts = srv.LogoutCount();
+
+    // 2026-11-15 真机：AC 抖动让 NotifyAddrChange 每 10~30 秒触发一次，
+    // 旧实现每次都把 inuse_logout_count / stop_retrying 清零，于是
+    // 「连续 3 次无效即停手」永远到不了，只能靠用户手动改配置才停。
+    for (int i = 0; i < 3; ++i) {
+        sch.NotifyNetworkChanged();
+        sch.Tick();
+    }
+    CHECK(sch.IneffectiveLogoutCount() == first);   // 计数绝不能被地址通告清零
+    CHECK(srv.LogoutCount() == logouts);            // 冷却期内也不该连发注销
+    CHECK(sch.State() != cnk::RunState::Online);    // 注销假成功绝不能判在线
+    srv.Stop();
+}
+
+TEST_CASE("凭据错误停手后换网仍能恢复（只有会话卡死才禁止地址通告解除）") {
+    // 修僵尸会话死循环时，若把「网络变更不再解除 stop_retrying」一刀切，
+    // 用户从错误网络换到校园网后就再也不会自动重试了。这里钉住边界。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "wrong", "wrong");
+    cfg.settings.probe_url = srv.BaseUrl() + "/sim_probe";
+    cfg.settings.probe_expect = "Microsoft NCSI";
+    cnk::Scheduler sch(cfg);
+    sch.ForceReconnect();
+    sch.Tick();
+
+    CHECK(sch.State() == cnk::RunState::AuthFailed);
+    const int before = srv.LoginCount();
+    REQUIRE(before >= 1);
+
+    sch.NotifyNetworkChanged();
+    sch.Tick();
+    CHECK(srv.LoginCount() > before);   // 换网后必须重新给一次登录机会
+    srv.Stop();
+}
+
 TEST_CASE("get_status 真的带出本机 IP / 网关 / ARP 状态") {
     // 只测 Scheduler::LocalIp() 不够：界面拿的是 get_status 的 JSON。
     // 字段名写错、漏拼、被 RedactSecrets 吃掉，函数测试全绿也照样空白

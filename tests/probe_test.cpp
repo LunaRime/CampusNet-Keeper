@@ -122,14 +122,18 @@ TEST_CASE("含预期标识但正文超长时判为劫持（长度启发式）") 
     srv.Stop();
 }
 
-TEST_CASE("404 判定为 Portal 劫持（保守处理）") {
+TEST_CASE("4xx/5xx 不判门户劫持，避免拿账号反复撞登录") {
+    // 2026-11-15 真机：门户连回 HTTP 404，旧逻辑把 4xx 一律判 PortalDetected，
+    // 于是每轮都去登录，8 分钟 24 次；且 404 页没有门户特征，厂商识别退化成 unknown。
+    // 真实劫持是裸 302 到异主机或 200 篡改正文，404 不是。
     cnk::SimServer srv;
     std::string err;
     REQUIRE(srv.Start(cnk::SimOptions{}, err));
 
     auto s = MakeSettings(srv.BaseUrl() + "/nonexistent", "Microsoft NCSI");
     auto r = cnk::ProbeOnce(s);
-    CHECK(r.state == cnk::NetState::PortalDetected);
+    CHECK(r.state == cnk::NetState::Offline);
+    CHECK(r.message.find("404") != std::string::npos);
     srv.Stop();
 }
 

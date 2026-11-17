@@ -47,6 +47,11 @@ struct SimOptions {
     // true=登录回「终端IP已在线！」但**不真正放行**（探测仍判离线）——模拟僵尸会话：
     // AC 记着在线、转发面已废。收到注销后转为正常登录。
     bool zombie_online = false;
+
+    // true=注销端点照常回 200「注销成功」，但会话**清不掉**（chkstatus 仍报在线、
+    // 登录仍回「终端IP已在线！」）。复刻 2026-11-15 真机的假成功形态，
+    // 用于钉住「连续 3 次无效即停手」这条保护。
+    bool logout_ineffective = false;
 };
 
 class SimServer {

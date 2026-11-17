@@ -66,6 +66,10 @@ struct Scheduler::Impl {
     size_t backoff_index = 0;
     bool ever_succeeded = false;
     bool stop_retrying = false;
+    // 只有「会话卡死（连续 3 次注销无效）」这种停手态不允许地址变更通告解除：
+    // 它是 AC 侧的会话记录，本机 ARP/地址抖动不会把它变好。凭据错误、非校园网
+    // 等停手态仍应在换网后自动恢复。
+    bool session_stuck = false;
     // 托盘「暂停自动重连」：暂停只挡自动登录，探测与状态显示照常。
     bool paused = false;
     // ForceReconnect（用户主动点「立即重连」）放行一次，不受暂停影响。
@@ -156,6 +160,7 @@ struct Scheduler::Impl {
         message = msg;
         last_success = NowUnix();
         ever_succeeded = true;
+        session_stuck = false;
         consecutive_auth_failures = 0;
         inuse_logout_count = 0;
         backoff_index = 0;
@@ -202,6 +207,7 @@ struct Scheduler::Impl {
         if (inuse_logout_count >= kMaxIneffectiveLogouts) {
             state = RunState::AuthFailed;
             stop_retrying = true;
+            session_stuck = true;
             message = "账号会话一直被占用（已注销 " +
                       std::to_string(kMaxIneffectiveLogouts) +
                       " 次仍无效）：请到门户手动注销，或断开占用该账号的其它设备后重试";
@@ -222,8 +228,15 @@ struct Scheduler::Impl {
         LogWarn("登录被判『终端已在线』但复测不在线：判定为僵尸会话，尝试注销后重登");
         state = RunState::Disconnected;
         if (TryLogout(auth, p)) {
+            // 注销是否被 AC 确认：chkstatus 明确说「会话还在」才判本次注销无效。
+            // 真机 2026-11-15：老式端点回 "Logout succeed."，AC 却仍记着在线，
+            // 重登照旧「终端IP已在线！」——只看 200 正文会把假成功当成功。
+            // 返回 -1（查不出来 / 非 Dr.COM）时不干预，仍以重登结果为唯一真相。
+            const bool still_online = (DrcomAcSessionState(p) == 1);
+            if (still_online)
+                LogWarn("注销请求被接口接受，但 AC 仍记着会话在线：本次注销无效");
             const LoginResult again = auth.Login(p, ctx);
-            if (again.success && !again.terminal_online && VerifyOnline()) {
+            if (!still_online && again.success && !again.terminal_online && VerifyOnline()) {
                 FinishOnline("僵尸会话已清理，重新登录成功");
                 return;
             }
@@ -236,6 +249,7 @@ struct Scheduler::Impl {
         if (inuse_logout_count >= kMaxIneffectiveLogouts) {
             state = RunState::AuthFailed;
             stop_retrying = true;
+            session_stuck = true;
             message = "服务器侧会话一直清不掉（已注销 " +
                       std::to_string(kMaxIneffectiveLogouts) +
                       " 次）：请在门户手动注销后重试";
@@ -250,14 +264,19 @@ struct Scheduler::Impl {
     }
 
     void Tick() {
-        // 网络变更事件在主线程消费：重置退避与停止标志
-        //（网络环境变了，之前的失败计数不再有参考价值）
+        // 网络变更事件在主线程消费：重置退避等与网络环境相关的状态。
+        // ⚠ 注销限次与「会话卡死」停手态不在此列，见下方注释。
         if (network_changed.exchange(false)) {
-            stop_retrying = false;
+            // ⚠ inuse_logout_count 绝不能在这里清零：僵尸会话是 AC 侧那条会话记录，
+            // 本机地址通告、ARP 抖动都不会把它变好。真机 2026-11-15 实测
+            // NotifyAddrChange 每 10~30 秒触发一次，一清就把「连续 3 次无效即停手」
+            // 永远重置，8 分钟内打了 24 次登录 + 7 次注销，直到用户手动改配置。
+            // 同理，已因会话卡死而停手的不再由地址通告解除；但凭据错误、非校园网
+            // 这类停手态换网后仍要自动恢复，不能一刀切全挡住。
+            if (!session_stuck) stop_retrying = false;
             total_auth_attempts = 0;
             consecutive_auth_failures = 0;
             backoff_index = 0;
-            inuse_logout_count = 0;   // 换了网络环境，"注销无效"的旧结论不再成立
             // 地址/网关/ARP 一定变了，下一轮探测重算；AC 复核也重置（换了网就该立刻问一次）
             local_ip.clear();
             local_route = LocalRoute{};
@@ -356,6 +375,7 @@ void Scheduler::Impl::DoProbe() {
             inuse_logout_count = 0;
             // 网络已恢复（可能是用户手动登录成功）：解除停止，恢复正常调度
             stop_retrying = false;
+            session_stuck = false;
             total_auth_attempts = 0;
             ScheduleNext(cfg.settings.probe_interval_seconds);
             ResetCache();
@@ -530,6 +550,7 @@ void Scheduler::ForceReconnect() {
     impl_->manual_override = true;
     impl_->probe_immediately.store(true);
     impl_->stop_retrying = false;
+    impl_->session_stuck = false;
     impl_->total_auth_attempts = 0;
     impl_->consecutive_auth_failures = 0;
     impl_->backoff_index = 0;
@@ -541,6 +562,7 @@ void Scheduler::ForceReconnect() {
 void Scheduler::SetConfig(const AppConfig& cfg) {
     impl_->cfg = cfg;
     impl_->stop_retrying = false;
+    impl_->session_stuck = false;
     impl_->inuse_logout_count = 0;
     impl_->last_logout_unix = 0;
     impl_->total_auth_attempts = 0;
@@ -572,6 +594,10 @@ long long Scheduler::LastSuccessUnix() const { return impl_->last_success; }
 long long Scheduler::LastProbeUnix() const { return impl_->last_probe; }
 int Scheduler::ConsecutiveAuthFailures() const {
     return impl_->consecutive_auth_failures;
+}
+
+int Scheduler::IneffectiveLogoutCount() const {
+    return impl_->inuse_logout_count;
 }
 
 std::string Scheduler::LastPortalBody() const {

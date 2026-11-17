@@ -196,6 +196,27 @@ bool ParseConfigJson(const std::string& json_str, AppConfig& out, std::string& e
             t.probe_timeout_seconds = s.value("probe_timeout_seconds", t.probe_timeout_seconds);
             t.probe_url = s.value("probe_url", t.probe_url);
             t.probe_expect = s.value("probe_expect", t.probe_expect);
+
+            // 旧配置/旧界面模型迁移（2026-11-17 真机取证）：
+            // captive.apple.com 在本网被 DNS 劫持且上游 DNS 就是 AC；www.msftncsi.com
+            // 本网 0/4 可达，会永久误判离线。旧 UI 模型的默认值仍是 apple+Success，
+            // 每次点「保存」都会写回来，光靠「缺键回落默认值」挡不住。
+            // 只迁移这两个已知废弃地址，不碰用户自定义探测页。
+            const bool legacy_probe =
+                t.probe_url.find("captive.apple.com") != std::string::npos ||
+                t.probe_url.find("www.msftncsi.com") != std::string::npos;
+            // 界面把探测地址清空时也不能让守护停摆（真机出现过
+            // 「未配置探测地址」，之后既不探测也不登录）。
+            const bool blank_probe = t.probe_url.empty();
+            if (legacy_probe || blank_probe) {
+                const Settings defaults;
+                LogWarn(legacy_probe
+                            ? "探测地址已废弃，自动迁移到 generate_204：" + t.probe_url
+                            : "探测地址为空，自动回落到默认 generate_204");
+                t.probe_url = defaults.probe_url;
+                t.probe_expect = defaults.probe_expect;
+            }
+
             t.autostart = s.value("autostart", true);
             t.notify_on_reconnect = s.value("notify_on_reconnect", true);
             t.log_level = s.value("log_level", std::string{"info"});

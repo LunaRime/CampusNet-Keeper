@@ -286,7 +286,13 @@ public partial class MainViewModel : ObservableObject
 
         cfg.Settings.ProbeIntervalSeconds = (int)ProbeIntervalSeconds;
         cfg.Settings.ProbeTimeoutSeconds = (int)ProbeTimeoutSeconds;
-        cfg.Settings.ProbeUrl = ProbeUrl;
+        var probeUrl = ProbeUrl?.Trim();
+        cfg.Settings.ProbeUrl = string.IsNullOrEmpty(probeUrl)
+            ? new AppConfig().Settings.ProbeUrl
+            : probeUrl!;
+        // 界面不暴露 probe_expect：默认探测页是 204 空体，期望标识必须为空。
+        // 不显式写会让 C# 模型默认值跟着序列化进配置，与 generate_204 不配套。
+        cfg.Settings.ProbeExpect = string.Empty;
         cfg.Settings.Autostart = Autostart;
         cfg.Settings.NotifyOnReconnect = NotifyOnReconnect;
         cfg.Settings.LogLevel = LogLevel;

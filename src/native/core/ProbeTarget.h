@@ -19,7 +19,8 @@ bool ParseVisitBlacklist(const std::string& utf8_body,
 // 但**清单不保证可达**：调用方拿到结果后应实打一次再采用（见 `--detect`）。
 bool SelectProbeTarget(const std::vector<std::string>& blacklist, ProbeTarget& out);
 
-// 内置默认探测地址（captive.apple.com）。清单不可用时的兜底。
+// 内置默认探测地址（hicloud generate_204，probe_expect 为空）。
+// 与 store/Config.h 的 Settings 默认值一致；captive.apple.com 在本网被 DNS 劫持，已弃用。
 ProbeTarget DefaultProbeTarget();
 
 }  // namespace cnk

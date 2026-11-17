@@ -113,10 +113,13 @@ ProbeResult ProbeOnce(const Settings& s) {
         return r;
     }
 
-    // 4xx/5xx 等其余状态：spec §6.1 未定义，取偏保守的 PortalDetected——
-    // 宁可多试一次登录，也不把可疑响应当在线
-    r.state = NetState::PortalDetected;
-    r.message = "HTTP " + std::to_string(status);
+    // 4xx/5xx：服务器有响应，但既不是探测页，也不是 Portal 劫持的特征
+    //（本网真实劫持是裸 302 到异主机 / 200 篡改正文）。判 PortalDetected 会让
+    // 守护每轮拿账号去撞登录——2026-11-15 真机连续 404 触发了 24 次无效登录，
+    // 且 404 页没有门户特征，厂商识别还退化成 unknown。判离线走快速重探，
+    // 等真正的 302 出现再触发认证。
+    r.state = NetState::Offline;
+    r.message = "HTTP " + std::to_string(status) + "（非门户劫持，暂不触发登录）";
     return r;
 }
 

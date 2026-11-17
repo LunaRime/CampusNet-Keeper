@@ -455,25 +455,25 @@ public:
         req.follow_redirects = false;
 
         std::string evidence;
+        bool accepted = false;
         auto snippet = [](const std::string& s) {
             if (s.empty()) return std::string("（空正文）");
             const std::string head = s.size() > 120 ? s.substr(0, 120) + "…" : s;
             return RedactSecrets(head);
         };
 
-        // 候选 1（**首选**）：门户页自己声明的注销路径 —— 这是本网实测有效的那个
-        //（router 端 2026-10-30 现场确认：:801 /eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall）。
-        // 先试它，避免新式接口回一个 200 的错误页把人骗过去、白白漏掉唯一的有效端点。
+        // 两个候选端点**都打**，绝不因为第一个回了 200 就提前返回。
+        // 真机 2026-11-15：老式端点回 "Logout succeed."，但 :801 新式 eportal 建的
+        // 会话根本没被清掉，重登依旧「终端IP已在线！」——只看 200 正文会把假成功
+        // 当成功，还把真正可能有效的新式端点整个跳过。是否真生效由调度器用
+        // chkstatus + 重登结果复核，这里只如实记录两端点的响应。
         {
             req.url = api_base + "/eportal/?c=ACSetting&a=Logout&ver=1.0&url=drappall";
             HttpResponse resp;
             std::string err;
             if (HttpPerform(req, resp, err)) {
                 evidence += "老式 HTTP " + std::to_string(resp.status) + " " + snippet(resp.body);
-                if (resp.status == 200 && !MentionsFailure(resp.body)) {
-                    message = "已请求注销（" + evidence + "）";
-                    return true;
-                }
+                if (resp.status == 200 && !MentionsFailure(resp.body)) accepted = true;
             } else {
                 evidence += "老式请求失败：" + RedactSecrets(err);
             }
@@ -490,15 +490,16 @@ public:
             std::string err;
             if (HttpPerform(req, resp, err)) {
                 evidence += "；新式 HTTP " + std::to_string(resp.status) + " " + snippet(resp.body);
-                if (resp.status == 200 && !MentionsFailure(resp.body)) {
-                    message = "已请求注销（" + evidence + "）";
-                    return true;
-                }
+                if (resp.status == 200 && !MentionsFailure(resp.body)) accepted = true;
             } else {
                 evidence += "；新式请求失败：" + RedactSecrets(err);
             }
         }
 
+        if (accepted) {
+            message = "已请求注销（" + evidence + "）";
+            return true;
+        }
         message = "注销请求均未成功（" + evidence + "）";
         return false;
     }

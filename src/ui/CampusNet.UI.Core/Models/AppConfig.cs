@@ -56,11 +56,14 @@ public sealed class AppConfig
 /// <summary>镜像 C++ <c>Settings</c>。</summary>
 public sealed class Settings
 {
-    [JsonPropertyName("probe_interval_seconds")] public int ProbeIntervalSeconds { get; set; } = 5;
+    [JsonPropertyName("probe_interval_seconds")] public int ProbeIntervalSeconds { get; set; } = 30;
     [JsonPropertyName("probe_timeout_seconds")] public int ProbeTimeoutSeconds { get; set; } = 6;
+    // 必须与 C++ store/Config.h 的 Settings 默认值保持一致：本网 captive.apple.com
+    // 被 DNS 劫持、msftncsi 不可达；旧默认值会在每次「保存」时写回守护，
+    // 让探测重新落到不可靠的地址上。
     [JsonPropertyName("probe_url")] public string ProbeUrl { get; set; } =
-        "http://captive.apple.com/hotspot-detect.html";
-    [JsonPropertyName("probe_expect")] public string ProbeExpect { get; set; } = "Success";
+        "http://connectivitycheck.platform.hicloud.com/generate_204";
+    [JsonPropertyName("probe_expect")] public string ProbeExpect { get; set; } = "";
     [JsonPropertyName("retry_backoff_seconds")] public List<int> RetryBackoffSeconds { get; set; } =
         new() { 5, 10, 20, 30, 60 };
     [JsonPropertyName("autostart")] public bool Autostart { get; set; } = true;
