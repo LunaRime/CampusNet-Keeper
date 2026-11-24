@@ -378,6 +378,11 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
     NetworkChangeWatcher netwatch;
     netwatch.Start([sch]() { sch->NotifyNetworkChanged(); });
 
+    // 调度线程（W2）：它是唯一跑 Tick 的线程，也就是唯一的状态写者。
+    // 托盘主线程只刷新界面、只读快照；IPC 线程只发命令 —— 谁都不会再去摸
+    // Scheduler 内部的字符串/计数（那正是旧实现的数据竞争来源）。
+    sch->Start();
+
     if (!tray.Create(hinst, "CampusNet-Keeper 启动中…")) {
         LogError("托盘图标创建失败");
         netwatch.Stop();
@@ -443,7 +448,8 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
         });
 
     if (!SetTimer(tray.Hwnd(), kTimerId, kTimerIntervalMs, nullptr)) {
-        LogError("定时器创建失败，守护循环无法驱动探测");
+        LogError("定时器创建失败，守护循环无法刷新界面");
+        sch->Stop();
         netwatch.Stop();
         tray.Destroy();
         return false;
@@ -482,6 +488,9 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 KillTimer(tray.Hwnd(), kTimerId);
+                // 先停调度线程：它可能正卡在一次慢探测里，等它把这轮跑完再拆别的，
+                // 避免在别的线程还在用 Scheduler 时销毁托盘/IPC。
+                sch->Stop();
                 netwatch.Stop();
                 tray.Destroy();
                 // 落后一行也不留空白：来源为空说明退出路径没被识别到，
@@ -494,7 +503,9 @@ bool RunDaemonLoop(HINSTANCE hinst, AppConfig cfg, bool open_ui_on_start) {
                 return true;
             }
             if (msg.message == WM_TIMER && msg.wParam == kTimerId) {
-                sch->Tick();
+                // 定时器只负责"该刷新界面了"：探测/登录由调度线程跑（W2）。
+                // 旧实现在这里同步 Tick —— 一次慢探测（DNS 挂了、门户不回）就把
+                // 托盘菜单和窗口消息卡住几秒，点「退出」都没反应。
                 continue;
             }
             TranslateMessage(&msg);

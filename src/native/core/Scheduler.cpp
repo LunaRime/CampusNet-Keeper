@@ -6,6 +6,11 @@
 #include "auth/AuthFactory.h"
 #include "auth/Carrier.h"
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <utility>
 
 namespace cnk {
 
@@ -71,7 +76,8 @@ struct Scheduler::Impl {
     // 等停手态仍应在换网后自动恢复。
     bool session_stuck = false;
     // 托盘「暂停自动重连」：暂停只挡自动登录，探测与状态显示照常。
-    bool paused = false;
+    // atomic 而不是普通 bool：托盘/IPC 线程写、调度线程读，必须无竞争。
+    std::atomic<bool> paused{false};
     // ForceReconnect（用户主动点「立即重连」）放行一次，不受暂停影响。
     bool manual_override = false;
 
@@ -91,10 +97,44 @@ struct Scheduler::Impl {
     Clock::time_point last_ac_check{};
     int last_ac_verdict = -1;   // -1=未知 1=在线 0=不在线
     static constexpr int kAcRecheckIntervalSeconds = 30;
+
+    // 最近一轮探测的分层证据（1=通过 0=失败 -1=无证据），随快照发布给界面。
+    // 只认**本轮**取到的证据：上一轮的"通过"不留用到这一轮（W3）。
+    int layer_local = -1;
+    int layer_gateway = -1;
+    int layer_portal = -1;
+    int layer_internet = -1;
     // 由网络监听线程置位、主线程在 Tick 中消费。
     // 跨线程通信只允许经由这两个 atomic（网络线程不得触碰普通成员，防数据竞争）。
     std::atomic<bool> probe_immediately{true};
     std::atomic<bool> network_changed{false};
+
+    // ---- W2：跨线程只经由「命令队列 + 快照」交换 ----
+    //
+    // 为什么需要：IPC 线程（DaemonCommands）和托盘定时器都在读 Scheduler，以前它们
+    // 逐个调 getter 直接摸这里的 std::string / int，而调度线程正在 DoProbe/DoLogin 里
+    // 改写 —— 读 std::string 与写并发是 UB，而且一次 get_status 拼出来的字段可能
+    // 半新半旧。现在：写者只有调度线程（Tick），它在每轮结束时发布整份快照。
+    mutable std::mutex snap_mu_;
+    SchedulerSnapshot snap_;
+
+    // 命令队列：SetConfig 会拷整份配置（含 std::string），只能由调度线程写入 cfg。
+    struct Command {
+        enum class Kind { SetConfig, ForceReconnect } kind;
+        AppConfig cfg;
+    };
+    std::mutex cmd_mu_;
+    std::deque<Command> cmds_;
+
+    // 保护 cfg 的跨线程拷贝（RunProbeNow 要一份 settings）。只拷数据，探测在锁外做。
+    mutable std::mutex cfg_mu_;
+
+    // worker 的等待：睡到下次探测时间，或被命令 / Stop 唤醒（不靠高频轮询）。
+    std::mutex wait_mu_;
+    std::condition_variable wait_cv_;
+    std::thread worker;
+    std::atomic<bool> worker_stop{false};
+    std::atomic<bool> worker_wake{false};
 
     // 本机到门户方向的源地址与下一跳。由 DoProbe 在「结论变化 / 还没有值」时重算，
     // 供 get_status 与认证载荷使用（此前是永远为空的 TODO，界面「本机 IP」一直是空白）。
@@ -123,6 +163,104 @@ struct Scheduler::Impl {
 
     void ScheduleNext(int seconds) {
         next_probe = Clock::now() + std::chrono::seconds(seconds);
+    }
+
+    // ---------------- 快照与命令（W2） ----------------
+
+    /// 把当前状态打包成快照并发布。写者只有调度线程，读方永远看到自洽的一组值。
+    void Publish() {
+        SchedulerSnapshot s;
+        s.state = state;
+        s.message = message;
+        s.local_ip = local_ip;
+        s.gateway = local_route.gateway;
+        s.gateway_arp = local_route.gateway_arp;
+        s.last_success = last_success;
+        s.last_probe = last_probe;
+        s.consecutive_auth_failures = consecutive_auth_failures;
+        s.ineffective_logouts = inuse_logout_count;
+        s.portal_body = cached_portal_body;
+        s.paused = paused.load();
+        s.layer_local = layer_local;
+        s.layer_gateway = layer_gateway;
+        s.layer_portal = layer_portal;
+        s.layer_internet = layer_internet;
+        std::lock_guard<std::mutex> lk(snap_mu_);
+        snap_ = std::move(s);
+    }
+
+    /// 只取快照里的一个字段（加锁极短，不碰网络）。
+    template <typename F>
+    auto Read(F f) const -> decltype(f(snap_)) {
+        std::lock_guard<std::mutex> lk(snap_mu_);
+        return f(snap_);
+    }
+
+    void Submit(Command c) {
+        {
+            std::lock_guard<std::mutex> lk(cmd_mu_);
+            cmds_.push_back(std::move(c));
+        }
+        worker_wake.store(true);
+        wait_cv_.notify_all();
+    }
+
+    void ApplySetConfig(const AppConfig& c) {
+        {
+            std::lock_guard<std::mutex> lk(cfg_mu_);
+            cfg = c;
+        }
+        stop_retrying = false;
+        session_stuck = false;
+        inuse_logout_count = 0;
+        last_logout_unix = 0;
+        total_auth_attempts = 0;
+        consecutive_auth_failures = 0;
+        backoff_index = 0;
+        probe_immediately.store(true);
+        // 换了配置（可能连门户地址都改了）：AC 复核重新问一次
+        last_ac_check = Clock::time_point{};
+        last_ac_verdict = -1;
+    }
+
+    void ApplyForceReconnect() {
+        // 用户主动触发：即使处于「暂停自动重连」也放行这一次登录
+        manual_override = true;
+        probe_immediately.store(true);
+        stop_retrying = false;
+        session_stuck = false;
+        total_auth_attempts = 0;
+        consecutive_auth_failures = 0;
+        backoff_index = 0;
+        // 用户主动点「立即重连」：AC 复核也立刻重问一次，别让 30 秒节流把第一次判定吃掉
+        last_ac_check = Clock::time_point{};
+        last_ac_verdict = -1;
+    }
+
+    void DrainCommands() {
+        std::deque<Command> local;
+        {
+            std::lock_guard<std::mutex> lk(cmd_mu_);
+            local.swap(cmds_);
+        }
+        for (auto& c : local) {
+            if (c.kind == Command::Kind::SetConfig) ApplySetConfig(c.cfg);
+            else ApplyForceReconnect();
+        }
+    }
+
+    /// 唯一的状态写线程：睡到下次探测时间，或被命令 / Stop 唤醒，然后跑一轮 Tick。
+    void WorkerLoop() {
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lk(wait_mu_);
+                wait_cv_.wait_until(lk, next_probe, [this] {
+                    return worker_stop.load() || worker_wake.exchange(false);
+                });
+            }
+            if (worker_stop.load()) return;
+            Tick();
+        }
     }
 
     int CurrentBackoff() const {
@@ -264,7 +402,22 @@ struct Scheduler::Impl {
     }
 
     void Tick() {
-        // 网络变更事件在主线程消费：重置退避等与网络环境相关的状态。
+        // 每轮结束（含所有早退路径）都发布一次快照：读方永远拿得到当前状态。
+        // 用 RAII 而不是在每个 return 前手写 —— DoProbe 里有十几处 return。
+        struct PublishOnExit {
+            Impl* self;
+            ~PublishOnExit() { self->Publish(); }
+        } publish_on_exit{this};
+
+        // 命令先消费：SetConfig / ForceReconnect 必须在同一轮生效，
+        // 否则「点了立即重连还要等下一轮」的体验会退回去。
+        DrainCommands();
+
+        // 已经请求停止：不再发起新的探测/登录。Stop() 只等"正在跑的那一轮"结束，
+        // 不会因为又开了一轮而把退出时间翻倍。
+        if (worker_stop.load()) return;
+
+        // 网络变更事件在调度线程消费：重置退避等与网络环境相关的状态。
         // ⚠ 注销限次与「会话卡死」停手态不在此列，见下方注释。
         if (network_changed.exchange(false)) {
             // ⚠ inuse_logout_count 绝不能在这里清零：僵尸会话是 AC 侧那条会话记录，
@@ -303,6 +456,11 @@ void Scheduler::Impl::DoProbe() {
 
     state = RunState::Probing;
     last_probe = NowUnix();
+    // 每轮重新取证：上一轮的"通过"不能留给这一轮用（W3 的分层状态只认本轮证据）
+    layer_local = layer_gateway = layer_portal = layer_internet = -1;
+    // 探测可能卡几秒（DNS 挂了、门户不回）：进来就先发布一次，界面立刻显示「探测中」。
+    // 旧实现只在 Tick 结束时才让人看见状态变化，慢探测期间界面像是"什么都没发生"。
+    Publish();
 
     ProbeResult pr = ProbeOnce(cfg.settings);
     last_probe_response = pr.response;
@@ -324,6 +482,7 @@ void Scheduler::Impl::DoProbe() {
     // 本机地址：按门户地址取（门户是字面 IP 时不查 DNS），没有值就补一次并缓存。
     // 此前后台从没给 local_ip 赋过值，get_status 里永远是空串。
     if (local_ip.empty()) local_ip = LocalIpForPortal(portal_url);
+    layer_local = local_ip.empty() ? -1 : 1;
 
     // 网关/ARP：只在结论变化时问系统。RouteForUrl 要先解析门户主机名，
     // 域名型门户在 DNS 挂掉时每次都会卡几秒——不能放进每轮探测的必经路径
@@ -337,6 +496,11 @@ void Scheduler::Impl::DoProbe() {
         LogInfo(std::string("探测结果：") + NetStateName(pr.state) + "（" +
                 RedactSecrets(pr.message) + "）｜" + DescribeRoute(local_route));
     }
+
+    /* 网关段：只有 ARP「已解析」才是通过的证据；「未解析」是明确的失败证据；
+       直连/回环/查不出来一律未知（-1）——别把"没问"当成"通了"。 */
+    layer_gateway = local_route.gateway_arp == 1 ? 1
+                  : local_route.gateway_arp == 0 ? 0 : -1;
 
     if (pr.state == NetState::Online) {
         // 第二层：AC 复核。探测页 200+"Success" 不证明会话还在——本网实测 DNS 被劫持后
@@ -353,12 +517,14 @@ void Scheduler::Impl::DoProbe() {
             }
             ac = last_ac_verdict;
         }
+        layer_portal = ac == 1 ? 1 : (ac == 0 ? 0 : -1);
         if (ac == 0) {
             LogWarn("探测页可通但认证服务器判定不在线（AC 会话多半已失效），按离线处理");
             pr.state = NetState::Offline;
             pr.message = "探测页可通但认证服务器判定不在线（疑似会话已失效）";
             // 落到下面的 Offline 分支
-        } else if (CanReachInternet() == 0) {
+        } else if (const int can = CanReachInternet(); can == 0) {
+            layer_internet = 0;
             // 第三层验证：探测页 200+"Success" 不证明真能出网——DNS 被劫持时探测页照样 200，
             // 而实际打不开网页（2026-10-30 router 端实测僵尸会话持续 9 小时无人察觉）。
             // 明确出不了网（有响应但内容不对）才降级离线、触发重连；判不出来维持在线。
@@ -367,6 +533,7 @@ void Scheduler::Impl::DoProbe() {
             pr.message = "探测页可通但实际出不了网（疑似僵尸会话）";
             // 落到下面的 Offline 分支
         } else {
+            layer_internet = can == 1 ? 1 : -1;
             state = RunState::Online;
             message = "网络正常";
             ever_succeeded = true;
@@ -382,6 +549,10 @@ void Scheduler::Impl::DoProbe() {
             return;
         }
     }
+
+    /* 探测页被劫持到门户：这是「没认证」的**证据**（不是猜的），门户段记失败。
+       offline / unknown 不构成门户段的证据，保持 -1（界面显示"未知"）。 */
+    if (pr.state == NetState::PortalDetected) layer_portal = 0;
 
     // 终止态巡检：只确认网络是否恢复，不改写状态与消息——
     // 否则「认证失败（待用户改配置）」的显示会被常规探测流程覆盖
@@ -460,6 +631,7 @@ void Scheduler::Impl::DoLogin() {
 
     state = RunState::Authenticating;
     ++total_auth_attempts;
+    Publish();   // 登录也可能慢（门户 8 秒超时），别让界面一直停在「探测中」
 
     Vendor detected = DetectVendor(last_probe_response);
 
@@ -539,73 +711,98 @@ void Scheduler::Impl::DoLogin() {
 
 Scheduler::Scheduler(AppConfig cfg) : impl_(new Impl) {
     impl_->cfg = std::move(cfg);
+    // 构造后立刻有一份自洽快照：界面第一次 get_status 不必等第一轮 Tick
+    impl_->Publish();
 }
 
-Scheduler::~Scheduler() = default;
+Scheduler::~Scheduler() { Stop(); }
+
+void Scheduler::Start() {
+    if (impl_->worker.joinable()) return;   // 幂等
+    impl_->worker_stop.store(false);
+    impl_->worker_wake.store(false);
+    Impl* p = impl_.get();                  // 捕获 Impl 而非 this：Stop/join 期间 Scheduler 可能已在析构
+    impl_->worker = std::thread([p] { p->WorkerLoop(); });
+}
+
+void Scheduler::Stop() {
+    impl_->worker_stop.store(true);
+    impl_->worker_wake.store(true);
+    impl_->wait_cv_.notify_all();
+    if (impl_->worker.joinable()) impl_->worker.join();
+}
 
 void Scheduler::Tick() { impl_->Tick(); }
 
 void Scheduler::ForceReconnect() {
-    // 用户主动触发：即使处于「暂停自动重连」也放行这一次登录
-    impl_->manual_override = true;
-    impl_->probe_immediately.store(true);
-    impl_->stop_retrying = false;
-    impl_->session_stuck = false;
-    impl_->total_auth_attempts = 0;
-    impl_->consecutive_auth_failures = 0;
-    impl_->backoff_index = 0;
-    // 用户主动点「立即重连」：AC 复核也立刻重问一次，别让 30 秒节流把第一次判定吃掉
-    impl_->last_ac_check = Clock::time_point{};
-    impl_->last_ac_verdict = -1;
+    // 命令而不是直接改字段：SetConfig/ForceReconnect 会碰 cfg 与一堆状态，
+    // 只能由调度线程写（W2）。
+    impl_->Submit({Impl::Command::Kind::ForceReconnect, AppConfig{}});
 }
 
 void Scheduler::SetConfig(const AppConfig& cfg) {
-    impl_->cfg = cfg;
-    impl_->stop_retrying = false;
-    impl_->session_stuck = false;
-    impl_->inuse_logout_count = 0;
-    impl_->last_logout_unix = 0;
-    impl_->total_auth_attempts = 0;
-    impl_->consecutive_auth_failures = 0;
-    impl_->backoff_index = 0;
-    impl_->probe_immediately.store(true);
-    // 换了配置（可能连门户地址都改了）：AC 复核重新问一次
-    impl_->last_ac_check = Clock::time_point{};
-    impl_->last_ac_verdict = -1;
+    impl_->Submit({Impl::Command::Kind::SetConfig, cfg});
 }
 
 void Scheduler::NotifyNetworkChanged() {
     // 本方法可从网络监听线程调用：只允许写 atomic 标志，
-    // 其余状态重置推迟到主线程的 Tick 中消费（避免数据竞争）
+    // 其余状态重置推迟到调度线程的 Tick 中消费（避免数据竞争）
     impl_->network_changed.store(true);
     impl_->probe_immediately.store(true);
+    impl_->worker_wake.store(true);          // 唤醒 worker：换网后要立刻探测
+    impl_->wait_cv_.notify_all();
     LogInfo("收到网络变更事件，立即重新探测");
 }
 
-void Scheduler::SetPaused(bool paused) { impl_->paused = paused; }
-bool Scheduler::IsPaused() const { return impl_->paused; }
+void Scheduler::SetPaused(bool paused) { impl_->paused.store(paused); }
+bool Scheduler::IsPaused() const { return impl_->paused.load(); }
 
-RunState Scheduler::State() const { return impl_->state; }
-std::string Scheduler::LastMessage() const { return impl_->message; }
-std::string Scheduler::LocalIp() const { return impl_->local_ip; }
-std::string Scheduler::Gateway() const { return impl_->local_route.gateway; }
-int Scheduler::GatewayArpState() const { return impl_->local_route.gateway_arp; }
-long long Scheduler::LastSuccessUnix() const { return impl_->last_success; }
-long long Scheduler::LastProbeUnix() const { return impl_->last_probe; }
+SchedulerSnapshot Scheduler::Snapshot() const {
+    std::lock_guard<std::mutex> lk(impl_->snap_mu_);
+    return impl_->snap_;
+}
+
+RunState Scheduler::State() const {
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.state; });
+}
+std::string Scheduler::LastMessage() const {
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.message; });
+}
+std::string Scheduler::LocalIp() const {
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.local_ip; });
+}
+std::string Scheduler::Gateway() const {
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.gateway; });
+}
+int Scheduler::GatewayArpState() const {
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.gateway_arp; });
+}
+long long Scheduler::LastSuccessUnix() const {
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.last_success; });
+}
+long long Scheduler::LastProbeUnix() const {
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.last_probe; });
+}
 int Scheduler::ConsecutiveAuthFailures() const {
-    return impl_->consecutive_auth_failures;
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.consecutive_auth_failures; });
 }
 
 int Scheduler::IneffectiveLogoutCount() const {
-    return impl_->inuse_logout_count;
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.ineffective_logouts; });
 }
 
 std::string Scheduler::LastPortalBody() const {
-    return impl_->cached_portal_body;
+    return impl_->Read([](const SchedulerSnapshot& s) { return s.portal_body; });
 }
 
 bool Scheduler::RunProbeNow(ProbeResult& out) {
-    out = ProbeOnce(impl_->cfg.settings);
+    // 只把 settings 拷出来（持锁极短），探测本身在锁外做 —— 不持锁做网络请求
+    Settings settings;
+    {
+        std::lock_guard<std::mutex> lk(impl_->cfg_mu_);
+        settings = impl_->cfg.settings;
+    }
+    out = ProbeOnce(settings);
     // 未配置有效探测地址（Unknown）视为未完成探测
     return out.state != NetState::Unknown;
 }

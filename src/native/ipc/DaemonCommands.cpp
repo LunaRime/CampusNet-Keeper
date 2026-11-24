@@ -13,8 +13,10 @@
 #include "sys/Autostart.h"
 #include "json.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 namespace cnk {
 
@@ -46,6 +48,12 @@ std::string StrArg(const nlohmann::json& j, const char* key) {
     return v.get<std::string>();
 }
 
+// 分层证据的三种取值。⚠ -1 必须是 "unknown"，不能顺手写成 "ok"：
+// 界面靠它决定"显示成功还是未知"，猜错就是把"没问过"谎报成"通了"（W3）。
+const char* LayerStateName(int v) {
+    return v == 1 ? "ok" : (v == 0 ? "fail" : "unknown");
+}
+
 }  // namespace
 
 IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
@@ -56,17 +64,28 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
     }
 
     if (req.cmd == "get_status") {
+        // 一次拿整份快照：逐个 getter 各加一次锁，拼出来的字段可能来自不同时刻；
+        // 而且这里是 IPC 线程，绝不能直接摸调度线程正在改写的字段（W2）。
+        const SchedulerSnapshot snap = sch.Snapshot();
         nlohmann::json d;
-        d["state"] = RunStateName(sch.State());
-        d["message"] = sch.LastMessage();
-        d["local_ip"] = sch.LocalIp();
+        d["state"] = RunStateName(snap.state);
+        d["message"] = snap.message;
+        d["local_ip"] = snap.local_ip;
         // 「本机长什么样」的第二、三个字段：网关与它的 ARP 状态。
         // 只有 local_ip 时，界面无法区分「网关不通（二层断）」和「网关通但认证坏」——
         // 2026-11-01 那次故障就卡在这个层次上（ARP INCOMPLETE，但地址看起来一切正常）。
-        d["gateway"] = sch.Gateway();
-        d["gateway_arp"] = ArpStateName(sch.GatewayArpState());
+        d["gateway"] = snap.gateway;
+        d["gateway_arp"] = ArpStateName(snap.gateway_arp);
         // 真实的"上次登录成功时间"（Scheduler::LastSuccessUnix 一直存在；此前误判为缺失）
-        d["last_success"] = sch.LastSuccessUnix();
+        d["last_success"] = snap.last_success;
+        // 四段链路各自的证据（W3）：界面不再拿一个总体 state 给四个节点染色。
+        // 取值只有 ok / fail / unknown，unknown 只能显示「未知」。
+        d["layers"] = {
+            {"local", LayerStateName(snap.layer_local)},
+            {"gateway", LayerStateName(snap.layer_gateway)},
+            {"portal", LayerStateName(snap.layer_portal)},
+            {"internet", LayerStateName(snap.layer_internet)},
+        };
         return Ok(req, d.dump());
     }
 
@@ -77,9 +96,30 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
     }
 
     if (req.cmd == "get_log_tail") {
-        // 界面每 2 秒拉一次；行数上限压在响应上限（32KB）以内
+        // 界面每 2 秒拉一次。行数只是上限，**真正要守住的是序列化后的字节数**：
+        // PipeProtocol.MaxResponseBytes = 32KB，超了整个响应不可用，界面就再也看不到日志
+        // （旧实现只限 200 行；一行 400 字节的取证日志就能把它撑爆）。预算 24KB，
+        // 剩下的留给 JSON 外壳、转义与将来新增字段。
+        constexpr size_t kLogBudgetBytes = 24 * 1024;
+        const std::vector<std::string> all = LogTail(200);
+
+        std::vector<std::string> picked;
+        size_t used = 0;
+        bool truncated = false;
+        // 从最新往旧取：宁可少给旧行，也不能把最新的事件切掉
+        for (auto it = all.rbegin(); it != all.rend(); ++it) {
+            // 按真实序列化长度计代价（转义会膨胀），别用 strlen 估
+            const size_t cost = nlohmann::json(*it).dump().size() + 1;   // +1 逗号
+            if (used + cost > kLogBudgetBytes) { truncated = true; break; }
+            used += cost;
+            picked.push_back(*it);
+        }
+        std::reverse(picked.begin(), picked.end());
+
         nlohmann::json d;
-        d["lines"] = LogTail(200);
+        d["lines"] = picked;
+        // 前端据此提示「只显示最近 N 行」，而不是让人以为日志就这么点
+        d["truncated"] = truncated;
         return Ok(req, d.dump());
     }
 
@@ -122,10 +162,18 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
 
         // 开机自启是「配置项 → 注册表」的副作用：界面里一开关就要立刻生效，
         // 不能等下次启动（否则用户会以为开关没生效，重启后才发现没自启）。
+        //
+        // ⚠ 失败**不能只写日志**（W4）：配置确实存下去了，但自启没生效，
+        // 界面如果只显示"已保存"，用户会以为开关成功了。把结果放进回包，
+        // 让 UI 能说清「保存成功 / 自启没同步」这两件事。
+        bool autostart_ok = true;
+        std::string autostart_err;
         {
             std::string aerr;
             const bool want = merged.settings.autostart;
             if (!SyncAutostart(want, aerr)) {
+                autostart_ok = false;
+                autostart_err = aerr;
                 LogWarn("同步开机自启失败：" + aerr);
             } else {
                 LogInfo(std::string("设置界面更新了开机自启：") +
@@ -134,7 +182,11 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
         }
 
         LogInfo("配置已由设置界面更新并热重载");
-        return Ok(req, "{}");
+        nlohmann::json d;
+        d["saved"] = true;
+        d["autostart_synced"] = autostart_ok;
+        if (!autostart_ok) d["autostart_error"] = autostart_err;
+        return Ok(req, d.dump());
     }
 
     if (req.cmd == "test_profile") {
@@ -154,8 +206,13 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
                 target = &p;
                 break;
             }
-        if (target == nullptr && !cfg.profiles.empty()) target = &cfg.profiles.front();
-        if (target == nullptr) return Fail(req, "没有可用的配置档案");
+        // 绝不回退到第一份档案（W4）：用户点的是「测试这个档案」，
+        // 悄悄换一个去试，成功/失败都会把人引到错误结论上。
+        if (target == nullptr) {
+            return Fail(req, want.empty()
+                                 ? "没有指定要测试的档案"
+                                 : "找不到档案「" + want + "」（可能已被删除或改名，请先保存再试）");
+        }
         if (target->password.empty())
             return Fail(req, target->password_foreign
                                  ? "该档案的密码来自其他电脑/账号，本机解不开：请重新输入，或用「密码迁移」导出导入"

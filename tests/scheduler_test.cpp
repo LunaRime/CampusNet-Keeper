@@ -454,3 +454,215 @@ TEST_CASE("get_status 真的带出本机 IP / 网关 / ARP 状态") {
     CHECK(j["gateway_arp"] == "unknown");
     srv.Stop();
 }
+
+// ===================== W2：线程边界 =====================
+//
+// 旧实现里 Tick 跑在托盘消息循环中，而 IPC 线程与托盘又直接摸 Scheduler 的
+// std::string / int —— 既是数据竞争（UB），又让托盘被同步探测卡死几秒。
+// 下面三条钉的是"改完之后仍然成立"的事实，不是"轮询变快了"。
+
+namespace {
+
+// 192.0.2.0/24（RFC 5737 TEST-NET-1）是文档保留地址，不会指向任何真实设备：
+// 连接会一直挂到 probe_timeout 才返回，
+// 正好用来模拟"慢探测"（DNS 挂了 / 门户不回）。
+cnk::AppConfig SlowProbeConfig() {
+    cnk::AppConfig cfg;
+    cfg.settings.probe_url = "http://192.0.2.1/generate_204";
+    cfg.settings.probe_timeout_seconds = 2;
+    cfg.settings.probe_interval_seconds = 3600;
+    return cfg;
+}
+
+}  // namespace
+
+TEST_CASE("慢探测期间读快照不被阻塞（不持锁做网络请求）") {
+    cnk::Scheduler sch(SlowProbeConfig());
+    sch.Start();
+
+    bool probing = false;
+    for (int i = 0; i < 200; ++i) {
+        if (sch.Snapshot().state == cnk::RunState::Probing) { probing = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(probing);
+
+    // 此刻 worker 正卡在 2 秒的连接超时里。期间每次读都必须立刻返回：
+    // 若实现是"持锁探测"，单次读就会 > 1000ms。
+    long long worst = 0;
+    for (int i = 0; i < 30; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const cnk::SchedulerSnapshot snap = sch.Snapshot();
+        (void)snap;
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        if (ms > worst) worst = ms;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    CHECK(worst < 200);
+    CHECK(sch.State() == cnk::RunState::Probing);   // 探测仍在进行，上面的读数不是"已经探测完了"
+    sch.Stop();
+}
+
+TEST_CASE("状态读取与保存 / 暂停 / 强制重连可交错执行") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+
+    cnk::AppConfig cfg = MakeConfig(srv.BaseUrl(), "u", "p");
+    cnk::Scheduler sch(cfg);
+    sch.Start();
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> reads{0};
+    std::atomic<int> incoherent{0};
+    std::thread reader([&] {
+        while (!stop.load(std::memory_order_relaxed)) {
+            const cnk::SchedulerSnapshot snap = sch.Snapshot();
+            (void)sch.LastMessage();
+            (void)sch.LocalIp();
+            (void)sch.LastPortalBody();
+            // 自洽性：在线态必须有话可说。半新半旧的快照最容易在这里露馅。
+            if (snap.state == cnk::RunState::Online && snap.message.empty())
+                incoherent.fetch_add(1);
+            reads.fetch_add(1);
+        }
+    });
+
+    for (int i = 0; i < 60; ++i) {
+        sch.SetPaused(i % 2 == 0);
+        if (i % 10 == 0) sch.SetConfig(cfg);
+        if (i % 20 == 0) sch.ForceReconnect();
+        (void)sch.Snapshot();
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    }
+    stop.store(true);
+    reader.join();
+    sch.Stop();
+
+    CHECK(reads.load() > 0);
+    CHECK(incoherent.load() == 0);
+    srv.Stop();
+}
+
+TEST_CASE("慢探测时 Stop 能在超时内返回（退出不被网络挂死）") {
+    cnk::Scheduler sch(SlowProbeConfig());
+    sch.Start();
+
+    bool probing = false;
+    for (int i = 0; i < 200; ++i) {
+        if (sch.Snapshot().state == cnk::RunState::Probing) { probing = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(probing);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    sch.Stop();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+    // 正在跑的那一轮探测无法从外部中断（WinHTTP 同步调用，probe_timeout=2s，
+    // 但 Http 层还有 max(2*step, 8000)=8s 的总时限），所以 Stop 会等它跑完。
+    // 这里要钉的是「不会永久挂起 / 不会因为再开一轮而翻倍」，不是「零等待」。
+    CHECK(ms < 12000);
+}
+
+// ===================== W3：四段链路证据 =====================
+//
+// 旧界面把四个节点都绑在同一个 state 上：state==online 就四段全绿，
+// 出问题时完全看不出断在哪一层。现在每段只认**本轮**的证据，
+// 没证据就是 "unknown" —— 不许把"没问过"显示成"通了"。
+
+TEST_CASE("get_status 的四段链路：没证据必须是 unknown，不许猜") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));   // session_active=false：AC 判不在线
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
+    sch.ForceReconnect();
+    sch.Tick();
+
+    cnk::IpcRequest req;
+    req.id = 1;
+    req.cmd = "get_status";
+    const cnk::IpcResponse resp = cnk::HandleDaemonCommand(req, sch);
+    REQUIRE(resp.ok);
+    const nlohmann::json j = nlohmann::json::parse(resp.data_json);
+    REQUIRE(j.contains("layers"));
+
+    const auto& L = j["layers"];
+    // 取值只有三种，写错就是把"未知"谎报成"通过"
+    for (const char* k : {"local", "gateway", "portal", "internet"}) {
+        const std::string v = L[k].get<std::string>();
+        CHECK((v == "ok" || v == "fail" || v == "unknown"));
+    }
+    CHECK(L["local"] == "ok");        // 回环有源地址
+    CHECK(L["gateway"] == "unknown"); // 回环没有下一跳：没证据
+    CHECK(L["portal"] == "fail");     // AC 明确说会话不在
+    CHECK(L["internet"] == "unknown");// 没走到出网验证：不许当成"通"
+    srv.Stop();
+}
+
+TEST_CASE("在线时门户段有证据；出网段不做无证据的断言") {
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.session_active = true;
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
+    sch.ForceReconnect();
+    sch.Tick();
+
+    cnk::IpcRequest req;
+    req.id = 1;
+    req.cmd = "get_status";
+    const nlohmann::json j = nlohmann::json::parse(
+        cnk::HandleDaemonCommand(req, sch).data_json);
+    CHECK(j["layers"]["portal"] == "ok");   // AC 说在线
+    // 出网验证依赖真实外网，CI 上可能判不出来 —— 只要求取值合法
+    const std::string inet = j["layers"]["internet"].get<std::string>();
+    CHECK((inet == "ok" || inet == "fail" || inet == "unknown"));
+    srv.Stop();
+}
+
+// ===================== W4：测试登录只认指定档案 =====================
+
+TEST_CASE("test_profile 找不到指定档案时直接失败，绝不换一个去试") {
+    // 旧实现在找不到时静默回退到 cfg.profiles.front()：用户点「测试 A」，
+    // 实际拿 B 去登录，成功/失败都会把人引到错误结论上（W4）。
+    cnk::SimServer srv;
+    cnk::SimOptions o;
+    o.valid_user = "u";
+    o.valid_pass = "p";
+    std::string err;
+    REQUIRE(srv.Start(o, err));
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));   // 只有「默认」一份
+    cnk::IpcRequest req;
+    req.id = 7;
+    req.cmd = "test_profile";
+    req.args_json = R"({"profile":"不存在的档案"})";
+    const cnk::IpcResponse resp = cnk::HandleDaemonCommand(req, sch);
+
+    CHECK(!resp.ok);
+    CHECK(resp.error.find("找不到档案") != std::string::npos);
+    CHECK(srv.LoginCount() == 0);   // 关键：没有拿别的档案去试
+    srv.Stop();
+}
+
+TEST_CASE("test_profile 未指定档案时报错，也不猜一个") {
+    cnk::SimServer srv;
+    std::string err;
+    REQUIRE(srv.Start(cnk::SimOptions{}, err));
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
+    cnk::IpcRequest req;
+    req.id = 8;
+    req.cmd = "test_profile";
+    req.args_json = "{}";
+    const cnk::IpcResponse resp = cnk::HandleDaemonCommand(req, sch);
+
+    CHECK(!resp.ok);
+    CHECK(srv.LoginCount() == 0);
+    srv.Stop();
+}
