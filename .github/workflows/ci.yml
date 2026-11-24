@@ -32,19 +32,35 @@ jobs:
         # /m 让 MSBuild 并行构建各 target；CMakeLists 里的 /MP 让 cl 在 target 内并行编 .cpp
         run: cmake --build build-m1 --config Release -- /m
 
-      - name: 运行 C++ 测试
+      - name: 运行 C++ 测试（以退出码为准）
         shell: pwsh
         run: |
+          # G1：判定依据是**测试进程的退出码**，不是对 stdout 的关键字过滤 ——
+          # 后者在崩溃、断言被吞、输出格式变化时都会假装通过。
           $out = & .\build-m1\Release\cnk_tests.exe 2>&1
+          $code = $LASTEXITCODE
           $out | Select-String -Pattern 'test cases:|assertions:|Status:' | ForEach-Object { $_.Line }
+
+          if ($code -eq 0) {
+            Write-Host "cnk_tests 退出码 0：全部通过"
+            exit 0
+          }
+
+          # 退出码非 0 时，唯一放行的原因是**已确认的环境限制**：
+          # integrity_test 要给临时对象写低完整性标签，CI 的 runner 账户没有该权限。
+          # 注意「输出里找不到失败项」不能被当成环境限制（那多半是崩溃/被信号杀死）。
           $fails = $out | Select-String -Pattern ': ERROR:|: FATAL ERROR:'
+          if (-not $fails) {
+            Write-Error "cnk_tests 退出码 $code，但输出里没有可识别的失败项（疑似崩溃）"
+            exit 1
+          }
           $other = $fails | Where-Object { $_.Line -notmatch 'integrity_test\.cpp' }
           if ($other) {
             $other | ForEach-Object { $_.Line }
-            Write-Error "存在非环境性测试失败：$($other.Count) 条"
+            Write-Error "cnk_tests 退出码 $code，且存在非环境性失败：$($other.Count) 条"
             exit 1
           }
-          Write-Host "仅 integrity_test 失败（CI 账户无写完整性标签权限，属环境性）"
+          Write-Warning "cnk_tests 退出码 $code：失败项全部来自 integrity_test.cpp（CI 账户无完整性标签写权限，属已确认的环境限制）"
 
       - name: 精简版形态自检（无内嵌载荷 → 必须退出 3）
         shell: pwsh
@@ -153,13 +169,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 本机编译 + 自检 + 端到端
+      - name: 本机编译 + 全部测试（make test，退出码为准）
+        # G1：与本地共用 `make -C router test` 这一个入口。以前这里手写一长串命令，
+        # 新加的测试（配置键/渲染/清理/重载）得记得同步两处，漏一次就少跑一整类。
         run: |
-          cd router
-          make OUT=build-ci
-          ./build-ci/cnkrouter --version
-          ./build-ci/cnkrouter --selftest
-          python3 tests/e2e_test.py ./build-ci/cnkrouter
+          make -C router test OUT=build-ci
+          ./router/build-ci/cnkrouter --version
 
       - name: 恢复 OpenWrt SDK 缓存
         id: sdk-cache
@@ -189,23 +204,29 @@ jobs:
           mkdir -p "$HOME/.cache/cnk-sdk"
           URL=https://downloads.openwrt.org/releases/24.10.4/targets/qualcommax/ipq807x/openwrt-sdk-24.10.4-qualcommax-ipq807x_gcc-13.3.0_musl.Linux-x86_64.tar.zst
           curl -fsSL -o "$HOME/.cache/cnk-sdk/sdk.tar.zst" "$URL"
-          ls -l "$HOME/.cache/cnk-sdk/sdk.tar.zst"
+          stat -c '%s 字节 %n' "$HOME/.cache/cnk-sdk/sdk.tar.zst"
 
       - name: 解压 OpenWrt SDK 工具链
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          # SDK 的 prereq 检查不只认 zstd（2026-11-24 容器内实测的缺失清单）：
+          # 缺 libncurses-dev 会在 "Checking 'ncurses.h'" 直接失败；
+          # gawk/unzip/python3-distutils/file/rsync 同理，缺一个就整体
+          # "Prerequisite check failed"。
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zstd libncurses-dev rsync gawk unzip \
+            python3-distutils file build-essential
           sudo mkdir -p /opt/sdk
           sudo tar --zstd -xf "$HOME/.cache/cnk-sdk/sdk.tar.zst" -C /opt/sdk --strip-components=1
-          ls /opt/sdk/staging_dir/
+          find /opt/sdk/staging_dir -mindepth 1 -maxdepth 1 -printf '  %f\n'
 
       - name: 交叉编译（静态，不依赖路由器 libc）
         run: |
           cd router
-          GCC=$(ls /opt/sdk/staging_dir/toolchain-*/bin/aarch64-*-gcc | head -1)
+          GCC=$(find /opt/sdk/staging_dir -path '*toolchain-*/bin/aarch64-*-gcc' | head -1)
           echo "工具链: $GCC"
           make OUT=build-aarch64 CC="$GCC" STATIC=1
           file build-aarch64/cnkrouter
-          ls -l build-aarch64/cnkrouter
+          stat -c '%A %s 字节 %n' build-aarch64/cnkrouter
           # 静态是可验证的事实：不能有任何 NEEDED（否则路由器上会缺库直接跑不起来）
           if readelf -d build-aarch64/cnkrouter | grep -q NEEDED; then
             echo "!! 二进制有动态依赖，不是静态链接"; readelf -d build-aarch64/cnkrouter | head -10; exit 1
@@ -219,11 +240,33 @@ jobs:
           fi
           echo "版本戳已核对：git $COMMIT"
 
+      - name: 构建 .ipk 并按安装清单验收
+        # 2026-11-24 R1：以前这里只编裸二进制，packaging Makefile 到底装了哪些文件、
+        # 权限对不对、会不会把 cnk-blip 的 cron 一起带上，全都没验证过。
+        # 而 cnk-blip 本身被 .gitignore 的 [Bb]in/ 挡住从未入库 —— 干净检出打不出 ipk。
+        run: |
+          cd router
+          sh scripts/verify_ipk.sh          # 静态：Makefile 引用 vs files/ 内容一一对应
+          python3 tests/test_verify_ipk.py  # 校验器自身的行为回归（合成包，不联网）
+          # SDK 由 sudo 解压（属主 root），缓存命中时不会重新解压，这里统一收回属主
+          sudo chown -R "$(id -u):$(id -g)" /opt/sdk
+          sh scripts/build_openwrt.sh /opt/sdk
+          IPK=$(find /opt/sdk/bin/packages -name 'cnkrouter_*.ipk' | head -1)
+          if [ -z "$IPK" ]; then
+            echo "!! 没有生成 .ipk；SDK 产物如下（若只有 .apk，说明该 SDK 默认 apk 格式）"
+            find /opt/sdk/bin/packages -name 'cnkrouter_*' -print
+            exit 1
+          fi
+          stat -c '%A %s %n' "$IPK"
+          sh scripts/verify_ipk.sh "$IPK"
+
       - name: 上传 aarch64 产物
         uses: actions/upload-artifact@v4
         with:
           name: cnkrouter-aarch64-musl
-          path: router/build-aarch64/cnkrouter
+          path: |
+            router/build-aarch64/cnkrouter
+            /opt/sdk/bin/packages/*/base/cnkrouter_*.ipk
 
   release:
     # 打 tag（v*）时构建两个发布包并创建 Release：

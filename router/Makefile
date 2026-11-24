@@ -36,9 +36,16 @@ $(OUT)/cnkrouter: $(SRC) src/cnk.h
 static:
 	$(MAKE) STATIC=1 all
 
+# 一条命令跑完本机能跑的全部验证（G1：CI 与本地共用同一个入口，
+# 免得 CI 里手写的序列和本地漂移、新测试加了却没人跑）。
+# 需要 python3；test_reload.py 依赖 SIGHUP，非 Linux 上会自己跳过。
 test: $(OUT)/cnkrouter
-	./$(OUT)/cnkrouter --selftest
-	python3 tests/e2e_test.py ./$(OUT)/cnkrouter
+	$(OUT)/cnkrouter --selftest
+	python3 tests/test_config_keys.py
+	sh tests/test_init_render.sh
+	sh tests/test_cleanup.sh
+	python3 tests/e2e_test.py $(OUT)/cnkrouter
+	python3 tests/test_reload.py $(OUT)/cnkrouter
 
 clean:
 	rm -rf $(OUT)
