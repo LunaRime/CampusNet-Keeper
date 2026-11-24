@@ -205,9 +205,20 @@
                    VerticalAlignment="Center" Margin="0,0,12,0"/>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
                     VerticalAlignment="Center">
-          <Button Classes="ghost" Content="刷新" Command="{Binding RefreshCommand}"/>
-          <Button Classes="outline" Content="测试登录" Command="{Binding TestProfileCommand}"/>
-          <Button Classes="primary" Content="保存" Command="{Binding SaveCommand}"/>
+          <!-- 有未保存修改时提醒：刷新只刷状态，不会替你丢掉草稿 -->
+          <TextBlock Text="● 未保存" IsVisible="{Binding IsDirty}"
+                     Foreground="{DynamicResource CnkWarning}"
+                     VerticalAlignment="Center"
+                     ToolTip.Tip="修改还没提交；保存成功前刷新/重连都不会覆盖它们"/>
+          <Button Classes="ghost" Content="刷新" HotKey="Alt+R"
+                  Command="{Binding RefreshCommand}"
+                  ToolTip.Tip="刷新状态（Alt+R）——只刷状态，不会丢掉未保存的修改"/>
+          <Button Classes="outline" Content="测试登录" HotKey="Alt+T"
+                  Command="{Binding TestProfileCommand}"
+                  ToolTip.Tip="用当前档案真登录一次（Alt+T）"/>
+          <Button Classes="primary" Content="保存" HotKey="Alt+S"
+                  Command="{Binding SaveCommand}"
+                  ToolTip.Tip="保存到守护进程（Alt+S）"/>
         </StackPanel>
       </Grid>
     </Border>

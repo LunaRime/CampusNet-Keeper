@@ -17,13 +17,16 @@
         <StackPanel Grid.Column="0" Spacing="4">
           <TextBlock Classes="title" Text="配置档案"/>
           <TextBlock Classes="caption" TextWrapping="Wrap"
-                     Text="一个档案对应一套账号与认证策略，切换后立即用于自连"/>
+                     Text="选中只是「正在编辑」；点「设为生效」并保存后，自连才用它"/>
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
           <Button Classes="outline compact" Content="新增档案"
                   Command="{Binding AddProfileCommand}"/>
           <Button Classes="ghost compact" Content="删除"
                   Command="{Binding RemoveProfileCommand}"/>
+          <Button Classes="primary compact" Content="设为生效"
+                  Command="{Binding SetActiveProfileCommand}"
+                  ToolTip.Tip="把当前编辑的档案设为自连使用的那一份（保存后生效）"/>
         </StackPanel>
       </Grid>
 
@@ -42,6 +45,10 @@
                 <TextBlock Text="{Binding Name}"
                            FontSize="{DynamicResource CnkFontSizeCaption}"
                            TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="生效" IsVisible="{Binding IsActive}"
+                           FontSize="{DynamicResource CnkFontSizeCaption}"
+                           Foreground="{DynamicResource CnkBrand}"
+                           ToolTip.Tip="自连使用这一份（未保存的修改需点保存才应用）"/>
               </StackPanel>
             </Border>
           </DataTemplate>

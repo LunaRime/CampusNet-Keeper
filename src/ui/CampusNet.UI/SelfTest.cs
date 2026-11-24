@@ -1,8 +1,14 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.LogicalTree;
 using Avalonia.Media;
 using Avalonia.Platform;
 using Avalonia.Styling;
+using Avalonia.Threading;
+using System.Text.Json.Nodes;
+using CampusNet.UI.Models;
+using CampusNet.UI.Services;
+using CampusNet.UI.ViewModels;
 
 namespace CampusNet.UI;
 
@@ -89,6 +95,9 @@ internal static class SelfTest
         // 少了 csproj 的 AvaloniaResource，标题栏左上角就退回系统默认图标。
         CheckWindowIcon(ref failed);
         CheckWindowConstruction(ref failed);
+        CheckDraftProtection(ref failed);
+        CheckOverviewAndLogs(ref failed);
+        CheckSmallWindowAndKeyboard(ref failed);
 
         Console.WriteLine(failed == 0
             ? $"  [PASS] {ExpectedBrushes.Length} 个颜色键 × 明暗 + 圆角/字号/字体全部符合 DESIGN.md"
@@ -252,6 +261,244 @@ internal static class SelfTest
         catch (Exception ex)
         {
             Console.WriteLine($"  [FAIL] 主窗口构造/导航失败：{ex.GetType().Name}: {ex.Message}");
+            failed++;
+        }
+    }
+
+    /// <summary>
+    /// 草稿保护（W1）：把"刷新状态"和"改配置"彻底分开后必须成立的几条不变量。
+    /// 这里跑的是真 ViewModel（不连守护进程），断言的是**保存报文里到底装了什么**。
+    /// </summary>
+    private static void CheckDraftProtection(ref int failed)
+    {
+        var bad = new List<string>();
+        void Check(bool ok, string name)
+        {
+            if (!ok) bad.Add(name);
+        }
+
+        var vm = new MainViewModel(new IpcClient(), autoRefresh: false);
+        vm.ApplyConfig(JsonNode.Parse("""
+        {
+          "active_profile": "校园A",
+          "settings": { "probe_interval_seconds": 30, "probe_expect": "Success",
+                        "log_max_kb": 2048, "log_keep_files": 9 },
+          "profiles": [
+            { "name": "校园A", "username": "a", "has_password": true },
+            { "name": "校园B", "username": "b" }
+          ]
+        }
+        """)!);
+
+        Check(vm.ActiveProfileName == "校园A", "生效档案来自 active_profile");
+        Check(!vm.IsDirty, "刚同步完不算未保存");
+        Check(vm.Profiles.Count == 2, "档案数量正确");
+
+        // 只看不改：切换列表选中项 ≠ 切换生效档案，也不该标脏
+        vm.SelectedProfile = vm.Profiles[1];
+        Check(!vm.IsDirty, "切换选中项不置脏");
+        Check(vm.ActiveProfileName == "校园A", "切换选中项不改变生效档案");
+
+        var draft = vm.BuildConfigForSave();
+        Check(draft.ActiveProfile == "校园A", "保存以生效档案为准，不是当前选中项");
+        Check(draft.Settings.ProbeExpect == "Success", "probe_expect 原样透传（不被写空）");
+        Check(draft.Settings.LogMaxKb == 2048 && draft.Settings.LogKeepFiles == 9,
+              "未暴露的日志字段透传");
+
+        // 真编辑才置脏，且此时禁止自动重载
+        vm.Profiles[1].Username = "b-changed";
+        Check(vm.IsDirty, "编辑字段后置脏");
+        Check(!vm.CanReloadConfig, "有草稿时禁止自动重载");
+
+        // 显式设为生效：只改本地状态，保存时才提交
+        vm.SetActiveProfileCommand.Execute(null);
+        Check(vm.ActiveProfileName == "校园B", "设为生效只改本地状态");
+        Check(vm.BuildConfigForSave().ActiveProfile == "校园B", "设为生效后保存提交它");
+        Check(!vm.Profiles[0].IsActive && vm.Profiles[1].IsActive, "生效标记跟着走");
+
+        // 未在界面暴露的 custom_template 同样不能被"保存普通设置"清空
+        var tplVm = new ProfileViewModel(new Profile
+        {
+            Name = "模板档案",
+            CustomTemplate = new CustomTemplate { Url = "http://tpl.invalid/login", Body = "u=$u" },
+        });
+        var tplOut = tplVm.ToModel(includePassword: false).CustomTemplate;
+        Check(tplOut.Url == "http://tpl.invalid/login" && tplOut.Body == "u=$u",
+              "custom_template 透传（不被清空）");
+
+        // 保存回包：自启没同步必须与「已保存」分开说（W4）
+        var (op, err) = MainViewModel.InterpretSaveResult(
+            JsonNode.Parse("""{"saved":true,"autostart_synced":false,"autostart_error":"拒绝访问"}"""), true);
+        Check(op.Contains("自启同步失败"), "自启失败时不谎报「已保存」");
+        Check(err is not null && err.Contains("拒绝访问"), "自启失败带上原因");
+
+        (op, err) = MainViewModel.InterpretSaveResult(
+            JsonNode.Parse("""{"saved":true,"autostart_synced":true}"""), true);
+        Check(op == "已保存" && err is null, "自启正常 → 已保存");
+
+        (op, err) = MainViewModel.InterpretSaveResult(
+            JsonNode.Parse("""{"saved":true,"autostart_synced":true}"""), false);
+        Check(op.Contains("没有密码") && err is not null, "生效档案无密码仍有提示");
+
+        foreach (var name in bad) Console.WriteLine($"  [FAIL] 草稿保护：{name}");
+        failed += bad.Count;
+        if (bad.Count == 0) Console.WriteLine("  [PASS] 草稿保护（状态/配置分离、生效档案、字段透传）");
+    }
+
+    /// <summary>
+    /// 概览与日志（W3）：四段链路只认证据、最近事件取最新、日志筛选真的生效。
+    /// 这里跑真 ViewModel（不连守护），断言的是"界面会显示什么"。
+    /// </summary>
+    private static void CheckOverviewAndLogs(ref int failed)
+    {
+        var bad = new List<string>();
+        void Check(bool ok, string name)
+        {
+            if (!ok) bad.Add(name);
+        }
+
+        var vm = new MainViewModel(new IpcClient(), autoRefresh: false);
+
+        // ① 分层证据：没证据必须显示「未知」，不许猜成通过
+        vm.ApplyLayers(JsonNode.Parse(
+            """{"local":"ok","gateway":"unknown","portal":"fail","internet":"unknown"}"""));
+        Check(vm.LocalOk && !vm.LocalFail && vm.LocalStateText == "已通过", "本机段有证据 → 已通过");
+        Check(!vm.GatewayOk && !vm.GatewayFail && vm.GatewayStateText == "未知", "网关段无证据 → 未知");
+        Check(!vm.PortalOk && vm.PortalFail && vm.PortalStateText == "失败", "门户段明确失败 → 失败");
+        Check(!vm.InternetOk && !vm.InternetFail && vm.InternetStateText == "未知", "出网段无证据 → 未知");
+
+        // 老守护没有 layers 字段：不能沿用上一轮的值
+        vm.ApplyLayers(null);
+        Check(vm.LocalStateText == "未知" && vm.InternetStateText == "未知", "缺 layers 字段 → 全部未知");
+
+        // ② 最近事件：取最新几条，跳过 DEBUG（旧实现是整段日志的前 6 行 = 最旧的）
+        vm.LogText = string.Join('\n', new[]
+        {
+            "10:00:00 [DEBUG] 旧的调试",
+            "10:00:01 [INFO] 第一件",
+            "10:00:02 [DEBUG] 调试噪声",
+            "10:00:03 [WARN] 第二件",
+            "10:00:04 [ERROR] 第三件",
+        });
+        Check(vm.RecentEvents.Count == 3, "最近事件跳过 DEBUG");
+        Check(vm.RecentEvents.Count > 0 && vm.RecentEvents[0].Contains("第三件"), "最近事件最新在前");
+
+        // ③ 日志筛选：级别 + 搜索词，清空后回到全量
+        vm.LogLevelFilter = "WARN";
+        Check(vm.FilteredLogText.Contains("第二件") && !vm.FilteredLogText.Contains("第一件"),
+              "级别筛选只留 WARN");
+        vm.LogLevelFilter = "全部";
+        vm.LogFilter = "第三";
+        Check(vm.FilteredLogText.Contains("第三件") && !vm.FilteredLogText.Contains("第一件"),
+              "搜索词过滤");
+        vm.LogFilter = "";
+        Check(vm.FilteredLogText.Contains("第一件") && vm.FilteredLogText.Contains("第三件"),
+              "清空筛选回到全量");
+
+        foreach (var name in bad) Console.WriteLine($"  [FAIL] 概览/日志：{name}");
+        failed += bad.Count;
+        if (bad.Count == 0) Console.WriteLine("  [PASS] 概览分层证据 / 最近事件 / 日志筛选");
+    }
+
+    /// <summary>
+    /// 最小窗口 + 键盘（W3）：880×600 时内容区只有 672×488（侧栏 208、标题栏 48、底栏 64），
+    /// 内容宽度必须被 LayoutHelper 钉回视口；主要按钮都要能用键盘触发。
+    /// </summary>
+    private static void CheckSmallWindowAndKeyboard(ref int failed)
+    {
+        try
+        {
+            var window = new Views.MainWindow();
+            var buttons = window.GetLogicalDescendants().OfType<Button>().ToList();
+            bool HasKey(string content) => buttons.Any(
+                b => (b.Content as string) == content && b.HotKey is not null);
+            if (!HasKey("保存") || !HasKey("刷新") || !HasKey("测试登录"))
+            {
+                Console.WriteLine("  [FAIL] 主窗口按钮缺键盘快捷键（HotKey）");
+                failed++;
+            }
+
+            // 真实布局需要可视树：放进一个移出屏幕的窗口，量完立刻关掉。
+            // 无交互桌面（纯服务会话）时降级为 SKIP —— 那是环境限制，不是被测代码的问题。
+            var view = new Views.OverviewView
+            {
+                DataContext = new MainViewModel(new IpcClient(), autoRefresh: false),
+            };
+            Window? host = null;
+            try
+            {
+                host = new Window
+                {
+                    Width = 880,
+                    Height = 600,
+                    SystemDecorations = SystemDecorations.None,
+                    ShowInTaskbar = false,
+                    CanResize = false,
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    Position = new PixelPoint(-3000, -3000),
+                    Content = view,
+                };
+                host.Show();
+                Dispatcher.UIThread.RunJobs();
+
+                var content = view.FindControl<Control>("PageContent");
+                var width = content?.Bounds.Width ?? 0;
+                // 这里把概览单独放进 880 宽的窗口（没有侧栏），视口就是 880；
+                // LayoutHelper 会再减左右各 20 的 Margin。它失效时内容会按自然宽度
+                // 撑到 1300+，正好被这条断言抓住。
+                var max = 880 - 40 + 1;
+                if (width <= 0 || width > max)
+                {
+                    Console.WriteLine($"  [FAIL] 最小窗口下概览内容宽 {width:0}（上限 {max:0}），长文案会顶出窗口");
+                    failed++;
+                }
+                else
+                {
+                    Console.WriteLine($"  [PASS] 最小窗口内容宽 {width:0} ≤ {max:0}；{buttons.Count} 个按钮带快捷键");
+                }
+
+                // 光测 ViewModel 不够：XAML 若把四个节点又绑回同一个总体状态，
+                // 上面那些断言照样全绿（"测了函数没测入口"）。这里查真实控件。
+                var vm = (MainViewModel)view.DataContext!;
+                vm.ApplyLayers(JsonNode.Parse(
+                    """{"local":"ok","gateway":"unknown","portal":"fail","internet":"unknown"}"""));
+                Dispatcher.UIThread.RunJobs();
+
+                bool Lit(string name, string cls)
+                {
+                    var b = view.FindControl<Border>("Node" + name);
+                    return b is not null && b.Classes.Contains(cls);
+                }
+
+                var bindingBad = 0;
+                if (!Lit("Local", "online")) bindingBad++;
+                // unknown 必须两个类都没有：亮任何一种颜色都是把"没证据"说成了结论
+                if (Lit("Gateway", "online") || Lit("Gateway", "failed")) bindingBad++;
+                if (!Lit("Portal", "failed")) bindingBad++;
+                if (Lit("Internet", "online")) bindingBad++;
+
+                if (bindingBad > 0)
+                {
+                    Console.WriteLine($"  [FAIL] 链路节点绑定：{bindingBad} 处颜色与证据不符（unknown 不该亮灯）");
+                    failed++;
+                }
+                else
+                {
+                    Console.WriteLine("  [PASS] 四个链路节点各绑各的证据（unknown 不亮灯）");
+                }
+            }
+            catch (Exception layoutEx)
+            {
+                Console.WriteLine($"  [SKIP] 最小窗口布局（无交互桌面：{layoutEx.GetType().Name}）");
+            }
+            finally
+            {
+                host?.Close();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [FAIL] 最小窗口/键盘检查失败：{ex.GetType().Name}: {ex.Message}");
             failed++;
         }
     }

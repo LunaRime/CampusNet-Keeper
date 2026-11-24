@@ -30,10 +30,22 @@ public partial class ProfileViewModel : ObservableObject
 
     [ObservableProperty] private bool _showPassword;
 
+    /// <summary>
+    /// 是否是「当前生效」的档案（由 MainViewModel 按 active_profile 同步）。
+    /// 与列表选中态是两件事：选中只表示「正在看/正在编辑」（W1）。
+    /// </summary>
+    [ObservableProperty] private bool _isActive;
+
     /// <summary>是否选中了「自定义…」，选中时展开自定义运营商文本框。</summary>
     [ObservableProperty] private bool _isCustomCarrier;
 
     public ProfileViewModel() { }
+
+    /// <summary>
+    /// 服务器给的原始自定义模板。界面不提供编辑，但保存时必须原样带回去 ——
+    /// 否则「只改普通设置」会把用户配的 custom_template 清成空壳（与 probe_expect 同类，W1）。
+    /// </summary>
+    private CustomTemplate _template = new();
 
     public ProfileViewModel(Profile p)
     {
@@ -46,12 +58,14 @@ public partial class ProfileViewModel : ObservableObject
         HasPassword = p.HasPassword;
         PasswordState = p.PasswordState;
         IsCustomCarrier = p.Isp.Preset == Services.CarrierOptions.CustomValue;
+        _template = p.CustomTemplate;
     }
 
     /// <summary>导出为模型。<paramref name="includePassword"/> 为 false 时不带新密码（用户没改）。</summary>
     public Profile ToModel(bool includePassword)
     {
         var p = Profile.Create(Name, AuthUrl, Username, Vendor, IspPreset, IspCustom);
+        p.CustomTemplate = _template;   // 未在界面暴露：原样透传，不能用默认值顶掉
         p.HasPassword = HasPassword;
         if (includePassword && PasswordInput.Length > 0) p.PasswordPlain = PasswordInput;
         return p;

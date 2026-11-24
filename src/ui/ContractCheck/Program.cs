@@ -40,6 +40,35 @@ Check(back.ActiveProfile == "默认", "往返：active_profile 保持（含中�
 Check(back.Profiles.Count == 1 && back.Profiles[0].Username == "202400000001@cmcc", "往返：账号保持");
 Check(!back.Profiles[0].HasPassword, "未设密码时 has_password=false");
 
+Console.WriteLine("== 保存设置：只覆盖界面字段，未暴露的原样透传（W1）==");
+// 旧实现保存时 new Settings() 再逐字段赋值，probe_expect 被无条件写成空串，
+// 用户为 200 型探测页设的期望标识保存一次就没了；log_max_kb / log_keep_files 同理。
+var baseline = new Settings
+{
+    ProbeIntervalSeconds = 30,
+    ProbeTimeoutSeconds = 6,
+    ProbeUrl = "http://example.invalid/generate_204",
+    ProbeExpect = "Success",          // 界面不暴露
+    LogMaxKb = 2048,                  // 界面不暴露
+    LogKeepFiles = 9,                 // 界面不暴露
+    RetryBackoffSeconds = new List<int> { 5, 10 },
+    LogLevel = "debug",
+};
+var mergedSettings = Settings.WithUiFields(baseline,
+    probeIntervalSeconds: 45, probeTimeoutSeconds: 3,
+    probeUrl: "http://new.example.invalid/generate_204",
+    autostart: false, notifyOnReconnect: false, logLevel: "info",
+    retryBackoffSeconds: new List<int> { 7 });
+Check(mergedSettings.ProbeExpect == "Success", "probe_expect 透传（不被写空）");
+Check(mergedSettings.LogMaxKb == 2048 && mergedSettings.LogKeepFiles == 9, "未暴露的日志字段透传");
+Check(mergedSettings.ProbeIntervalSeconds == 45 && mergedSettings.ProbeTimeoutSeconds == 3, "界面数值字段生效");
+Check(mergedSettings.ProbeUrl == "http://new.example.invalid/generate_204", "探测地址生效");
+Check(mergedSettings.LogLevel == "info", "日志级别生效");
+Check(string.Join(",", mergedSettings.RetryBackoffSeconds) == "7", "退避序列生效");
+Check(baseline.ProbeIntervalSeconds == 30 &&
+      string.Join(",", baseline.RetryBackoffSeconds) == "5,10",
+      "基线本身未被修改（下次保存仍以服务器值为底）");
+
 Console.WriteLine("== 密码规则（UI 不接触已存密码）==");
 var p = Profile.Create("x", "http://a/", "u", "auto", "campus", "");
 p.HasPassword = true;

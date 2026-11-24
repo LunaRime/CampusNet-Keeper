@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:CampusNet.UI.ViewModels"
+             xmlns:sys="using:System"
              x:Class="CampusNet.UI.Views.OverviewView"
              x:DataType="vm:MainViewModel">
 
@@ -52,6 +53,20 @@
             <TextBlock Classes="caption" TextWrapping="Wrap"
                        Text="探测 → AC 复核 → 出网验证：三层判定都通过才会显示在线（204 也不直接判在线）"/>
 
+            <!-- 三件事分开说（W3）：上面的标题是**网络状态**，这里分别是**守护连接**与
+                 **最近一次操作的结果** —— 混成一句话就分不清"操作成功了"和"网络好了"。 -->
+            <StackPanel Orientation="Horizontal" Spacing="14">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <Border Classes="dot" Classes.online="{Binding DaemonRunning}"/>
+                <TextBlock Classes="caption" Text="守护进程"/>
+                <TextBlock Classes="caption" Text="{Binding DaemonStatusText}"
+                           Foreground="{DynamicResource CnkTextMuted}"/>
+              </StackPanel>
+              <TextBlock Classes="caption" Text="{Binding OperationResult}"
+                         Foreground="{DynamicResource CnkTextMuted}"
+                         TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
+
             <!-- 四段链路：节点颜色跟随当前状态，标签为固定的判定层次 -->
             <Border Classes="panel" Padding="12">
               <Grid>
@@ -65,30 +80,38 @@
                   <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Spacing="6" HorizontalAlignment="Center">
-                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
-                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <Border x:Name="NodeLocal" Classes="dot" Classes.online="{Binding LocalOk}"
+                          Classes.failed="{Binding LocalFail}"/>
                   <TextBlock Classes="caption" Text="本机"/>
+                  <TextBlock Classes="caption" Text="{Binding LocalStateText}"
+                             Foreground="{DynamicResource CnkTextMuted}"/>
                 </StackPanel>
                 <Border Grid.Column="1" Height="2" Background="{DynamicResource CnkBorder}"
                         VerticalAlignment="Top" Margin="8,4"/>
                 <StackPanel Grid.Column="2" Spacing="6" HorizontalAlignment="Center">
-                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
-                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <Border x:Name="NodeGateway" Classes="dot" Classes.online="{Binding GatewayOk}"
+                          Classes.failed="{Binding GatewayFail}"/>
                   <TextBlock Classes="caption" Text="网关"/>
+                  <TextBlock Classes="caption" Text="{Binding GatewayStateText}"
+                             Foreground="{DynamicResource CnkTextMuted}"/>
                 </StackPanel>
                 <Border Grid.Column="3" Height="2" Background="{DynamicResource CnkBorder}"
                         VerticalAlignment="Top" Margin="8,4"/>
                 <StackPanel Grid.Column="4" Spacing="6" HorizontalAlignment="Center">
-                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
-                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <Border x:Name="NodePortal" Classes="dot" Classes.online="{Binding PortalOk}"
+                          Classes.failed="{Binding PortalFail}"/>
                   <TextBlock Classes="caption" Text="门户认证"/>
+                  <TextBlock Classes="caption" Text="{Binding PortalStateText}"
+                             Foreground="{DynamicResource CnkTextMuted}"/>
                 </StackPanel>
                 <Border Grid.Column="5" Height="2" Background="{DynamicResource CnkBorder}"
                         VerticalAlignment="Top" Margin="8,4"/>
                 <StackPanel Grid.Column="6" Spacing="6" HorizontalAlignment="Center">
-                  <Border Classes="dot" Classes.online="{Binding IsOnline}"
-                          Classes.busy="{Binding IsBusy}" Classes.failed="{Binding IsFailed}"/>
+                  <Border x:Name="NodeInternet" Classes="dot" Classes.online="{Binding InternetOk}"
+                          Classes.failed="{Binding InternetFail}"/>
                   <TextBlock Classes="caption" Text="互联网"/>
+                  <TextBlock Classes="caption" Text="{Binding InternetStateText}"
+                             Foreground="{DynamicResource CnkTextMuted}"/>
                 </StackPanel>
               </Grid>
             </Border>
@@ -145,7 +168,8 @@
         <Border Grid.Column="6" Classes="card" Padding="12">
           <StackPanel Spacing="6">
             <TextBlock Classes="caption" Text="守护进程"/>
-            <TextBlock Classes="mono" Text="常驻服务"/>
+            <TextBlock Classes="mono" Text="{Binding DaemonStatusText}"
+                       TextTrimming="CharacterEllipsis"/>
             <StackPanel Orientation="Horizontal" Spacing="6">
               <Border Classes="dot" Classes.online="{Binding DaemonRunning}"/>
               <TextBlock Classes="caption" Text="IPC 连接" TextTrimming="CharacterEllipsis"/>
@@ -163,9 +187,15 @@
         <Border Grid.Column="0" Classes="card" Margin="0,0,8,0">
           <StackPanel Spacing="10">
             <TextBlock Classes="heading" Text="最近事件"/>
-            <Border Classes="console" Padding="12">
-              <TextBlock Classes="mono" Text="{Binding LogText}" MaxLines="6"
-                         TextWrapping="Wrap" TextTrimming="CharacterEllipsis"/>
+            <Border Classes="console" Padding="12" MinHeight="96">
+              <ItemsControl ItemsSource="{Binding RecentEvents}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="sys:String">
+                    <TextBlock Classes="mono" Text="{Binding}" TextWrapping="Wrap"
+                               TextTrimming="CharacterEllipsis" MaxLines="2" Margin="0,0,0,6"/>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
             </Border>
             <Button Classes="ghost compact" Content="查看全部日志 →" Click="GoLogs_Click"
                     HorizontalAlignment="Left"/>

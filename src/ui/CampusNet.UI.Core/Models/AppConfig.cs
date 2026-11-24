@@ -71,6 +71,44 @@ public sealed class Settings
     [JsonPropertyName("log_level")] public string LogLevel { get; set; } = "info";
     [JsonPropertyName("log_max_kb")] public int LogMaxKb { get; set; } = 512;
     [JsonPropertyName("log_keep_files")] public int LogKeepFiles { get; set; } = 3;
+
+    /// <summary>深拷贝（列表也新建一份）。以服务器下发的设置为基线时，绝不能把基线本身改脏。</summary>
+    public Settings Clone() => new()
+    {
+        ProbeIntervalSeconds = ProbeIntervalSeconds,
+        ProbeTimeoutSeconds = ProbeTimeoutSeconds,
+        ProbeUrl = ProbeUrl,
+        ProbeExpect = ProbeExpect,
+        RetryBackoffSeconds = new List<int>(RetryBackoffSeconds),
+        Autostart = Autostart,
+        NotifyOnReconnect = NotifyOnReconnect,
+        LogLevel = LogLevel,
+        LogMaxKb = LogMaxKb,
+        LogKeepFiles = LogKeepFiles,
+    };
+
+    /// <summary>
+    /// 用「界面上真的能编辑的字段」覆盖基线的副本，**没暴露的字段原样透传**。
+    ///
+    /// 为什么不能直接 new Settings()（W1 的坑）：界面不暴露 probe_expect，旧代码保存时
+    /// 无条件把它写成空串 —— 用户为 200 型探测页设过期望标识（如 <c>Success</c>）的，
+    /// 保存一次普通设置就丢了；<c>log_max_kb</c> / <c>log_keep_files</c> 同样会被默认值顶掉。
+    /// </summary>
+    public static Settings WithUiFields(Settings baseline, int probeIntervalSeconds,
+                                        int probeTimeoutSeconds, string probeUrl,
+                                        bool autostart, bool notifyOnReconnect,
+                                        string logLevel, List<int> retryBackoffSeconds)
+    {
+        var s = baseline.Clone();
+        s.ProbeIntervalSeconds = probeIntervalSeconds;
+        s.ProbeTimeoutSeconds = probeTimeoutSeconds;
+        s.ProbeUrl = probeUrl;
+        s.Autostart = autostart;
+        s.NotifyOnReconnect = notifyOnReconnect;
+        s.LogLevel = logLevel;
+        s.RetryBackoffSeconds = new List<int>(retryBackoffSeconds);
+        return s;
+    }
 }
 
 /// <summary>镜像 C++ <c>IspConfig</c>（preset: campus|cmcc|telecom|unicom|custom）。</summary>
