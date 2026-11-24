@@ -101,7 +101,7 @@ CPU 不用考虑：每 30 秒一轮探测（3 个 HTTP GET + 一次 320 字节 A
 
 ```sh
 # 用 OpenWrt SDK（版本要和路由器固件一致）
-./scripts/build_openwrt.sh /path/to/openwrt-sdk
+sh scripts/build_openwrt.sh /path/to/openwrt-sdk
 # 产物：$SDK/bin/packages/<arch>/base/cnkrouter_0.1.0-1_*.ipk
 ```
 
@@ -134,6 +134,17 @@ logread -e cnkrouter -f
 `auth_url` 是浏览器被劫持后跳到的那个地址（示例 `http://10.0.0.1/`，填你实际看到的那个；
 仓库里一律用这个占位地址，真实门户地址不入库）。
 `isp` 决定账号后缀：`campus`（不带）、`cmcc`（@cmcc）、`telecom`（@dx）、`unicom`（@lt）。
+
+**日志去哪了**（2026-11-24 R3）：两个出口，职责不同 ——
+
+| 出口 | 内容 | 位置 |
+|---|---|---|
+| 文件 | **详细历史**（含 DEBUG），按天一个 `YYYY-MM-DD.log`，`chmod 600` | `log_dir`（默认 `/mnt/data/log/cnkrouter`） |
+| 系统日志 | **只写关键状态与告警**（INFO / WARN / ERROR） | `logread -e cnkrouter`（procd 收 stderr；logd 只有 128KB 环形缓冲） |
+
+持久盘不可用时自动回退 `/tmp/cnkrouter`（tmpfs，吃内存不吃 flash，且只写 INFO 及以上），
+并用 WARN 告知（每小时最多一条）。**不会往 overlay/flash 上找地方写**，不会把系统盘写满；
+两个目录都不可用时就只写系统日志，进程照常跑。
 
 ### 4. 验证
 
@@ -345,8 +356,18 @@ cat /mnt/data/log/cnkrouter/traffic/$(date +%F).log
 
 ### cnk-cleanup —— 旧日志清理
 
-cron 每天 4 点跑 `cnk-cleanup 7`，清理 `/mnt/data/log/cnkrouter` **顶层**的 `*.log`（`-maxdepth 1`），
-不递归、不碰 `traffic/` 子目录（那归 cnk-traffic 自己清）。
+建议 cron 每天跑一次（**不带参数**，天数由配置决定）：
+
+    echo '17 4 * * * /usr/bin/cnk-cleanup >/dev/null 2>&1' >> /etc/crontabs/root
+
+目录与保留天数取自**生效配置** `/var/etc/cnkrouter.conf` 的 `log_dir` / `log_keep_days`
+（改了 UCI 就跟着变，不用改脚本）。只删该目录**顶层**的 `YYYY-MM-DD.log` 与
+`blips-YYYY-MM-DD.log`，不递归、不碰 `traffic/`（归 cnk-traffic），也不再去清 `/tmp` 顶层
+——那里是系统和别的程序的地方。回退目录 `/tmp/cnkrouter` 固定留 1 天。
+
+先看会删什么（不真删）：
+
+    cnk-cleanup --dry-run
 
 ### 会话回收取证
 
@@ -415,9 +436,18 @@ option probe_expect ''
 `build/.deploy_conf.py`。2026-11-10 把探测间隔三处统一回 **30 s**（`config_load` 对 <10 也钳回 30）：
 排查期那个 10 s 会让 DNS 抖动一天刷出 88 条失败日志，而黑洞发现并不更快。
 
-**注意真机上的 init.d 不会随二进制自动更新**：换默认探测地址或换二进制时必须单独推一次 init.d
-并 `restart`。`reload` 现在会先重新渲染 `/var/etc/cnkrouter.conf` 再发 SIGHUP（旧版只发信号，
-改完 UCI 执行 reload 其实读的还是上次 start 渲染的旧文件），但它**不会替换二进制**。
+**改配置 vs 换二进制，动作不一样**（2026-11-24 R2）：
+
+| 场景 | 命令 | 发生什么 |
+|---|---|---|
+| 改 UCI（账号 / 探测参数 / 日志级别） | `uci commit cnkrouter`，再 `/etc/init.d/cnkrouter reload` | 重新渲染 `/var/etc/cnkrouter.conf`（写临时文件 → 校验 → 原子替换）→ `SIGHUP` → 进程在**新配置对象**上解析，成功才整体切换；`log_level` / `log_dir` 当场生效；退避与「凭据错误已停止」状态归零 |
+| 换 `cnkrouter` 二进制 | `/etc/init.d/cnkrouter restart` | 停进程 → 重新渲染 → 起新二进制。**`reload` 不会替换二进制**，内存里跑的还是旧的 |
+| 换 init.d 脚本本身 | 单独推 `/etc/init.d/cnkrouter`，再 `restart` | 真机的 init.d 不随 ipk 二进制度新（历史坑：只推二进制，渲染配置里残留旧默认值） |
+
+坏配置不会打断服务：渲染结果校验不过（值含换行、键数不对、写不进去）时 `reload` 直接失败返回，
+**不发 SIGHUP**；守护进程继续用手上的旧配置，退避与停止状态一动不动。R2 之前有三处会骗人 ——
+init.d 直接覆盖正在生效的配置文件、`config_load` 就地改写调用方配置（坏行之前的字段已生效）、
+reload 失败也照样重置退避。
 
 ### 检查网络是否正常连通：7 种手段（真机实测）
 
@@ -488,8 +518,10 @@ DNS 挂掉时依然可用。第 1 层因 DNS 失败时，只有「AC 复核 `res
   **≥2 个维度同时异常、连续 2 轮**才记事件，单维度（ICMP 被限速、单目标超时）不报；
 - 每 30 秒一条 `HEARTBEAT` 基线，无故障也有数据；事件时 dump 前 60 秒逐秒采样 +
   ARP / AC `chkstatus` / conntrack / load / WAN IP 快照；
-- 日志 `/mnt/data/log/cnkrouter/blips-YYYY-MM-DD.log`，`flock` 保证单实例。
+- 日志 `/mnt/data/log/cnkrouter/blips-YYYY-MM-DD.log`（**600**：里面有 WAN IP、
+  网关 ARP 与 AC 回包字段），`flock` 保证单实例。
 
+ipk **只安装文件、不写 cron**：装包与升级都不会自动开启探针（默认不启动）。
 启用（crond 自动重读，不用 `restart cnkrouter`）：
 
     echo '* * * * * /bin/sh /usr/bin/cnk-blip' >> /etc/crontabs/root
@@ -525,10 +557,12 @@ router/
 ├── packaging/openwrt/   ipk 打包（procd 服务 + UCI 配置 + hotplug）
 │   └── files/usr/bin/   随包安装的运维脚本：
 │       ├── cnk-cleanup  旧日志清理（cron 每天 4 点，主日志保留 7 天）
-│       └── cnk-traffic  按设备流量统计（cron 每 5 分钟，日志保留 3 天）
+│       ├── cnk-traffic  按设备流量统计（cron 每 5 分钟，日志保留 3 天）
+│       └── cnk-blip     短中断取证探针（**默认不启动**，手动加 cron，见下文）
 ├── scripts/
 │   ├── build_win.bat    Windows 上构建（开发验证用）
 │   ├── build_openwrt.sh SDK 交叉编译
+│   ├── verify_ipk.sh    ipk 安装清单 / 权限验收（CI 与本地共用）
 │   ├── install_openwrt.sh 推到路由器
 │   └── harden.sh        TTL 统一 / IPv6 / TCP 时间戳（防检测，见第六节）
 ├── CMakeLists.txt       Windows 开发构建

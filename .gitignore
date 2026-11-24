@@ -7,14 +7,27 @@ out/
 build-m1/
 # 本地 agent 工作目录（项目记忆/日志），不入库、不随公开仓库分发
 .workbuddy/
+# 本工具生成的会话数据（不是项目产物）
+.workbuddy-ai/
 # .NET 构建树（obj/bin 由根目录 Directory.Build.props 统一重定向到这里），不入库
 build-ui/
 # dotnet 的默认产物位置（万一某处没走 Directory.Build.props）
 [Bb]in/
 [Oo]bj/
+# 例外（2026-11-24 R1）：OpenWrt 包的运维脚本就装在 files/usr/bin/ 下，必须入库。
+# 上面那条 [Bb]in/ 把整个目录忽略了 —— cnk-blip 因此从未进过仓库，而
+# packaging/openwrt/Makefile 第 63 行一直在装它：干净检出构建 .ipk 会直接失败。
+# 只恢复这一个目录，其他任何 bin/ 仍然忽略。
+!router/packaging/openwrt/files/usr/bin/
+
+# Python 字节码缓存（router/tests 下有 unittest，本地跑完会生成）
+__pycache__/
+*.pyc
 
 # 路由器端 CI 交叉编译的输出目录（不随仓库走）
 router/build-*/
+# build_openwrt.sh 从 ../../src 生成的源码副本（构建输入，不入库）
+router/packaging/openwrt/src/
 
 # 现场问题取证日志：含 Windows SID / 内网 IP / 门户地址，只留本地排查，绝不入库
 logs/

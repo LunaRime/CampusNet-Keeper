@@ -6,9 +6,13 @@
 #   tar xf openwrt-sdk-*.tar.xz
 #
 # 然后：
-#   ./scripts/build_openwrt.sh /path/to/openwrt-sdk-23.05.5-ramips-mt7621...
+#   sh scripts/build_openwrt.sh /path/to/openwrt-sdk-23.05.5-ramips-mt7621...
 #
 # 产物：$SDK/bin/packages/<arch>/base/cnkrouter_*.ipk
+#
+# 宿主依赖（Debian/Ubuntu；SDK 的 prereq 检查会逐个核对，缺一个就整体失败）：
+#   build-essential zstd libncurses-dev git rsync gawk unzip python3 python3-distutils file
+# 2026-11-24 实测：干净容器里上面这些不全，报的就是一行 "Prerequisite check failed"。
 set -e
 
 SDK="$1"
@@ -33,8 +37,15 @@ export CNK_GIT_COMMIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || ec
 echo "构建身份：git $CNK_GIT_COMMIT"
 
 cd "$SDK"
+# 干净 SDK 没有可用的 .config 时，compile 会掉进交互式 menuconfig；无 TTY 直接失败
+# （2026-11-24 实测：Error opening terminal: unknown. → toplevel.mk:224）。
+# defconfig 是幂等的，有 .config 时只补新符号的默认值。
+make defconfig >/dev/null
+# ipk 就在 compile 里产出：Build/Compile → Package/install → ipkg-build 一条链跑完。
+# 别再加 `make package/cnkrouter/install` —— OpenWrt 没有这个目标，实测报
+# “No rule to make target 'package/cnkrouter/install'”，而 ipk 其实已经躺在
+# bin/packages/<arch>/base/ 里了。
 make package/cnkrouter/compile V=s
-make package/cnkrouter/install V=s
 
 echo
 echo "构建完成，产物："

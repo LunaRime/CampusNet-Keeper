@@ -1,0 +1,173 @@
+#!/bin/sh
+# cnk-blip —— 短中断（1~4 秒）自动取证探针，随 cnkrouter ipk 安装到 /usr/bin。
+#
+# 背景：主程序 probe_interval=30 + 在线静默 + traffic 5 分钟采样，抓不到
+# 1~2 秒的转发面瞬时中断；2026-11-12 用临时脚本跑满 23 小时后按实证定型。
+# 纯观测：不干预 cnkrouter 状态机、不写 UCI、不触发登录/换 IP。
+#
+# 启用：在 /etc/crontabs/root 加一行（busybox crond 会自动重读，不用重启服务）
+#     * * * * * /bin/sh /usr/bin/cnk-blip
+# 停用：删掉该 cron 行并 kill 进程；不需要改 UCI、不需要 restart cnkrouter。
+# flock 保证单实例，cron 只作保底拉起。
+#
+# 日志：/mnt/data/log/cnkrouter/blips-YYYY-MM-DD.log（f2fs 持久化分区）
+# 依赖：busybox 的 ping/flock/wget/nslookup/date/awk/sed/grep/cut/tr/head/tail，
+#       加 ip（iproute2 或 busybox ip，OpenWrt 由 netifd 保证）；
+#       /proc/net/netfilter/nf_conntrack_count 缺失时 ct 只是空值，不影响运行。
+#       以上 applet 与选项已由 2026-11-12 真机 23 小时连续运行验证。
+# 维度：每秒 ICMP RTT；每 5 秒 DNS；每 10 秒 HTTP（项目主探测目标 generate_204）；
+#       ICMP 失败时补 ping 网关做二层/WAN 分层
+# 事件：>=2 个维度同时异常、连续 2 轮才开事件；单维度不报（避免 ICMP 限速误报）
+# 心跳：每 30 秒一条基线，即使无事件也持续产出
+# 判读：gw=0=二层/整段；gw=1+pub 不通=WAN/AC 侧；dns_max 抬升=上游 AC DNS；
+#       ct 逼近 65535 或 load 飙升=路由器自身瓶颈。
+#
+# ⚠ 不在脚本里硬编码校园网真实网关/门户地址（审计禁止入库）：
+#   网关从默认路由取，门户 host 从渲染后的 /var/etc/cnkrouter.conf 读。
+
+# 落盘权限：日志里有 WAN IP、网关 ARP（带 MAC）与 AC 回包字段，主程序日志已是 600。
+# umask 管新建文件，老部署遗留的 644 文件由下面显式 chmod 修正（升级后不重装也生效）。
+umask 077
+
+LOGDIR=/mnt/data/log/cnkrouter
+PUB=223.5.5.5
+DNS_NAME=connectivitycheck.platform.hicloud.com
+HTTP_URL=http://connectivitycheck.platform.hicloud.com/generate_204
+LOCK=/tmp/cnk-blip.lock
+RING=/tmp/cnk-blip.ring
+MAXFAIL=2
+MIN_DIMS=2
+SLOW_MS=200
+HEARTBEAT_SEC=30
+
+exec 9>"$LOCK" 2>/dev/null || exit 1
+flock -n 9 || exit 0
+
+GW=$(ip -4 route show default 2>/dev/null | awk '/default/{print $3; exit}')
+PORTAL=$(sed -n 's|^auth_url=http[s]*://\([^/:]*\).*|\1|p' /var/etc/cnkrouter.conf 2>/dev/null | head -1)
+[ -d "$LOGDIR" ] || LOGDIR=/tmp
+LOG="$LOGDIR/blips-$(date +%F).log"
+: >> "$LOG" 2>/dev/null || true
+chmod 600 "$LOG" 2>/dev/null || true
+: > "$RING"
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
+up_ms() { awk '{printf "%.0f", $1*1000}' /proc/uptime; }
+
+snapshot() {
+  arp=$(ip -4 neigh show dev wan 2>/dev/null | head -2 | tr '\n' ';' | cut -c1-90)
+  if [ -n "$PORTAL" ]; then
+    ac=$(wget -qO- -T 2 "http://$PORTAL/drcom/chkstatus?callback=cnkwd&jsVersion=4.X&lang=zh" 2>/dev/null | grep -o 'result[^,}]*' | head -1)
+  else
+    ac=na
+  fi
+  [ -z "$ac" ] && ac=timeout
+  ct=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)
+  load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null | tr ' ' '/')
+  wanip=$(ip -4 addr show dev wan 2>/dev/null | awk '/inet /{print $2; exit}')
+  kern=$(dmesg 2>/dev/null | tail -8 | grep -icE 'drop|full|reset|oom')
+  printf 'arp=%s ac=%s ct=%s load=%s wanip=%s kern_warn=%s' \
+    "$arp" "$ac" "$ct" "$load" "$wanip" "$kern"
+}
+
+reset_stats() {
+  n=0; pfail=0; rsum=0; rmax=0; slow=0
+  dfail=0; dmax=0; hfail=0; hmax=0; co_bad=0; gw_fail=0
+}
+
+reset_stats
+fail_run=0; good_run=0; in_event=0; ev_start=0; ev_last_bad=0
+d=na; dms=0; h=na; hms=0; g=na
+
+log "PROBE_START cnk-blip gw=${GW:-na} portal=${PORTAL:-na} pub=$PUB dns=$DNS_NAME http=$HTTP_URL heartbeat=${HEARTBEAT_SEC}s min_dims=$MIN_DIMS slow=${SLOW_MS}ms"
+
+while :; do
+  t0=$(up_ms)
+
+  # --- 每秒：公网 IP 的 ICMP RTT（整数毫秒，-1 = 失败）---
+  out=$(ping -4 -c 1 -W 1 "$PUB" 2>/dev/null)
+  rtt=$(printf '%s\n' "$out" | sed -n 's/.*time=\([0-9.]*\).*/\1/p' | head -1 | awk '{printf "%.0f", $1}')
+  [ -z "$rtt" ] && rtt=-1
+
+  # 只有公网不通时才补 ping 网关做分层：网关也断=二层/整段，网关通=WAN/AC 侧
+  if [ "$rtt" -lt 0 ]; then
+    if [ -z "$GW" ]; then g=na
+    elif ping -4 -c 1 -W 1 -q "$GW" >/dev/null 2>&1; then g=1
+    else g=0; gw_fail=$((gw_fail + 1)); fi
+  else
+    g=na
+  fi
+
+  n=$((n + 1))
+  if [ "$rtt" -lt 0 ]; then pfail=$((pfail + 1)); else
+    rsum=$((rsum + rtt))
+    [ "$rtt" -gt "$rmax" ] && rmax=$rtt
+    [ "$rtt" -gt "$SLOW_MS" ] && slow=$((slow + 1))
+  fi
+
+  # --- 每 5 秒：DNS 成败与耗时 ---
+  if [ $((n % 5)) -eq 0 ]; then
+    s1=$(up_ms)
+    if nslookup "$DNS_NAME" >/dev/null 2>&1; then d=ok; else d=fail; dfail=$((dfail + 1)); fi
+    s2=$(up_ms); dms=$((s2 - s1))
+    [ "$dms" -gt "$dmax" ] && dmax=$dms
+  fi
+
+  # --- 每 10 秒：HTTP 业务流（与主程序同口径，不用第三方目标）---
+  if [ $((n % 10)) -eq 0 ]; then
+    s1=$(up_ms)
+    if wget -q -O /dev/null -T 2 "$HTTP_URL" >/dev/null 2>&1; then h=ok; else h=fail; hfail=$((hfail + 1)); fi
+    s2=$(up_ms); hms=$((s2 - s1))
+    [ "$hms" -gt "$hmax" ] && hmax=$hms
+  fi
+
+  printf '%s rtt=%s gw=%s dns=%s/%s http=%s/%s\n' "$(date +%T)" "$rtt" "$g" "$d" "$dms" "$h" "$hms" >> "$RING"
+
+  # --- 多维度共现（d/h 为最近一次采样结果，保留至下次采样）---
+  pf=0; dfv=0; hfv=0; sfv=0; gfv=0
+  [ "$rtt" -lt 0 ] && pf=1
+  [ "$g" = 0 ] && gfv=1
+  [ "$d" = fail ] && dfv=1
+  [ "$h" = fail ] && hfv=1
+  [ "$rtt" -gt "$SLOW_MS" ] && sfv=1
+  bad_count=$((pf + gfv + dfv + hfv + sfv))
+
+  if [ "$bad_count" -ge "$MIN_DIMS" ]; then
+    fail_run=$((fail_run + 1)); good_run=0
+    co_bad=$((co_bad + 1))
+  else
+    if [ "$bad_count" -eq 0 ]; then good_run=$((good_run + 1)); else good_run=0; fi
+    fail_run=0
+  fi
+
+  if [ "$fail_run" -ge "$MAXFAIL" ] && [ "$in_event" -eq 0 ]; then
+    in_event=1; ev_start=$(date +%s); ev_last_bad=$ev_start
+    log "BEGIN dims=$bad_count(icmp=$pf gw=$gfv dns=$dfv http=$hfv slow=$sfv) rtt=$rtt gw=$g | $(snapshot)"
+    tail -60 "$RING" | sed 's/^/  RING /' >> "$LOG"
+  elif [ "$in_event" -eq 1 ] && [ "$bad_count" -ge "$MIN_DIMS" ]; then
+    ev_last_bad=$(date +%s)
+  fi
+  if [ "$in_event" -eq 1 ] && [ "$good_run" -ge "$MAXFAIL" ]; then
+    dur=$((ev_last_bad - ev_start))
+    gap=$(( $(date +%s) - ev_last_bad ))
+    log "END dur=${dur}s close_gap=${gap}s | $(snapshot)"
+    in_event=0; fail_run=0
+  fi
+
+  # --- 每 30 秒基线心跳 ---
+  if [ $((n % HEARTBEAT_SEC)) -eq 0 ]; then
+    avg=0
+    [ "$n" -gt 0 ] && avg=$((rsum / n))
+    ct=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null)
+    load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null | tr ' ' '/')
+    log "HEARTBEAT n=$n ping_fail=$pfail gw_fail=$gw_fail rtt_avg=${avg}ms rtt_max=${rmax}ms slow=$slow dns_fail=$dfail dns_max=${dmax}ms http_fail=$hfail http_max=${hmax}ms co_bad=$co_bad ct=$ct load=$load events_open=$in_event"
+    reset_stats
+    : > "$RING"
+  fi
+
+  # ping 失败轮已耗时约 1 秒，不再叠加 sleep；成功轮补满 1 秒
+  if [ "$rtt" -ge 0 ]; then
+    el=$(( $(up_ms) - t0 ))
+    [ "$el" -lt 900 ] && sleep 1
+  fi
+done

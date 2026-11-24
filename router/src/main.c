@@ -40,10 +40,63 @@ static int path_is_safe(const char *p) {
     return p[0] && !strpbrk(p, "'\"`;$|&<>()\n");
 }
 
-/* 跨天就切文件；目录不存在就建一次。
- * 每次写日志都会调它，但只是 strftime + strcmp，开销可忽略。 */
+/* ---------------- 日志出口（R3：唯一的决策点） ----------------
+ *
+ * 三个出口职责不同，别再在别处判断：
+ *   ① 文件（log_dir 可写）：**详细历史**，按天分文件，完整保留 level <= g_level；
+ *   ② 系统日志（stderr → procd → logd）：**只写关键状态与告警**（<= LOG_INFO）。
+ *      logd 只有 128KB 环形缓冲，把 DEBUG 灌进去等于把历史冲掉；
+ *   ③ 回退目录（持久盘不可用）：/tmp/cnkrouter（tmpfs，吃内存不吃 flash），
+ *      自动降为 INFO，并限频告警。**绝不往 overlay(/) 上找地方写**。
+ *
+ * 旧实现是二选一（有文件就不打 stderr、没文件才打），于是：
+ *   · 正常运行时 `logread` 看不到任何状态，只能翻数据盘；
+ *   · 数据盘挂了就再也看不到"为什么"；
+ *   · 打开失败后**每写一行**都重新 fopen + system("mkdir -p")（g_logf 为空不会短路）。
+ */
+#ifndef _WIN32
+#define CNK_FALLBACK_LOG_DIR "/tmp/cnkrouter"
+#else
+#define CNK_FALLBACK_LOG_DIR ""   /* Windows 端只有 CLI：stderr 就是全部 */
+#endif
+
+static time_t g_log_warned_at = 0;   /* 「日志不可用」告警的限频时间戳（秒） */
+static int    g_log_fallback = 0;    /* 当前写的是回退目录（tmpfs），不是持久盘 */
+
+static void log_stamp(char *buf, size_t cap) {
+    time_t t = time(NULL);
+    struct tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    strftime(buf, cap, "%Y-%m-%d %H:%M:%S", &tmv);
+}
+
+/* 打开 dir/YYYY-MM-DD.log；目录不存在时建一次。失败返回 NULL（不打印）。 */
+static FILE *log_open_in(const char *dir, const char *date) {
+    char path[CNK_PATH_MAX + 32];
+    FILE *f;
+
+    snprintf(path, sizeof path, "%s/%s.log", dir, date);
+    f = fopen(path, "a");
+    if (!f && path_is_safe(dir)) {
+        char cmd[CNK_PATH_MAX + 32];
+        snprintf(cmd, sizeof cmd, "mkdir -p '%s' 2>/dev/null", dir);
+        if (system(cmd) == 0) f = fopen(path, "a");
+    }
+#ifndef _WIN32
+    /* 日志里有 WAN IP / AC 字段 / 门户地址，不能是默认的 644。
+     * 只改自己刚打开的这一份，不动进程 umask（避免影响其他文件操作）。 */
+    if (f) chmod(path, 0600);
+#endif
+    return f;
+}
+
+/* 跨天就切文件。每次写日志都调它，但命中"今天已处理"后只是 strftime + strcmp。 */
 static void log_open_today(void) {
-    char date[16], path[CNK_PATH_MAX + 32];
+    char date[16], ts[32];
     time_t t = time(NULL);
     struct tm tmv;
 
@@ -54,30 +107,42 @@ static void log_open_today(void) {
     localtime_r(&t, &tmv);
 #endif
     strftime(date, sizeof date, "%Y-%m-%d", &tmv);
-    if (g_logf && strcmp(date, g_log_date) == 0) return;
+
+    /* 今天已经处理过（成功或失败都算）：失败后不能每行重试。
+     * g_log_date 在下面先行写入，正是为了给失败路径也留下"今天试过了"。 */
+    if (g_log_date[0] && strcmp(date, g_log_date) == 0) return;
 
     if (g_logf) { fclose(g_logf); g_logf = NULL; }
     snprintf(g_log_date, sizeof g_log_date, "%s", date);
-    snprintf(path, sizeof path, "%s/%s.log", g_log_dir, date);
+    g_log_fallback = 0;
 
-    g_logf = fopen(path, "a");
-    if (!g_logf && path_is_safe(g_log_dir)) {
-        char cmd[CNK_PATH_MAX + 32];
-        snprintf(cmd, sizeof cmd, "mkdir -p '%s' 2>/dev/null", g_log_dir);
-        if (system(cmd) == 0) g_logf = fopen(path, "a");
+    g_logf = log_open_in(g_log_dir, date);
+    if (g_logf) return;
+
+    /* 持久盘不可用 → 回退 tmpfs。与配置同一个路径时不重复试。 */
+    if (CNK_FALLBACK_LOG_DIR[0] && strcmp(g_log_dir, CNK_FALLBACK_LOG_DIR) != 0) {
+        g_logf = log_open_in(CNK_FALLBACK_LOG_DIR, date);
+        if (g_logf) g_log_fallback = 1;
     }
-#ifndef _WIN32
-    /* 日志里有 WAN IP / AC 字段 / 门户地址，不能是默认的 644。
-     * 只改自己刚打开的这一份，不动进程 umask（避免影响其他文件操作）。 */
-    if (g_logf) chmod(path, 0600);
-#endif
-    if (!g_logf) fprintf(stderr, "[warn] 无法打开日志 %s\n", path);
+
+    /* 拔盘/挂载失败时会反复走到这里：一小时最多告警一次 */
+    if (t - g_log_warned_at < 3600) return;
+    g_log_warned_at = t;
+    log_stamp(ts, sizeof ts);
+    if (g_logf)
+        fprintf(stderr, "%s [WARN] 日志目录 %s 不可用，已回退 %s（tmpfs，重启即失）\n",
+                ts, g_log_dir, CNK_FALLBACK_LOG_DIR);
+    else
+        fprintf(stderr, "%s [WARN] 日志目录 %s 与回退目录都不可用，只写系统日志\n",
+                ts, g_log_dir);
 }
 
 void log_init(int level, const char *dir) {
     g_level = level;
     if (g_logf) { fclose(g_logf); g_logf = NULL; }
     g_log_date[0] = '\0';
+    g_log_fallback = 0;
+    g_log_warned_at = 0;          /* 换配置后允许立刻告警一次 */
     if (dir && dir[0]) snprintf(g_log_dir, sizeof g_log_dir, "%s", dir);
     else g_log_dir[0] = '\0';
     log_open_today();
@@ -87,19 +152,12 @@ void log_write(int level, const char *fmt, ...) {
     char ts[32];
     char line[768];
     int n;
-    time_t t = time(NULL);
-    struct tm tmv;
-    FILE *out;
     va_list ap;
 
     if (level > g_level) return;
     log_open_today();               /* 跨天自动换文件 */
-#ifdef _WIN32
-    localtime_s(&tmv, &t);
-#else
-    localtime_r(&t, &tmv);
-#endif
-    strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tmv);
+
+    log_stamp(ts, sizeof ts);
 
     n = snprintf(line, sizeof line, "%s [%s] ", ts,
                  level == LOG_ERR ? "ERROR" : level == LOG_WARN ? "WARN" :
@@ -116,10 +174,21 @@ void log_write(int level, const char *fmt, ...) {
     }
     va_end(ap);
 
-    out = g_logf ? g_logf : stderr;
-    fputs(line, out);
-    fputc('\n', out);
-    fflush(out);
+    /* ① 文件：详细历史。回退目录在 tmpfs（内存）上，只写 INFO 及以上 ——
+     *    持久盘真挂了的时候，别让 DEBUG 把 512MB 的内存吃掉。 */
+    if (g_logf && (!g_log_fallback || level <= LOG_INFO)) {
+        fputs(line, g_logf);
+        fputc('\n', g_logf);
+        fflush(g_logf);
+    }
+
+    /* ② 系统日志：只留关键状态与告警（DEBUG 不进 logd 的 128KB 环形缓冲）。
+     *    没有文件可写时（CLI / 两个目录都不可用）stderr 是唯一出口，按 g_level 全量输出。 */
+    if (!g_logf || level <= LOG_INFO) {
+        fputs(line, stderr);
+        fputc('\n', stderr);
+        fflush(stderr);
+    }
 }
 
 /* ---------------- 配置 ---------------- */
@@ -194,7 +263,9 @@ static int iface_name_ok(const char *s) {
     return 1;
 }
 
-int config_load(const char *path, Config *c, char *err, size_t cap) {
+/* 解析进 *c。**不做事务保护**：失败时 *c 可能已被写了一半，
+ * 只允许 config_load 内部的临时对象调用（见下方包装）。 */
+static int config_parse(const char *path, Config *c, char *err, size_t cap) {
     FILE *f;
     char line[512];
     int lineno = 0;
@@ -258,6 +329,18 @@ int config_load(const char *path, Config *c, char *err, size_t cap) {
     c->probe_interval = clamp_interval(c->probe_interval);
     if (c->link_after < 1) c->link_after = 2;
     if (c->link_cooldown < 60) c->link_cooldown = 900;
+    return 0;
+}
+
+/* 事务化装载：先在副本上解析，全部成功才整体替换。
+ *
+ * 旧实现直接解析进调用方的 Config：坏行出现在文件中段时，前面几行**已经生效**了，
+ * 日志却写着「继续用旧配置」—— 实际配置是半新半旧，而且调用方还把退避状态重置了
+ * （2026-11-24 R2）。现在失败路径保证 *c 一个字节都不变。 */
+int config_load(const char *path, Config *c, char *err, size_t cap) {
+    Config tmp = *c;
+    if (config_parse(path, &tmp, err, cap) != 0) return -1;
+    *c = tmp;
     return 0;
 }
 
@@ -769,6 +852,30 @@ static int handle_link_down(const Config *c) {
 
 #endif /* _WIN32 */
 
+/* 应用一次 SIGHUP 重载。返回 1 = 已切换，0 = 保持原样。
+ *
+ * 三件事必须同时成立，否则就是「日志说重载成功了，实际没生效」：
+ *   ① 配置整体替换（config_load 已事务化，失败不碰 *c）；
+ *   ② 日志设置真的应用 —— 只改 Config 里的 log_level/log_dir 没用，
+ *      写日志读的是 g_level / g_log_dir（R2 前改了不生效，还继续写旧目录）；
+ *   ③ 退避与停止态归零，且**只在成功时** —— 坏配置若把「凭据错误已停止」
+ *      顺手解除，等于拿坏配置反复重试（R2 前每次 reload 都无条件重置）。 */
+static int apply_reload(Config *c, int *bidx, int *total, int *stopped) {
+    char err[128];
+
+    if (config_load(g_config_path, c, err, sizeof err) != 0) {
+        log_write(LOG_ERR, "配置重载失败：%s（继续用旧配置，退避与停止状态不动）", err);
+        return 0;
+    }
+    log_init(c->log_level, c->log_dir);
+    log_write(LOG_INFO, "配置已重新加载（log_level=%d log_dir=%s）",
+              c->log_level, c->log_dir[0] ? c->log_dir : "(不落盘)");
+    *bidx = 0;
+    *total = 0;
+    *stopped = 0;
+    return 1;
+}
+
 static int run_daemon(Config *c) {
     static const int backoff[] = {15, 30, 60, 120, 300};
     int bidx = 0, total = 0, ever_ok = 0, stopped = 0, offline_streak = 0;
@@ -782,16 +889,9 @@ static int run_daemon(Config *c) {
         ProbeResult pr;
 
         if (g_reload) {
-            char err[128];
             g_reload = 0;
-            if (config_load(g_config_path, c, err, sizeof err) == 0) {
-                log_write(LOG_INFO, "配置已重新加载");
-            } else {
-                log_write(LOG_ERR, "配置重载失败：%s（继续用旧配置）", err);
-            }
-            stopped = 0;
-            total = 0;
-            bidx = 0;
+            /* 成功才重置退避；失败时 apply_reload 内部保持原样 */
+            apply_reload(c, &bidx, &total, &stopped);
         }
 
         pr = probe_once(c);
@@ -1124,6 +1224,77 @@ static int selftest(void) {
         ok &= dns_cache_get("a.example", ip, sizeof ip) == 0;
         if (!ok) { log_write(LOG_ERR, "自检失败：dns_cache 缓存/过期"); ++fails; }
         else log_write(LOG_INFO, "自检通过：dns_cache（命中/覆盖/过期/清空）");
+    }
+
+    /* 配置重载：合法生效 / 坏配置一个字节都不许改 / 失败不重置退避 */
+    {
+        const char *path = "cnk-selftest-reload.conf";
+        char saved_path[256];
+        Config base, cur;
+        char err[160];
+        FILE *f;
+        int ok = 1, bidx, total, stopped;
+
+        config_defaults(&base);
+        snprintf(base.username, sizeof base.username, "before");
+        snprintf(base.auth_url, sizeof base.auth_url, "http://10.0.0.1/");
+        base.probe_interval = 30;
+        base.log_level = LOG_INFO;
+        base.log_dir[0] = '\0';              /* 自检不落盘 */
+
+        /* ① 合法：只改两个键，文件里没写的键必须保留旧值 */
+        cur = base;
+        f = fopen(path, "w");
+        if (!f) { log_write(LOG_ERR, "自检失败：无法创建临时配置"); ++fails; }
+        else {
+            fprintf(f, "username=after\nprobe_interval=45\n");
+            fclose(f);
+            if (config_load(path, &cur, err, sizeof err) != 0) ok = 0;
+            if (strcmp(cur.username, "after") != 0) ok = 0;
+            if (cur.probe_interval != 45) ok = 0;
+            if (strcmp(cur.auth_url, "http://10.0.0.1/") != 0) ok = 0;   /* 未写 → 保留 */
+        }
+
+        /* ② 坏配置：前两行合法、第三行缺 '='。解析必须失败，且已写进去的值全部回滚 */
+        {
+            Config before_bad = cur;
+            f = fopen(path, "w");
+            if (!f) { log_write(LOG_ERR, "自检失败：无法写临时配置"); ++fails; }
+            else {
+                fprintf(f, "username=leaked\nprobe_interval=99\nno-equals-here\n");
+                fclose(f);
+                if (config_load(path, &cur, err, sizeof err) == 0) ok = 0;   /* 必须失败 */
+                if (memcmp(&cur, &before_bad, sizeof cur) != 0) ok = 0;      /* 一字节不许变 */
+            }
+        }
+
+        /* ③ apply_reload：失败不动退避/停止态，成功才归零并把 log_level 应用下去 */
+        snprintf(saved_path, sizeof saved_path, "%s", g_config_path);
+        snprintf(g_config_path, sizeof g_config_path, "%s", path);
+
+        log_write(LOG_INFO, "自检：下一行 ERROR 是故意用坏配置触发的，属正常");
+        bidx = 3; total = 7; stopped = 1;
+        if (apply_reload(&cur, &bidx, &total, &stopped) != 0) ok = 0;        /* 坏配置还在盘上 */
+        if (bidx != 3 || total != 7 || stopped != 1) ok = 0;
+
+        f = fopen(path, "w");
+        if (!f) { log_write(LOG_ERR, "自检失败：无法写临时配置"); ++fails; }
+        else {
+            fprintf(f, "username=reloaded\nprobe_interval=60\nlog_level=1\n");
+            fclose(f);
+            if (apply_reload(&cur, &bidx, &total, &stopped) != 1) ok = 0;
+            if (bidx != 0 || total != 0 || stopped != 0) ok = 0;
+            if (strcmp(cur.username, "reloaded") != 0) ok = 0;
+            if (cur.probe_interval != 60) ok = 0;
+            if (g_level != LOG_WARN) ok = 0;     /* log_level 真的落到全局了 */
+        }
+        snprintf(g_config_path, sizeof g_config_path, "%s", saved_path);
+        log_init(LOG_INFO, NULL);                /* 后续自检日志仍要可见 */
+
+        remove(path);
+        if (!ok) { log_write(LOG_ERR, "自检失败：配置重载（事务/日志应用/退避）"); ++fails; }
+        else log_write(LOG_INFO,
+                       "自检通过：配置重载（事务替换 / log_level 生效 / 失败不重置退避）");
     }
 
     /* 构建身份：CI 用 strings 校验它确实烧进了交叉产物 */

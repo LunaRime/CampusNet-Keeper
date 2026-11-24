@@ -11,6 +11,7 @@
 *.c      text eol=lf
 *.h      text eol=lf
 *.py     text eol=lf
+*.log    text eol=lf
 Makefile text eol=lf
 
 # 路由器端的 OpenWrt 打包文件：init.d / hotplug / UCI 配置都没有扩展名

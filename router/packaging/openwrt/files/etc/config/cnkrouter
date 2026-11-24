@@ -47,8 +47,12 @@ config main 'main'
 
 	# 日志按天分文件，落在数据盘：/mnt/data/log/cnkrouter/YYYY-MM-DD.log
 	# 为什么：只写 logd 时它只有 128 KB 环形缓冲，一出问题历史就滚没了；
-	# 而 54 GB 的数据盘没必要为省空间牺牲可读性。旧文件由 cnk-cleanup 清理。
+	# 而 54 GB 的数据盘没必要为省空间牺牲可读性。
+	# 关键状态与告警**同时**进 logd（`logread -e cnkrouter` 就能看），DEBUG 只落盘；
+	# 数据盘不可用时自动回退 /tmp/cnkrouter（tmpfs），不会把 flash 写满。
 	# 留空则只写 logd。
+	#
+	# 下面两项同时决定 cnk-cleanup 清哪里、留几天（它读的是渲染后的 /var/etc/cnkrouter.conf）。
 	option log_dir '/mnt/data/log/cnkrouter'
 	option log_keep_days '7'
 

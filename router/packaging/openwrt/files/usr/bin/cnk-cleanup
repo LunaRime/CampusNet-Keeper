@@ -1,59 +1,92 @@
 #!/bin/sh
-# cnk-cleanup —— 定期清理长期运行攒下来的临时文件与旧日志
+# cnk-cleanup —— 清理 **CNK 自己的**旧日志（别的一概不碰）
 #
-# 为什么需要：路由器可能几个月不关机。两处会持续增长：
-#   ① /tmp（tmpfs，直接吃内存）—— LuCI 索引缓存、各种残留
-#   ② cnkrouter 的按天日志（数据盘，每天一个 YYYY-MM-DD.log）
-# cnkrouter 自己只负责按天分文件，不做删除——删除策略放这里，好调、好审。
+# 为什么重写（2026-11-24 R3）：
+#   旧版①：目录与天数都是硬编码（/mnt/data/log/cnkrouter + 7 天），改了 UCI 的
+#          log_dir / log_keep_days 也不生效 —— 清理与实际在写的目录可能根本不是同一个；
+#   旧版②：还会清 /tmp 顶层 7 天前的普通文件。那是系统和别的程序的地方，
+#          "看着没人用"不等于能删（丢了 pid/socket 之类没有任何提示）。
 #
-# 保守原则（宁可少删）：
-#   · /tmp 只看**顶层**普通文件，不递归（不碰目录里的 socket/pid）
-#   · 只删 N 天没被修改过的（默认 7 天）
-#   · 明确跳过系统运行时要用的那几个
+# 现在：
+#   · 目录与保留天数取自 **生效配置** /var/etc/cnkrouter.conf（init.d 渲染的那份）。
+#     不读 /etc/config 原文：UCI 改了但没 reload 时，该按进程真正在用的那份来清。
+#   · 只认两种命名：<log_dir>/YYYY-MM-DD.log、<log_dir>/blips-YYYY-MM-DD.log；
+#     回退目录 /tmp/cnkrouter（持久盘不可用时 cnkrouter 自己会往那儿写）只留 1 天。
+#   · 子目录 traffic/ 仍由 cnk-traffic 自己清理（本脚本不递归）。
 #
-# 职责边界：本脚本只清理 $CNK_LOG_DIR **顶层**的 *.log（-maxdepth 1）。
-#   其子目录 traffic/ 里的按设备流量日志由 cnk-traffic 自己清理（默认 3 天），
-#   本脚本不递归、也不会碰到它。
+# 用法：
+#   cnk-cleanup              实删
+#   cnk-cleanup --dry-run    只列出将删除的文件，不删（验收/排查用）
 #
-# 用法：cnk-cleanup [天数]      默认 7
+# 可用环境变量覆盖（测试与特殊部署）：CNK_CONF / CNK_LOG_DIR / CNK_KEEP_DAYS /
+#   CNK_FALLBACK_DIR / DRY_RUN=1
 
-DAYS=${1:-7}
-case "$DAYS" in
-    ''|*[!0-9]*) DAYS=7 ;;
+DRY=0
+case "${1:-}" in
+    --dry-run|-n) DRY=1 ;;
+esac
+[ "${DRY_RUN:-0}" = "1" ] && DRY=1
+
+CONF=${CNK_CONF:-/var/etc/cnkrouter.conf}
+FALLBACK_DIR=${CNK_FALLBACK_DIR:-/tmp/cnkrouter}
+
+# 生效目录与天数：配置优先，环境变量可覆盖（测试用），最后才回退默认值
+LOG_DIR=${CNK_LOG_DIR:-}
+KEEP=${CNK_KEEP_DAYS:-}
+if [ -z "$LOG_DIR" ] && [ -r "$CONF" ]; then
+    LOG_DIR=$(sed -n 's/^log_dir=//p' "$CONF" | head -1)
+fi
+if [ -z "$KEEP" ] && [ -r "$CONF" ]; then
+    KEEP=$(sed -n 's/^log_keep_days=//p' "$CONF" | head -1)
+fi
+LOG_DIR=${LOG_DIR:-/mnt/data/log/cnkrouter}
+case "$KEEP" in
+    ''|*[!0-9]*) KEEP=7 ;;
 esac
 
-CNK_LOG_DIR=${CNK_LOG_DIR:-/mnt/data/log/cnkrouter}
+# 回退目录在 tmpfs 上是内存，不是持久盘：只留 1 天
+FALLBACK_KEEP=1
 
-before=$(du -sk /tmp 2>/dev/null | awk '{print $1}')
+# ⚠ busybox 的 find **没有 -delete**（只有 -print/-exec）。写成 -delete 会报
+#   "unrecognized: -delete" 并以非零退出，若再被 2>/dev/null 吞掉就是"看起来在跑、
+#   其实一条都没删"（2026-11-08 实测日志 10 天没被清过）。一律用 -exec / rm。
+#
+# 只匹配 CNK 自己的命名：别的程序写进同一目录的 xxx.log 不动。
+list_old() {
+    find "$1" -maxdepth 1 -type f \
+        \( -name '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].log' \
+           -o -name 'blips-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].log' \) \
+        -mtime +"$2" 2>/dev/null
+}
 
-# ⚠ 这里不能用 `find ... -delete`：busybox 的 find 没有 -delete 动作
-#   （只有 -print/-print0/-exec）。写成 -delete 会直接报 "unrecognized: -delete"
-#   并以非零退出，但被 2>/dev/null 吞掉 —— 2026-11-08 实测日志 10 天从没被清过。
-#   改用 busybox 兼容的 `-exec rm -f {} +`。
-find /tmp -maxdepth 1 -type f -mtime +"$DAYS" \
-    ! -name 'dhcp.leases*' \
-    ! -name 'resolv.conf*' \
-    ! -name 'TZ' \
-    ! -name 'board.json' \
-    ! -name 'crond.pid' \
-    -exec rm -f {} + 2>/dev/null
+clean_dir() {
+    dir=$1
+    days=$2
+    [ -d "$dir" ] || return 0
 
-after=$(du -sk /tmp 2>/dev/null | awk '{print $1}')
-[ -z "$before" ] && before=0
-[ -z "$after" ] && after=0
+    n=$(list_old "$dir" "$days" | wc -l)
+    if [ "$DRY" = "1" ]; then
+        list_old "$dir" "$days"
+        echo "[dry-run] $dir：将删除 $n 个超过 ${days} 天的日志"
+        return 0
+    fi
 
-log_freed=0
-if [ -d "$CNK_LOG_DIR" ]; then
-    log_before=$(du -sk "$CNK_LOG_DIR" 2>/dev/null | awk '{print $1}')
-    find "$CNK_LOG_DIR" -maxdepth 1 -type f -name '*.log' -mtime +"$DAYS" \
-        -exec rm -f {} + 2>/dev/null
-    log_after=$(du -sk "$CNK_LOG_DIR" 2>/dev/null | awk '{print $1}')
-    [ -z "$log_before" ] && log_before=0
-    [ -z "$log_after" ] && log_after=0
-    log_freed=$((log_before - log_after))
+    # 逐条删而不是 -exec rm -f {} +：busybox 的 + 形式在参数过多时才分批，
+    # 这里文件数是个位数，逐条更直观、也方便把失败单独暴露出来。
+    list_old "$dir" "$days" | while IFS= read -r f; do
+        rm -f "$f" 2>/dev/null || echo "[warn] 删除失败：$f" >&2
+    done
+    echo "$dir：清理 $n 个超过 ${days} 天的日志"
+}
+
+clean_dir "$LOG_DIR" "$KEEP"
+if [ "$FALLBACK_DIR" != "$LOG_DIR" ]; then
+    clean_dir "$FALLBACK_DIR" "$FALLBACK_KEEP"
 fi
 
-if [ "$before" -gt "$after" ] || [ "$log_freed" -gt 0 ]; then
-    logger -t cnk-cleanup "/tmp ${before}KB→${after}KB，日志目录释放 ${log_freed}KB（清理 ${DAYS} 天前的文件）"
+if [ "$DRY" = "1" ]; then
+    logger -t cnk-cleanup "dry-run：$LOG_DIR（>${KEEP}天）、$FALLBACK_DIR（>${FALLBACK_KEEP}天）"
+else
+    logger -t cnk-cleanup "清理完成：$LOG_DIR（>${KEEP}天）、$FALLBACK_DIR（>${FALLBACK_KEEP}天）"
 fi
 exit 0

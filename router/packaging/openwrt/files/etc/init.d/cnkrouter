@@ -9,13 +9,21 @@ START=95
 STOP=10
 USE_PROCD=1
 
-CONF_DIR=/var/etc
+# 测试可注入（CNK_CONF_DIR），生产固定 /var/etc
+CONF_DIR=${CNK_CONF_DIR:-/var/etc}
 CONF_FILE=$CONF_DIR/cnkrouter.conf
 
+# 渲染配置到 $CONF_FILE。
+#
+# 原子性（2026-11-24 R2）：先写 $CONF_FILE.$$，校验通过才 mv 覆盖。
+# 旧实现 `{ ... } > $CONF_FILE` 会**先截断正在生效的配置**，任何中途失败
+# （UCI 值异常、tmpfs 写满、被信号打断）都会留下半截文件，
+# 守护进程下一次 SIGHUP 读到的就是坏配置 —— 与「继续用旧配置」的承诺相反。
 render_config() {
 	local enabled username password auth_url isp probe_url probe_expect
 	local probe_timeout probe_interval bind_ip log_level
 	local wan_iface link_recovery link_after link_cooldown
+	local tmp n
 
 	config_load cnkrouter
 	config_get_bool enabled main enabled 1
@@ -46,9 +54,20 @@ render_config() {
 		return 1
 	fi
 
-	mkdir -p $CONF_DIR
-	umask 077
-	{
+	# 值里混入换行会把一份配置写成多行 —— 等于允许注入任意键，直接拒绝渲染
+	case "$username$password$auth_url$isp$probe_url$probe_expect$bind_ip$log_dir$wan_iface" in
+		*"
+"*)
+			logger -t cnkrouter "配置值里含换行，拒绝渲染（保留旧配置）"
+			return 1
+			;;
+	esac
+
+	mkdir -p "$CONF_DIR" || return 1
+
+	tmp="$CONF_FILE.$$"
+	(
+		umask 077
 		echo "auth_url=$auth_url"
 		echo "username=$username"
 		echo "password=$password"
@@ -68,7 +87,24 @@ render_config() {
 		echo "link_recovery=$link_recovery"
 		echo "link_after=$link_after"
 		echo "link_cooldown=$link_cooldown"
-	} > $CONF_FILE
+	) > "$tmp" || {
+		rm -f "$tmp"
+		logger -t cnkrouter "渲染配置失败（保留旧配置）"
+		return 1
+	}
+
+	# 校验渲染结果：每行都必须是 key=value，且 19 个键一个不少。
+	# 加新键时这个数字要同步改 —— 写死的数字才能发现"少渲染一行"。
+	n=$(grep -c '^[A-Za-z_][A-Za-z0-9_]*=' "$tmp")
+	if [ "$n" -lt 19 ] || grep -qv '^[A-Za-z_][A-Za-z0-9_]*=' "$tmp"; then
+		rm -f "$tmp"
+		logger -t cnkrouter "渲染结果校验失败（$n 个键），保留旧配置"
+		return 1
+	fi
+
+	chmod 600 "$tmp"
+	mv -f "$tmp" "$CONF_FILE"
+	logger -t cnkrouter "配置已渲染：$CONF_FILE"
 	return 0
 }
 
@@ -90,9 +126,12 @@ reload_service() {
 	# 先重新渲染 /var/etc/cnkrouter.conf（2026-11-10 修）。
 	# 旧实现只发 SIGHUP：改完 UCI 执行 reload，进程读到的仍是上次 start 渲染的
 	# 旧文件 —— 看起来"重载了"，其实配置根本没变。必须在发信号前 render。
-	# SIGHUP 让进程重读配置并重置退避状态；配置没变时等价于"立刻重试一次"。
+	#
+	# 渲染失败（坏 UCI / 写不进去）时**不发 SIGHUP**：进程继续用手上的旧配置，
+	# 退避与停止状态也不动（2026-11-24 R2）。发了信号反而会让它去读坏文件。
 	render_config || return 1
 	pidof cnkrouter >/dev/null 2>&1 && kill -HUP $(pidof cnkrouter)
+	return 0
 }
 
 service_triggers() {
@@ -100,5 +139,5 @@ service_triggers() {
 }
 
 stop_service() {
-	rm -f $CONF_FILE
+	rm -f "$CONF_FILE"
 }

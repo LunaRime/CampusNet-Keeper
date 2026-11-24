@@ -1,7 +1,7 @@
 # OpenWrt 软件包（用于 SDK 编译）
 #
 # 用法：在仓库里执行
-#   ./scripts/build_openwrt.sh /path/to/openwrt-sdk
+#   sh scripts/build_openwrt.sh /path/to/openwrt-sdk
 # 脚本会把 ../../src 拷成 ./src 后整体放进 SDK 的 package/ 下编译。
 
 include $(TOPDIR)/rules.mk
