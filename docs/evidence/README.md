@@ -25,6 +25,9 @@
   `newapi_login_20261016.md`。
   同日：`loadconfig_185_801.json` 里原样保留的页面令牌 `rcn` 已改为占位符，
   模拟器夹具改用合成值——**页面令牌不许入库**（见下「脱敏要求」）。
+- **2026-11-24**：新增 `router-log-sample.log`——路由器端（`router/`）脱敏日志样例。
+  不是抓包，而是 `cnkrouter` 真实输出格式 + 一次「AC 整段黑洞 → 软拔插换 IP → 重新登录」
+  时序的归一化摘录，对外排障沟通时直接贴这段，不必外发原始日志。
 
 所有文件已脱敏：真实账号替换为 `202400000000`，本机 IP 替换为 `10.0.0.100`，
 设备相关标识（`ss1` / `mip` / `mac1`）清零。
@@ -52,6 +55,7 @@
 | `portal_login_fail_wronguser_utf8.htm` | 同上，转码件 | UTF-8 | 可读版本 |
 | `portal_login_fail_alreadyonline_gbk_raw.htm` | 同上（正确账号，在线态复登） | **GBK 原始字节** | 真实 `a=Login` 失败样本（另一种成因）：`msga='userid error2'`、含 `mac1`（已绑 MAC）字段；已脱敏 |
 | `portal_login_fail_alreadyonline_utf8.htm` | 同上，转码件 | UTF-8 | 可读版本 |
+| `router-log-sample.log` | `router/src` 的 `log_write` 真实文案 + 一次真机排障时序 | UTF-8 | 路由器端**脱敏日志样例**：启动 → 静默在线 → AC 黑洞 → 取证回放 → 软拔插换 IP → 重新登录；地址归一化为 `10.0.0.x`，`olmac`/`ss1` 为程序内 `mask_id()` 摘要 |
 
 ## 两份首页文件的关系（易踩坑，务必注意）
 
