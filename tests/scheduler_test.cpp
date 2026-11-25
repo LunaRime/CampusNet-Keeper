@@ -4,6 +4,7 @@
 #include "sim/SimServer.h"
 #include "json.hpp"
 #include <chrono>
+#include <filesystem>
 #include <thread>
 
 namespace {
@@ -637,16 +638,24 @@ TEST_CASE("test_profile 找不到指定档案时直接失败，绝不换一个�
     std::string err;
     REQUIRE(srv.Start(o, err));
 
-    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));   // 只有「默认」一份
+    // 用**临时配置文件**：CI 的 runner 上没有用户配置，走真实路径会先失败在
+    // 「读取配置失败」，「找不到档案」这条分支就永远测不到（2026-11-25 CI 实测）。
+    const auto conf = std::filesystem::temp_directory_path() / "cnk_test_profile_missing.json";
+    REQUIRE(cnk::ConfigSaveTo(conf.u8string(), MakeConfig(srv.BaseUrl(), "u", "p"), err));
+
+    cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));   // 文件里只有「默认」一份
     cnk::IpcRequest req;
     req.id = 7;
     req.cmd = "test_profile";
     req.args_json = R"({"profile":"不存在的档案"})";
-    const cnk::IpcResponse resp = cnk::HandleDaemonCommand(req, sch);
+    const cnk::IpcResponse resp = cnk::HandleDaemonCommandAt(req, sch, conf.u8string());
 
     CHECK(!resp.ok);
     CHECK(resp.error.find("找不到档案") != std::string::npos);
     CHECK(srv.LoginCount() == 0);   // 关键：没有拿别的档案去试
+
+    std::error_code ec;
+    std::filesystem::remove(conf, ec);
     srv.Stop();
 }
 
@@ -655,14 +664,38 @@ TEST_CASE("test_profile 未指定档案时报错，也不猜一个") {
     std::string err;
     REQUIRE(srv.Start(cnk::SimOptions{}, err));
 
+    const auto conf = std::filesystem::temp_directory_path() / "cnk_test_profile_empty.json";
+    REQUIRE(cnk::ConfigSaveTo(conf.u8string(), MakeConfig(srv.BaseUrl(), "u", "p"), err));
+
     cnk::Scheduler sch(MakeConfig(srv.BaseUrl(), "u", "p"));
     cnk::IpcRequest req;
     req.id = 8;
     req.cmd = "test_profile";
     req.args_json = "{}";
-    const cnk::IpcResponse resp = cnk::HandleDaemonCommand(req, sch);
+    const cnk::IpcResponse resp = cnk::HandleDaemonCommandAt(req, sch, conf.u8string());
 
     CHECK(!resp.ok);
     CHECK(srv.LoginCount() == 0);
+
+    std::error_code ec;
+    std::filesystem::remove(conf, ec);
     srv.Stop();
+}
+
+TEST_CASE("注入的配置路径真的生效（不是偷偷读 %APPDATA%）") {
+    // 这条是给上面两条兜底的：如果 HandleDaemonCommandAt 忽略了路径参数、又回去读
+    // 真实配置，本地（有配置）会返回 ok，断言立刻失败 —— 而 CI（没配置）则会
+    // 恰好"看起来通过"。用它把"注入是否生效"钉死，不再靠运行环境的巧合。
+    cnk::Scheduler sch(cnk::AppConfig{});
+    cnk::IpcRequest req;
+    req.id = 9;
+    req.cmd = "get_config";
+
+    const auto missing = std::filesystem::temp_directory_path() / "cnk_no_such_config_9f3a.json";
+    std::error_code ec;
+    std::filesystem::remove(missing, ec);   // 确保真的不存在
+
+    const cnk::IpcResponse resp = cnk::HandleDaemonCommandAt(req, sch, missing.u8string());
+    CHECK(!resp.ok);
+    CHECK(resp.error.find("读取配置失败") != std::string::npos);
 }

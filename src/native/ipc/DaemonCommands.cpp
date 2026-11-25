@@ -56,7 +56,14 @@ const char* LayerStateName(int v) {
 
 }  // namespace
 
-IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
+static IpcResponse HandleImpl(const IpcRequest& req, Scheduler& sch,
+                               const std::string* cfg_path) {
+    // 配置读取统一走这里：默认用 %APPDATA% 那份，测试可注入临时文件。
+    // （写侧仍走 ConfigSave：它还要处理 config.json + secret.json 的拆分形态。）
+    const auto load = [cfg_path](AppConfig& c, std::string& e) {
+        return cfg_path ? ConfigLoadFrom(*cfg_path, c, e) : ConfigLoad(c, e);
+    };
+
     if (req.cmd == "ping") {
         // 界面的存活探测。必须有这条：否则界面只能靠"未知命令"这种带错误的应答判断活着，
         // 语义含糊（2026-10-17 对真实守护进程跑契约时发现）。
@@ -126,7 +133,7 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
     if (req.cmd == "get_config") {
         AppConfig cfg;
         std::string err;
-        if (!ConfigLoad(cfg, err)) {
+        if (!load(cfg, err)) {
             // 配置损坏时也把错误送回去，而不是让界面以空白示人
             return Fail(req, "读取配置失败：" + err);
         }
@@ -146,7 +153,7 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
 
         AppConfig existing;
         std::string lerr;
-        const bool have_existing = ConfigLoad(existing, lerr);
+        const bool have_existing = load(existing, lerr);
 
         AppConfig merged;
         std::string merr;
@@ -198,7 +205,7 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
 
         AppConfig cfg;
         std::string err;
-        if (!ConfigLoad(cfg, err)) return Fail(req, "读取配置失败：" + err);
+        if (!load(cfg, err)) return Fail(req, "读取配置失败：" + err);
 
         const Profile* target = nullptr;
         for (const auto& p : cfg.profiles)
@@ -280,7 +287,7 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
             if (req.cmd == "export_secret") {
                 AppConfig cfg;
                 std::string err;
-                if (!ConfigLoad(cfg, err)) return Fail(req, "读取配置失败：" + err);
+                if (!load(cfg, err)) return Fail(req, "读取配置失败：" + err);
 
                 const Profile* target = nullptr;
                 for (const auto& p : cfg.profiles)
@@ -331,7 +338,7 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
 
             AppConfig existing;
             std::string lerr;
-            const bool have_existing = ConfigLoad(existing, lerr);
+            const bool have_existing = load(existing, lerr);
             AppConfig cfg = have_existing ? existing : AppConfig{};
 
             const std::string target_user = want.empty() ? s.username : want;
@@ -355,6 +362,15 @@ IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
     }
 
     return Fail(req, "未知命令: " + req.cmd);
+}
+
+IpcResponse HandleDaemonCommand(const IpcRequest& req, Scheduler& sch) {
+    return HandleImpl(req, sch, nullptr);
+}
+
+IpcResponse HandleDaemonCommandAt(const IpcRequest& req, Scheduler& sch,
+                                  const std::string& config_path) {
+    return HandleImpl(req, sch, &config_path);
 }
 
 }  // namespace cnk
