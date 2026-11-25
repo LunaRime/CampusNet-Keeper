@@ -19,12 +19,20 @@
 设计原则：脚本内不写任何真实值（避免审计工具本身成为泄漏源）；允许清单仅含归一化占位符与
 既定的公开值，其余命中一律列出交人工复核。
 
-用法：python docs/evidence/audit_redaction.py   （在任意目录均可）
+用法（两种范围**刻意分开**，不要混用）：
+  python docs/evidence/audit_redaction.py
+      提交内容审计：只查**将进入版本控制的内容**（git 已跟踪 + 未跟踪但未被忽略）。
+      本机 logs/ 这类被 .gitignore 排除的原始日志不在此列 —— 它们不会随仓库发布，
+      拿它们把门禁刷红只会逼人加白名单，反而放大真实泄漏的风险。
+  python docs/evidence/audit_redaction.py --file a.log [b.txt ...]
+      指定导出文件审计：显式检查**要分享出去的文件**（脱敏诊断、日志片段）。
+      这一档不做白名单豁免（只放过日期串与 0.0.0.0），命中即报。
+
 退出码：0=通过；1=有待复核项。
 """
-import glob
 import os
 import re
+import subprocess
 import sys
 
 # ---------------------------------------------------------------- 允许清单
@@ -78,6 +86,9 @@ RE_DATE8 = re.compile(r"(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])")
 RE_STUDENTISH = re.compile(rb"(?<![0-9A-Za-z])((?:19|20)\d{2}\d{6,8})(?![0-9A-Za-z])")
 RE_MAC = re.compile(rb"(?i)(?<![0-9a-f])([0-9a-f]{2}(?:[:-][0-9a-f]{2}){5})(?![0-9a-f])")
 RE_PRIVATE_QUAD = re.compile(rb"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+# 导出文件里的凭据/账号键值对（`password=...`、`username=...`）
+RE_SECRET_PAIR = re.compile(
+    rb"(?i)\b(password|passwd|pwd|token|secret|userid|username|user|account)=([^\s&,;\"\']+)")
 
 ASSET_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".zip", ".7z")
 SKIP_DIRS = {".git", "build", "build-m1", "build-ui", "dist", "third_party",
@@ -166,22 +177,86 @@ def skip(path):
     return any(part in SKIP_DIRS for part in rel.split(os.sep))
 
 
-def main():
+def git_paths(*args):
+    out = subprocess.run(["git", "-C", REPO_ROOT, "ls-files", "-z", *args],
+                         capture_output=True)
+    if out.returncode != 0:
+        raise SystemExit("提交内容审计需要 git（请在仓库内运行）")
+    return [p for p in out.stdout.decode("utf-8", "replace").split("\0") if p]
+
+
+def repo_files_for_audit():
+    """将进入版本控制的内容 = 已跟踪 + 未跟踪但未被忽略。
+
+    刻意不用 glob 扫磁盘：`.gitignore` 里的本机日志（logs/）、构建产物都不是发布内容，
+    把它们算进「提交内容审计」只会逼人加白名单 —— 而白名单一旦为真实值开口，
+    真正的泄漏也就随手放行了。
+    """
+    return sorted(set(git_paths()) | set(git_paths("--others", "--exclude-standard")))
+
+
+def scan_export_strict(data):
+    """导出文件审计：**不做白名单豁免**（只跳日期串与 0.0.0.0）。
+
+    这档是「我要把这个文件发出去」的最后一道闸，占位符本来就不该出现在里面。
+    """
+    findings = []
+    for m in RE_SECRET_PAIR.finditer(data):
+        findings.append(("secret", m.group(0).decode("utf-8", "replace")))
+    for m in RE_STUDENTISH.finditer(data):
+        t = m.group(1).decode()
+        if not looks_like_date8(t):
+            findings.append(("student-ish", t))
+    for m in RE_NUM12.finditer(data):
+        t = m.group(1).decode()
+        if not looks_like_date8(t):
+            findings.append(("num12", t))
+    for m in RE_MAC.finditer(data):
+        findings.append(("mac", m.group(1).decode()))
+    for m in RE_PRIVATE_QUAD.finditer(data):
+        t = m.group().decode()
+        if t != "0.0.0.0" and is_private_quad(t):
+            findings.append(("private-ip", t))
+    return findings
+
+
+def main(argv):
     total = 0
-    for path in sorted(glob.glob(os.path.join(REPO_ROOT, "**", "*"), recursive=True)):
-        if os.path.isdir(path) or skip(path):
+
+    if "--file" in argv:
+        i = argv.index("--file")
+        extra = argv[i + 1:]
+        if not extra:
+            print("用法：audit_redaction.py --file <要分享的文件> [...]")
+            return 2
+        targets = [(p, rel_posix(os.path.abspath(p))) for p in extra]
+        mode = "export"
+    else:
+        targets = [(os.path.join(REPO_ROOT, rel), rel) for rel in repo_files_for_audit()]
+        mode = "tracked"
+
+    for path, rel in targets:
+        if not os.path.isfile(path) or skip(path):
             continue
-        rel = rel_posix(path)
         data = open(path, "rb").read()
 
-        # B) 资产清单：图片/压缩包必须登记（栅格图里的敏感信息文本模式扫不到，只能靠登记+看图）
+        if mode == "export":
+            if not is_text(data):
+                print("%-44s %-6s %s" % (rel, "binary", "导出文件必须是文本；图片请人工看图"))
+                total += 1
+                continue
+            for kind, token in scan_export_strict(data):
+                print("%-44s %-6s %s" % (rel, kind, token))
+                total += 1
+            continue
+
+        # 提交内容审计：B) 资产清单 A) 内容扫描（原有两段）
         if rel.lower().endswith(ASSET_SUFFIXES):
             if rel not in SAFE_ASSETS:
                 print("%-44s %-6s %s" % (rel, "asset", "未登记资产：请人工看图确认无真实数据后加入 SAFE_ASSETS"))
                 total += 1
             continue
 
-        # A) 内容扫描
         if rel == SELF_PATH:
             continue
         if rel.startswith("docs/evidence/"):
@@ -194,13 +269,14 @@ def main():
                 total += 1
 
     print("-" * 60)
+    scope = "指定导出文件" if mode == "export" else "提交内容（git 跟踪 + 未忽略的新增）"
     if total:
-        print("待人工复核 %d 项：判定为占位符/公开值则放行，否则先修复再提交。" % total)
+        print("[%s] 待人工复核 %d 项：判定为占位符/公开值则放行，否则先修复再提交。" % (scope, total))
         print("⚠ 图片类命中是「未登记资产」：文本模式看不见图里的内容，必须逐张打开确认。")
         return 1
-    print("通过：未发现待复核项。")
+    print("[%s] 通过：未发现待复核项。" % scope)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))
