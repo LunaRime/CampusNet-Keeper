@@ -3,6 +3,7 @@
 #include "core/Encoding.h"
 #include "core/LocalIp.h"
 #include "core/PortalPage.h"
+#include "core/ProbePlan.h"
 #include "auth/AuthFactory.h"
 #include "auth/Carrier.h"
 #include <atomic>
@@ -98,6 +99,15 @@ struct Scheduler::Impl {
     int last_ac_verdict = -1;   // -1=未知 1=在线 0=不在线
     static constexpr int kAcRecheckIntervalSeconds = 30;
 
+    // 探测回退（W5）：主地址不可用时暂时沿用备用。**只在运行时**，不写回配置。
+    FallbackState fallback;
+    // 测试/诊断可覆盖内置备用；空 url = 按异域规则自动挑
+    ProbeTarget fallback_override;
+    // 本轮实际请求的地址（门户相对跳转的解析基准、诊断输出都用它）
+    std::string last_probe_url;
+    // 0=主地址 1=备用 2=全部不可用。只在变化时打日志，避免每轮刷屏。
+    int last_probe_mode = 0;
+
     // 最近一轮探测的分层证据（1=通过 0=失败 -1=无证据），随快照发布给界面。
     // 只认**本轮**取到的证据：上一轮的"通过"不留用到这一轮（W3）。
     int layer_local = -1;
@@ -185,6 +195,8 @@ struct Scheduler::Impl {
         s.layer_gateway = layer_gateway;
         s.layer_portal = layer_portal;
         s.layer_internet = layer_internet;
+        s.probe_url = last_probe_url;
+        s.probe_fallback = (last_probe_mode == 1);
         std::lock_guard<std::mutex> lk(snap_mu_);
         snap_ = std::move(s);
     }
@@ -288,8 +300,15 @@ struct Scheduler::Impl {
     static constexpr int kMaxIneffectiveLogouts = 3;
 
     bool VerifyOnline() {
+        // 与日常守护共用"主地址 + 回退"的选择逻辑（W5）：
+        // 登录后复测如果只认主地址，主地址坏着的时候会连判三次失败，白等三个超时。
         const ProbeResult r = ProbeUntilOnline(
-            [this] { return ProbeOnce(cfg.settings); }, kVerifyAttempts, kVerifyDelayMs);
+            [this] {
+                return fallback_override.url.empty()
+                    ? ProbeWithFallback(cfg.settings, fallback).result
+                    : ProbeWithFallbackUsing(cfg.settings, fallback, fallback_override).result;
+            },
+            kVerifyAttempts, kVerifyDelayMs);
         return r.state == NetState::Online;
     }
 
@@ -462,8 +481,28 @@ void Scheduler::Impl::DoProbe() {
     // 旧实现只在 Tick 结束时才让人看见状态变化，慢探测期间界面像是"什么都没发生"。
     Publish();
 
-    ProbeResult pr = ProbeOnce(cfg.settings);
+    // 主地址优先，不可用时同一轮试备用；网络请求不持锁、不写配置（W5）
+    ProbeOutcome po = fallback_override.url.empty()
+        ? ProbeWithFallback(cfg.settings, fallback)
+        : ProbeWithFallbackUsing(cfg.settings, fallback, fallback_override);
+    ProbeResult pr = po.result;
+    last_probe_url = po.used_url;
     last_probe_response = pr.response;
+
+    // 「已切备用」与「所有目标都不可用」必须是两种可区分的事件：
+    // 只在模式变化时记一行，正常运行不刷屏。
+    const int mode = po.all_failed ? 2 : (po.used_fallback ? 1 : 0);
+    if (mode != last_probe_mode) {
+        if (mode == 1)
+            LogWarn("主探测地址不可用，已切备用：" + po.used_url + "（" + pr.message +
+                    "，整轮 " + std::to_string(po.total_ms) + "ms）");
+        else if (mode == 2)
+            LogWarn(pr.message + "（整轮 " + std::to_string(po.total_ms) + "ms）");
+        else
+            LogInfo("探测地址恢复正常：" + po.used_url + "（整轮 " +
+                    std::to_string(po.total_ms) + "ms）");
+        last_probe_mode = mode;
+    }
 
     // 探测结论只在「状态变化」时记 INFO：出问题时能一眼看出是"根本没网"还是"被劫持"。
     // 2026-10-26 的事故就是缺这一行——日志里只有"网络变更事件"和"连接恢复"，
@@ -590,7 +629,10 @@ void Scheduler::Impl::DoProbe() {
     // spec §7：识别（DoLogin 中执行）的输入是「Portal 的响应头与页面 HTML」。
     // 真实劫持 302 常不含指纹（本机实测 2026-10-16 为裸 302），须先抓取
     // Location 目标页；抓取失败退回探测响应（尽力而为，不阻断登录链路）。
-    PortalPageResult pp = ResolvePortalPage(pr, cfg.settings.probe_url);
+    // 用本轮**实际**请求的地址解析相对 Location：用了备用地址却拿主地址当基准，
+    // 同主机跳转会被判成异主机（或反过来），劫持识别和登录链路一起走偏。
+    PortalPageResult pp = ResolvePortalPage(pr, last_probe_url.empty() ? cfg.settings.probe_url
+                                                                       : last_probe_url);
     if (pp.fetched) {
         LogInfo("已抓取门户页面：" + pp.portal_url);
     } else if (!pp.fetch_error.empty()) {
@@ -733,6 +775,15 @@ void Scheduler::Stop() {
 }
 
 void Scheduler::Tick() { impl_->Tick(); }
+
+void Scheduler::SetFallbackOverride(const ProbeTarget& fb) { impl_->fallback_override = fb; }
+
+ProbeOutcome Scheduler::ProbeNowWithFallback(const Settings& s) const {
+    FallbackState scratch;   // 一次性：测试探测不能改变守护的回退节奏
+    return impl_->fallback_override.url.empty()
+        ? ProbeWithFallback(s, scratch)
+        : ProbeWithFallbackUsing(s, scratch, impl_->fallback_override);
+}
 
 void Scheduler::ForceReconnect() {
     // 命令而不是直接改字段：SetConfig/ForceReconnect 会碰 cfg 与一堆状态，

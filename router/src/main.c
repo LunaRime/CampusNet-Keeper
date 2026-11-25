@@ -17,6 +17,9 @@
 #include <stdarg.h>
 #include <signal.h>
 #include <time.h>
+#ifdef _WIN32
+#define strncasecmp _strnicmp
+#endif
 #ifndef _WIN32
 #include <unistd.h>   /* unlink：软拔插标记文件（见 replug_flag_*） */
 #include <sys/stat.h> /* chmod：日志文件含现场信息，不能是默认 644 */
@@ -1324,6 +1327,295 @@ static void on_hup(int sig) {
 }
 #endif
 
+
+/* ---------------- 诊断日志导出（D1） ----------------
+ *
+ * 只读采集：只打开**自己的**日志文件（YYYY-MM-DD.log / blips-YYYY-MM-DD.log），
+ * 不改配置、不写别的路径。输出前脱敏，先脱敏再落盘。
+ *
+ * 与 Windows 端 core/DiagExport.cpp 同一套语义：
+ *   · 默认最近 15 分钟；--around "YYYY-MM-DD HH:MM:SS" 取前后各 2 分钟；
+ *   · 跨午夜（窗口跨两天就都读）、tmpfs 回退目录（/tmp/cnkrouter）都覆盖；
+ *   · 来源缺失、输出截断都写在头部，不假装完整。
+ */
+#define DIAG_MAX_LINES 5000
+#define DIAG_MAX_BYTES (2 * 1024 * 1024)
+#define DIAG_NEAR_SECONDS 120
+
+static void diag_stamp(time_t t, char *buf, size_t cap) {
+    struct tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    strftime(buf, cap, "%Y-%m-%d %H:%M:%S", &tmv);
+}
+
+static void diag_ymd(time_t t, char *buf, size_t cap) {
+    struct tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    strftime(buf, cap, "%Y-%m-%d", &tmv);
+}
+
+static int diag_parse_ts(const char *s, time_t *out) {
+    int Y, M, D, h, m, sec;
+    struct tm tmv;
+    if (sscanf(s, "%4d-%2d-%2d %2d:%2d:%2d", &Y, &M, &D, &h, &m, &sec) != 6) return 0;
+    if (Y < 1970 || M < 1 || M > 12 || D < 1 || D > 31) return 0;
+    memset(&tmv, 0, sizeof tmv);
+    tmv.tm_year = Y - 1900;
+    tmv.tm_mon = M - 1;
+    tmv.tm_mday = D;
+    tmv.tm_hour = h;
+    tmv.tm_min = m;
+    tmv.tm_sec = sec;
+    tmv.tm_isdst = -1;
+    *out = mktime(&tmv);
+    return *out != (time_t)-1;
+}
+
+static int diag_name_ok(const char *name, char *ymd, size_t cap) {
+    const char *p = name;
+    size_t n, k;
+    if (strncmp(p, "blips-", 6) == 0) p += 6;
+    n = strlen(p);
+    if (n != 14 || strcmp(p + 10, ".log") != 0) return 0;
+    for (k = 0; k < 10; ++k) {
+        if (k == 4 || k == 7) {
+            if (p[k] != '-') return 0;
+        } else if (p[k] < '0' || p[k] > '9') {
+            return 0;
+        }
+    }
+    snprintf(ymd, cap, "%.10s", p);
+    return 1;
+}
+
+static int diag_key_before(const char *s, size_t i) {
+    return i == 0 || !(isalnum((unsigned char)s[i - 1]) || s[i - 1] == '_');
+}
+
+/* 键值对：password=/userid=/username=... 的值整体打码 */
+static size_t diag_key_len(const char *s, size_t i) {
+    static const char *keys[] = {"password", "passwd", "pwd", "token", "secret",
+                                 "userid", "username", "user", "account"};
+    size_t k;
+    for (k = 0; k < sizeof keys / sizeof keys[0]; ++k) {
+        size_t n = strlen(keys[k]);
+        if (strncasecmp(s + i, keys[k], n) == 0 && s[i + n] == '=') return n;
+    }
+    return 0;
+}
+
+/* 单行脱敏。中文原样保留（按字节扫描，只替换 ASCII 片段）。 */
+static void diag_redact(const char *in, char *out, size_t cap) {
+    size_t i = 0, o = 0;
+    while (in[i] && o + 8 < cap) {
+        size_t kl = 0;
+        if (diag_key_before(in, i) && (kl = diag_key_len(in, i)) != 0) {
+            memcpy(out + o, in + i, kl + 1);   /* key= */
+            o += kl + 1;
+            memcpy(out + o, "***", 3);
+            o += 3;
+            i += kl + 1;
+            while (in[i] && !isspace((unsigned char)in[i]) &&
+                   in[i] != '&' && in[i] != ',' && in[i] != ';') ++i;
+            continue;
+        }
+        if (in[i] == '?') {                     /* 门户查询参数整体打码 */
+            memcpy(out + o, "?<REDACTED>", 11);
+            o += 11;
+            ++i;
+            while (in[i] && !isspace((unsigned char)in[i])) ++i;
+            continue;
+        }
+        if (isdigit((unsigned char)in[i])) {
+            int a = 0, b = 0, c = 0, d = 0, used = 0;
+            if (sscanf(in + i, "%3d.%3d.%3d.%3d%n", &a, &b, &c, &d, &used) == 4 &&
+                used > 0 && diag_key_before(in, i)) {
+                o += (size_t)snprintf(out + o, cap - o, "%d.%d.x.x", a, b);
+                i += (size_t)used;
+                continue;
+            }
+            {
+                size_t j = i;
+                while (isdigit((unsigned char)in[j])) ++j;
+                if (j - i == 12 && diag_key_before(in, i)) {
+                    memcpy(out + o, "***", 3);
+                    o += 3;
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        out[o++] = in[i++];
+    }
+    out[o] = '\0';
+}
+
+static int diag_cmp_line(const void *a, const void *b) {
+    return strncmp(*(const char *const *)a, *(const char *const *)b, 19);
+}
+
+static int run_diagnose(const Config *cfg, int minutes, const char *around, const char *out_path) {
+    const time_t now = time(NULL);
+    time_t start, end;
+    char tsbuf[32], s1[32], s2[32];
+    const char *dirs[2];
+    int ndirs = 0, d, n = 0, cap_lines = 0, truncated = 0;
+    char **lines = NULL;
+    size_t bytes = 0;
+    char missing[4][16];
+    int nmissing = 0;
+    char sources[8][160];
+    int nsources = 0;
+    FILE *out = stdout;
+
+    if (around && around[0]) {
+        if (!diag_parse_ts(around, &start)) {
+            fprintf(stderr, "--around 的时间格式应为 \"YYYY-MM-DD HH:MM:SS\"\n");
+            return 64;
+        }
+        start -= DIAG_NEAR_SECONDS;
+        end = start + 2 * DIAG_NEAR_SECONDS;
+    } else {
+        if (minutes <= 0) minutes = 15;
+        if (minutes > 24 * 60) minutes = 24 * 60;
+        end = now;
+        start = end - (time_t)minutes * 60;
+    }
+
+    if (out_path && out_path[0]) {
+        out = fopen(out_path, "w");
+        if (!out) {
+            fprintf(stderr, "无法写入 %s\n", out_path);
+            return 4;
+        }
+#ifndef _WIN32
+        chmod(out_path, 0600);
+#endif
+    }
+
+    /* 目录：生效的 log_dir + tmpfs 回退（去重） */
+    dirs[ndirs++] = cfg->log_dir;
+    if (strcmp(cfg->log_dir, "/tmp/cnkrouter") != 0) dirs[ndirs++] = "/tmp/cnkrouter";
+
+    {
+        char day[4][16];
+        int nday = 0;
+        time_t t;
+        for (t = start; t <= end && nday < 4; t += 43200) {
+            char dd[16];
+            diag_ymd(t, dd, sizeof dd);
+            if (nday == 0 || strcmp(day[nday - 1], dd) != 0) snprintf(day[nday++], 16, "%s", dd);
+        }
+        {
+            char dd[16];
+            diag_ymd(end, dd, sizeof dd);
+            if (nday == 0 || strcmp(day[nday - 1], dd) != 0) snprintf(day[nday++], 16, "%s", dd);
+        }
+
+        for (d = 0; d < nday; ++d) {
+            int found = 0;
+            int k;
+            for (k = 0; k < ndirs; ++k) {
+                static const char *prefixes[2] = {"", "blips-"};
+                int pi;
+                for (pi = 0; pi < 2; ++pi) {
+                    char path[CNK_PATH_MAX + 32];
+                    FILE *fp;
+                    char line[1024];
+                    char ymd[16];
+                    snprintf(path, sizeof path, "%s/%s%s.log", dirs[k], prefixes[pi], day[d]);
+                    if (!diag_name_ok(strrchr(path, '/') + 1, ymd, sizeof ymd)) continue;
+                    fp = fopen(path, "r");
+                    if (!fp) continue;
+                    found = 1;
+                    if (nsources < 8) snprintf(sources[nsources++], 160, "%s", path);
+                    while (!truncated && fgets(line, sizeof line, fp)) {
+                        time_t t2 = 0;
+                        size_t len = strlen(line);
+                        while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) line[--len] = '\0';
+                        if (len < 19 || !diag_parse_ts(line, &t2)) continue;
+                        if (t2 < start || t2 > end) continue;
+                        if (n >= DIAG_MAX_LINES) { truncated = 1; break; }
+                        {
+                            char red[1024];
+                            char *dup;
+                            diag_redact(line, red, sizeof red);
+                            if (bytes + strlen(red) > DIAG_MAX_BYTES) { truncated = 1; break; }
+                            dup = (char *)malloc(strlen(red) + 1);
+                            if (!dup) { truncated = 1; break; }
+                            strcpy(dup, red);
+                            if (n == cap_lines) {
+                                int ncap = cap_lines ? cap_lines * 2 : 256;
+                                char **grown = (char **)realloc(lines, (size_t)ncap * sizeof(char *));
+                                if (!grown) { free(dup); truncated = 1; break; }
+                                lines = grown;
+                                cap_lines = ncap;
+                            }
+                            lines[n++] = dup;
+                            bytes += strlen(red) + 1;
+                        }
+                    }
+                    fclose(fp);
+                }
+            }
+            if (!found && nmissing < 4) snprintf(missing[nmissing++], 16, "%s", day[d]);
+        }
+    }
+
+    if (n > 1) qsort(lines, (size_t)n, sizeof(char *), diag_cmp_line);
+
+    diag_stamp(now, tsbuf, sizeof tsbuf);
+    diag_stamp(start, s1, sizeof s1);
+    diag_stamp(end, s2, sizeof s2);
+    fprintf(out, "# cnkrouter 诊断日志\n");
+    fprintf(out, "# 生成时间: %s\n", tsbuf);
+    fprintf(out, "# 版本: %s\n", CNK_BUILD_ID);
+    if (around && around[0])
+        fprintf(out, "# 时间窗: %s ~ %s（故障时刻前后各 2 分钟）\n", s1, s2);
+    else
+        fprintf(out, "# 时间窗: %s ~ %s（最近 %d 分钟）\n", s1, s2, minutes);
+    fprintf(out, "# 来源: ");
+    if (nsources == 0) {
+        fprintf(out, "(无)");
+    } else {
+        int k;
+        for (k = 0; k < nsources; ++k) fprintf(out, "%s%s", k ? ", " : "", sources[k]);
+    }
+    fprintf(out, "\n");
+    if (nmissing) {
+        int k;
+        fprintf(out, "# 缺失: ");
+        for (k = 0; k < nmissing; ++k) fprintf(out, "%s%s", k ? ", " : "", missing[k]);
+        fprintf(out, "（这些日期在两个目录里都没有日志文件）\n");
+    }
+    if (truncated)
+        fprintf(out, "# 截断: 是（已达 %d 行 / %d 字节上限）\n", DIAG_MAX_LINES, DIAG_MAX_BYTES);
+    fprintf(out, "# 脱敏: 账号与凭据 -> ***；门户查询参数 -> ?<REDACTED>；"
+                 "IP -> a.b.x.x；12 位数字 -> ***\n");
+    fprintf(out, "# --------------------------------------------------------\n");
+
+    {
+        int k;
+        for (k = 0; k < n; ++k) {
+            fprintf(out, "%s\n", lines[k]);
+            free(lines[k]);
+        }
+    }
+    free(lines);
+    if (truncated) fprintf(out, "# （输出已截断，仅保留前 %d 行）\n", n);
+
+    if (out != stdout) fclose(out);
+    return 0;
+}
+
 static void usage(void) {
     printf(
         "cnkrouter %s —— 校园网自动认证（路由器端）\n\n"
@@ -1333,6 +1625,10 @@ static void usage(void) {
         "  --once            探测 + 必要时登录 + 复测，退出码 0=在线\n"
         "  --login           直接发起一次登录（不探测，调试用）\n"
         "  --probe           只探测一次，退出码 0=在线 3=离线 2=门户\n"
+        "  --diagnose        只读采集日志并脱敏输出（默认最近 15 分钟）\n"
+        "  --minutes=N       --diagnose 的时间窗（分钟，默认 15）\n"
+        "  --around=时间     --diagnose 取该时刻前后各 2 分钟（\"YYYY-MM-DD HH:MM:SS\"）\n"
+        "  --out=文件        --diagnose 写入文件（默认 stdout，权限 600）\n"
         "  --user=<账号>      覆盖配置里的账号\n"
         "  --pass=<密码>      覆盖配置里的密码\n"
         "  --verbose         输出调试日志\n"
@@ -1347,7 +1643,10 @@ int main(int argc, char **argv) {
     Config cfg;
     const char *config_path = g_config_path;
     const char *user = NULL, *pass = NULL;
-    int mode = 0;   /* 0=help 1=daemon 2=once 3=login 4=probe 5=selftest */
+    int mode = 0;   /* 0=help 1=daemon 2=once 3=login 4=probe 5=selftest 6=diagnose */
+    int diag_minutes = 15;
+    const char *diag_around = "";
+    const char *diag_out = "";
     int i, rc;
     char err[160];
 
@@ -1364,6 +1663,10 @@ int main(int argc, char **argv) {
         else if (strcmp(a, "--login") == 0) mode = 3;
         else if (strcmp(a, "--probe") == 0) mode = 4;
         else if (strcmp(a, "--selftest") == 0) mode = 5;
+        else if (strcmp(a, "--diagnose") == 0) mode = 6;
+        else if (strncmp(a, "--minutes=", 10) == 0) diag_minutes = atoi(a + 10);
+        else if (strncmp(a, "--around=", 9) == 0) diag_around = a + 9;
+        else if (strncmp(a, "--out=", 6) == 0) diag_out = a + 6;
         else if (strncmp(a, "--user=", 7) == 0) user = a + 7;
         else if (strncmp(a, "--pass=", 7) == 0) pass = a + 7;
         else if (strcmp(a, "--verbose") == 0) cfg.log_level = LOG_DBG;
@@ -1394,6 +1697,8 @@ int main(int argc, char **argv) {
      * 避免 --probe 之类的临时调用污染服务日志）。 */
     if (mode == 1) log_init(cfg.log_level, cfg.log_dir);
     else           log_init(cfg.log_level, NULL);
+
+    if (mode == 6) return run_diagnose(&cfg, diag_minutes, diag_around, diag_out);
 
     if (!cfg.username[0]) {
         log_write(LOG_ERR, "配置里没有账号（username=），请编辑 %s", config_path);

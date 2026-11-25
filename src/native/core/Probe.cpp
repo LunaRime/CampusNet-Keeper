@@ -13,7 +13,7 @@ namespace {
 //   - 剥离与 scheme 默认值相同的端口（host 与 host:80 视为同主机）
 //   - 主机名统一小写（域名大小写不敏感）
 // 含端口比较是刻意的：Portal 与本机同 IP、不同端口时也必须判为异主机。
-std::string HostOf(const std::string& url) {
+std::string HostOfImpl(const std::string& url) {
     size_t scheme = url.find("://");
     if (scheme == std::string::npos) return {};
     size_t start = scheme + 3;
@@ -41,22 +41,31 @@ std::string HostOf(const std::string& url) {
 
 }  // namespace
 
+std::string HostOf(const std::string& url) { return HostOfImpl(url); }
+
 ProbeResult ProbeOnce(const Settings& s) {
+    // 夹取上限防 int 溢出（UI 可能被填入极大值）；<=0 走 3 秒兜底
+    int secs = s.probe_timeout_seconds;
+    if (secs <= 0) secs = 3;
+    if (secs > 600) secs = 600;
+    return ProbeOnceAt(s, s.probe_url, s.probe_expect, secs * 1000);
+}
+
+ProbeResult ProbeOnceAt(const Settings& s, const std::string& url,
+                        const std::string& expect, int timeout_ms) {
     ProbeResult r;
-    if (s.probe_url.empty()) {
+    if (url.empty()) {
         r.state = NetState::Unknown;
         r.message = "未配置探测地址";
         return r;
     }
 
     HttpRequest req;
-    req.url = s.probe_url;
+    req.url = url;
     req.method = "GET";
-    // 夹取上限防 int 溢出（UI 可能被填入极大值）；<=0 走 3 秒兜底
-    int secs = s.probe_timeout_seconds;
-    if (secs <= 0) secs = 3;
-    if (secs > 600) secs = 600;
-    req.timeout_ms = secs * 1000;
+    req.timeout_ms = timeout_ms > 0 ? timeout_ms : 3000;
+    // 总时限与单步一致：备用地址只拿到剩余预算时，不能被 Http 层的 8 秒兜底拖长
+    req.total_timeout_ms = req.timeout_ms;
     req.follow_redirects = false;
 
     std::string err;
@@ -79,9 +88,9 @@ ProbeResult ProbeOnce(const Settings& s) {
         // 必须先解析成绝对地址再比主机。否则相对跳转会让 HostOf 返回空，
         // 落进下面的分支判成 Offline —— 结果是永不触发登录、每轮空转重探，
         // 「劫持检测 → 自动登录」整链静默失效。
-        const std::string loc_abs = ResolveUrl(r.response.location, s.probe_url);
+        const std::string loc_abs = ResolveUrl(r.response.location, url);
         const std::string loc_host = HostOf(loc_abs);
-        const std::string probe_host = HostOf(s.probe_url);
+        const std::string probe_host = HostOf(url);
 
         if (!loc_host.empty() && loc_host != probe_host) {
             r.state = NetState::PortalDetected;
@@ -99,8 +108,8 @@ ProbeResult ProbeOnce(const Settings& s) {
 
     if (status == 200) {
         const std::string body = DecodeBody(r.response);
-        const bool has_expect = !s.probe_expect.empty() &&
-                                body.find(s.probe_expect) != std::string::npos;
+        const bool has_expect = !expect.empty() &&
+                                body.find(expect) != std::string::npos;
         const bool too_long = body.size() > 8192;
         if (has_expect && !too_long) {
             r.state = NetState::Online;

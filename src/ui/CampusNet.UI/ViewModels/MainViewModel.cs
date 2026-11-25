@@ -82,6 +82,11 @@ public partial class MainViewModel : ObservableObject
     /// <summary>守护进程连接状态（IPC 层面），与网络在线状态是两件事。</summary>
     [ObservableProperty] private string _daemonStatusText = "未连接";
 
+    /// <summary>「测试探测地址」的结果（多行：实际目标 / 结果 / 耗时）。空 = 还没测过。</summary>
+    [ObservableProperty] private string _probeTestResult = "";
+
+    public bool HasProbeTestResult => !string.IsNullOrEmpty(ProbeTestResult);
+
     // ---- 四段链路（W3）：每段只认本轮证据，没证据就是「未知」 ----
     [ObservableProperty] private bool _localOk;
     [ObservableProperty] private bool _localFail;
@@ -179,6 +184,9 @@ public partial class MainViewModel : ObservableObject
         RebuildRecentEvents();
         OnPropertyChanged(nameof(FilteredLogText));
     }
+
+    partial void OnProbeTestResultChanged(string value) =>
+        OnPropertyChanged(nameof(HasProbeTestResult));
 
     partial void OnLogFilterChanged(string value) => OnPropertyChanged(nameof(FilteredLogText));
     partial void OnLogLevelFilterChanged(string value) => OnPropertyChanged(nameof(FilteredLogText));
@@ -795,6 +803,95 @@ public partial class MainViewModel : ObservableObject
         catch (IpcException ex)
         {
             LastError = ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// 日志页「导出诊断日志」（D1）：最近 15 分钟，守护进程侧**先脱敏再落盘**，
+    /// 这里只负责把落盘路径与行数报给用户。
+    /// </summary>
+    [RelayCommand]
+    private async Task ExportDiagnosticsAsync()
+    {
+        if (!DaemonRunning)
+        {
+            OperationResult = "守护进程未运行，无法导出诊断日志";
+            return;
+        }
+
+        OperationResult = "正在导出诊断日志（最近 15 分钟）…";
+        try
+        {
+            var resp = await _ipc.SendAsync("export_diagnostics",
+                                            new JsonObject { ["minutes"] = 15 });
+            if (resp?["ok"]?.GetValue<bool>() != true)
+            {
+                OperationResult = resp?["error"]?.GetValue<string>() ?? "导出诊断日志失败";
+                return;
+            }
+
+            var d = resp["data"];
+            var path = d?["path"]?.GetValue<string>() ?? "";
+            var lines = d?["lines"]?.GetValue<int>() ?? 0;
+            var truncated = d?["truncated"]?.GetValue<bool>() == true;
+            var missing = (d?["missing"] as JsonArray)?.Count ?? 0;
+
+            OperationResult = $"已导出 {lines} 行{(truncated ? "（已截断）" : "")}：" +
+                              $"{path}{(missing > 0 ? $"（有 {missing} 天无日志文件）" : "")}";
+        }
+        catch (IpcException ex)
+        {
+            OperationResult = ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// 高级设置的「测试探测地址」：**只探测**，不认证、不保存（W5）。
+    /// 显示的"目标"是守护进程实际请求的那个地址 —— 主地址不可用时会是备用地址，
+    /// 不让用户以为配置里的主地址在正常工作。
+    /// </summary>
+    [RelayCommand]
+    private async Task TestProbeAsync()
+    {
+        if (!DaemonRunning)
+        {
+            OperationResult = "守护进程未运行，无法测试探测地址";
+            return;
+        }
+
+        OperationResult = "正在测试探测地址…";
+        try
+        {
+            var resp = await _ipc.SendAsync("probe_target", new JsonObject());
+            if (resp?["ok"]?.GetValue<bool>() != true)
+            {
+                OperationResult = resp?["error"]?.GetValue<string>() ?? "测试探测地址失败";
+                return;
+            }
+
+            var d = resp["data"];
+            var url = d?["url"]?.GetValue<string>() ?? "—";
+            var usedFallback = d?["used_fallback"]?.GetValue<bool>() == true;
+            var ms = d?["elapsed_ms"]?.GetValue<int>() ?? 0;
+            var state = d?["state"]?.GetValue<string>() ?? "unknown";
+            var message = d?["message"]?.GetValue<string>() ?? "";
+
+            var stateText = state switch
+            {
+                "online" => "在线（能访问探测页）",
+                "portal" => "需要认证（被门户拦截）",
+                "offline" => "不可用",
+                _ => "未知",
+            };
+
+            ProbeTestResult = $"目标：{url}{(usedFallback ? "（备用地址）" : "")}\n" +
+                              $"结果：{stateText} · {ms} ms\n" +
+                              $"说明：{message}";
+            OperationResult = "探测完成（未认证、未保存）";
+        }
+        catch (IpcException ex)
+        {
+            OperationResult = ex.Message;
         }
     }
 

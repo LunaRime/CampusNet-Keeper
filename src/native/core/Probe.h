@@ -20,6 +20,18 @@ struct ProbeResult {
 // 3xx 的 Location 是判定劫持的关键证据。
 ProbeResult ProbeOnce(const Settings& s);
 
+// 同上，但**指定**请求地址、期望标识与超时。
+// 存在的理由（W5）：带回退的探测要打备用地址，而备用的 expect 与主地址不同
+// （如 firefox 的 "success" vs hicloud 的 204）。更关键的是 3xx 的相对 Location
+// 必须按**实际请求的 URL** 解析 —— 用配置里的主地址去解析备用地址的跳转，
+// 会把同主机跳转误判成异主机（或反过来）。
+ProbeResult ProbeOnceAt(const Settings& s, const std::string& url,
+                        const std::string& expect, int timeout_ms);
+
+// 取 URL 的主机部分（含非默认端口，已归一化：去 userinfo、去默认端口、小写）。
+// 劫持判定与"备必须是独立域名"的检查共用同一口径。
+std::string HostOf(const std::string& url);
+
 // 第三层验证：真的能出网吗？（对应 router 端 can_reach_internet）
 //   1  = 能出网（generate_204 回 204，或百度 robots.txt 回 200 且含 User-agent）
 //   0  = 明确不能（有响应但内容不对 → 疑似被劫持/僵尸会话，转发面已废）

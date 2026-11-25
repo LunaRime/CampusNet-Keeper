@@ -4,10 +4,14 @@
 #include "auth/Carrier.h"
 #include "auth/Detector.h"
 #include "core/ConfigForUi.h"
+#include "core/Version.h"
+#include "core/Paths.h"
+#include "core/DiagExport.h"
 #include "core/Encoding.h"
 #include "core/LocalIp.h"
 #include "core/Log.h"
 #include "core/Probe.h"
+#include "core/ProbePlan.h"
 #include "store/Config.h"
 #include "store/PortableSecret.h"
 #include "sys/Autostart.h"
@@ -93,6 +97,10 @@ static IpcResponse HandleImpl(const IpcRequest& req, Scheduler& sch,
             {"portal", LayerStateName(snap.layer_portal)},
             {"internet", LayerStateName(snap.layer_internet)},
         };
+        // 实际请求的探测地址与是否走了备用（W5）：界面据此说"已切备用"，
+        // 而不是让用户以为配置里的主地址在正常工作。
+        d["probe_url"] = snap.probe_url;
+        d["probe_fallback"] = snap.probe_fallback;
         return Ok(req, d.dump());
     }
 
@@ -100,6 +108,85 @@ static IpcResponse HandleImpl(const IpcRequest& req, Scheduler& sch,
         sch.ForceReconnect();
         LogInfo("设置界面触发了立即重连");
         return Ok(req, "{}");
+    }
+
+    if (req.cmd == "export_diagnostics") {
+        // 日志页「导出诊断日志」（D1）：按时间窗取 **CNK 自己的** 日志，
+        // **先脱敏再落盘**。只读日志文件 —— 不碰配置、不碰密码库，
+        // 也不含原始门户回包（日志里本来就只有判定与失败原因）。
+        const nlohmann::json a = nlohmann::json::parse(req.args_json, nullptr, false);
+        DiagRange range;
+        range.around_ts = StrArg(a, "around");
+        range.around = !range.around_ts.empty();
+        if (a.is_object() && a.contains("minutes") && a["minutes"].is_number_integer())
+            range.minutes = a["minutes"].get<int>();
+
+        const std::string out_dir = AppDataSubDir("diagnostics");
+        if (out_dir.empty()) return Fail(req, "无法创建导出目录（%APPDATA%\\CampusNet-Keeper\\diagnostics）");
+
+        const std::string build =
+            std::string("CampusNet-Keeper ") + VersionString() + " / " + BuildStampString();
+        const DiagResult r = ExportDiagnostics(CurrentLogDir(), out_dir, build, range);
+        if (!r.ok) return Fail(req, "导出诊断日志失败：" + r.error);
+
+        nlohmann::json d;
+        d["path"] = r.path;
+        d["lines"] = r.lines;
+        d["truncated"] = r.truncated;
+        d["sources"] = r.sources;
+        d["missing"] = r.missing;
+        LogInfo("已导出诊断日志：" + r.path + "（" + std::to_string(r.lines) + " 行" +
+                (r.truncated ? "，已截断" : "") + "）");
+        return Ok(req, d.dump());
+    }
+
+    if (req.cmd == "probe_target") {
+        // 高级设置里的「测试探测地址」：**只探测**，不认证、不保存、不动守护的回退状态。
+        // url 为空 = 按守护的现行策略测（主地址优先，必要时回退）。
+        const nlohmann::json a = nlohmann::json::parse(req.args_json, nullptr, false);
+        const std::string want = StrArg(a, "url");
+
+        AppConfig cfg;
+        std::string err;
+        if (!load(cfg, err)) return Fail(req, "读取配置失败：" + err);
+
+        // 空 url = 按守护的现行策略测（主地址优先，必要时回退）；
+        // 指定 url = 只测那一个，**不换目标**（用户测的是 A，不能拿 B 的结果糊弄）。
+        const ProbeOutcome po = want.empty()
+            ? sch.ProbeNowWithFallback(cfg.settings)
+            : ProbeSingle(cfg.settings, want, cfg.settings.probe_expect);
+
+        nlohmann::json d;
+        d["url"] = po.used_url;
+        d["state"] = po.result.state == NetState::Online    ? "online"
+                     : po.result.state == NetState::Offline ? "offline"
+                     : po.result.state == NetState::PortalDetected ? "portal"
+                                                                   : "unknown";
+        d["message"] = po.result.message;
+        d["status"] = po.result.response.status;
+        d["elapsed_ms"] = po.total_ms;
+        d["used_fallback"] = po.used_fallback;
+        d["all_failed"] = po.all_failed;
+        if (po.attempts.size() > 1 || po.used_fallback) {
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& at : po.attempts) {
+                arr.push_back({
+                    {"url", at.url},
+                    {"fallback", at.fallback},
+                    {"elapsed_ms", at.elapsed_ms},
+                    {"status", at.result.response.status},
+                    {"state", at.result.state == NetState::Online    ? "online"
+                              : at.result.state == NetState::Offline ? "offline"
+                              : at.result.state == NetState::PortalDetected ? "portal"
+                                                                            : "unknown"},
+                });
+            }
+            d["attempts"] = arr;
+        }
+        LogInfo("界面测试了探测地址：" + po.used_url + "（" +
+                std::to_string(po.total_ms) + "ms，" +
+                (po.all_failed ? "全部不可用" : po.used_fallback ? "备用" : "主地址") + "）");
+        return Ok(req, d.dump());
     }
 
     if (req.cmd == "get_log_tail") {

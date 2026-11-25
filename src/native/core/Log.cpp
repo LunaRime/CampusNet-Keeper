@@ -215,6 +215,8 @@ std::string RedactJsonPairs(const std::string& s) {
 
 }  // namespace
 
+std::string CurrentLogDir() { return g_log_dir; }
+
 std::string LogFileNameForDate(const std::string& ymd) {
     return "keeper-" + ymd + ".log";
 }

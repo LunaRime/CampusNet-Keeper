@@ -4,6 +4,8 @@
 #include <chrono>
 #include "store/Config.h"
 #include "core/Probe.h"
+#include "core/ProbePlan.h"
+#include "core/ProbeTarget.h"
 
 namespace cnk {
 
@@ -37,6 +39,11 @@ struct SchedulerSnapshot {
     int ineffective_logouts = 0;
     std::string portal_body;
     bool paused = false;
+
+    // 本轮实际请求的探测地址，以及是否走了备用（W5）。
+    // 界面据此区分「主地址不可用，已切备用」与「所有探测目标均不可用」。
+    std::string probe_url;
+    bool probe_fallback = false;
 
     // 链路四段的证据（W3）：1 = 本轮拿到了"通过"的证据，0 = 明确失败，
     // -1 = 没有证据。界面只允许把 1 显示成"成功"，-1 必须显示"未知" ——
@@ -99,6 +106,14 @@ public:
     std::string LastPortalBody() const;
 
     bool RunProbeNow(ProbeResult& out);
+
+    /// 覆盖内置备用地址（测试/诊断用）。正常路径**不要调**：
+    /// 生产上备用地址由 PickFallbackTarget() 按"必须与主地址异域"挑选。
+    void SetFallbackOverride(const ProbeTarget& fb);
+
+    /// 按给定设置做一次带回退的探测，**不影响**守护的"暂时沿用备用"状态。
+    /// 「测试探测地址」用它；日常守护走 Tick 内部的路径。
+    ProbeOutcome ProbeNowWithFallback(const Settings& s) const;
 
 private:
     struct Impl;

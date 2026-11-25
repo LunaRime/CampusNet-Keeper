@@ -37,6 +37,9 @@
                   HotKey="Alt+C"
                   Click="Copy_Click"
                   ToolTip.Tip="复制当前筛选结果（不含被过滤掉的行）"/>
+          <Button Classes="outline compact" Content="导出诊断日志"
+                  Command="{Binding ExportDiagnosticsCommand}"
+                  ToolTip.Tip="最近 15 分钟，先脱敏再落盘：不含账号/凭据/门户参数/真实地址，也不含配置文件与门户原始回包"/>
           <Button Classes="outline compact" Content="打开日志目录"
                   Command="{Binding OpenLogFolderCommand}"/>
         </StackPanel>

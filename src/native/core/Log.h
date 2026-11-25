@@ -29,6 +29,9 @@ std::string RedactSecrets(const std::string& s);
 
 // 以下三个供 AuditLastExit 与单测使用（不依赖全局状态、可独立复算）：
 std::string LogFileNameForDate(const std::string& ymd);
+
+/// 当前日志目录（未初始化/不落盘时为空）。供诊断导出定位来源。
+std::string CurrentLogDir();
 int CleanupOldLogs(const std::string& log_dir, const std::string& today_ymd, int keep_days);
 bool HasAnyLogFile(const std::string& log_dir);
 

@@ -41,6 +41,21 @@
                        Text="默认用 generate_204（204）。204 也必须走 AC 复核 + 出网验证，否则僵尸会话检测会被绕过。"/>
           </StackPanel>
 
+          <!-- W5：只探测、不认证、不保存。主地址不可用时这里显示的是**实际**用的备用地址 -->
+          <StackPanel Spacing="8">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Button Classes="outline compact" Content="测试探测地址"
+                      Command="{Binding TestProbeCommand}"
+                      ToolTip.Tip="按当前配置探测一次（不认证、不保存），显示实际目标与耗时"/>
+              <TextBlock Classes="caption" VerticalAlignment="Center"
+                         Text="只探测，不登录；不会改写配置"
+                         Foreground="{DynamicResource CnkTextMuted}"/>
+            </StackPanel>
+            <SelectableTextBlock Classes="mono" Text="{Binding ProbeTestResult}"
+                                 TextWrapping="Wrap"
+                                 IsVisible="{Binding HasProbeTestResult}"/>
+          </StackPanel>
+
           <Grid>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*" MinWidth="0"/>

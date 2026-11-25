@@ -151,6 +151,8 @@ logread -e cnkrouter -f
 ```sh
 cnkrouter --config=/var/etc/cnkrouter.conf --probe   # 0=在线 2=门户 3=离线
 cnkrouter --config=/var/etc/cnkrouter.conf --once    # 完整走一遍并复测
+# 只读采集诊断日志（脱敏后输出；默认最近 15 分钟，也可 --around="2026-11-25 13:00:00" 取前后各 2 分钟）
+cnkrouter --config=/var/etc/cnkrouter.conf --diagnose --minutes=15 --out=/tmp/diag.log
 cnkrouter --selftest                                  # 不联网，验 AES/Base64/URL/JSON
 cnkrouter --version                                  # 版本 + git 提交 + 构建时间
 ```

@@ -46,6 +46,7 @@ test: $(OUT)/cnkrouter
 	sh tests/test_cleanup.sh
 	python3 tests/e2e_test.py $(OUT)/cnkrouter
 	python3 tests/test_reload.py $(OUT)/cnkrouter
+	python3 tests/test_diag.py $(OUT)/cnkrouter
 
 clean:
 	rm -rf $(OUT)

@@ -39,6 +39,8 @@ add_library(cnk_core STATIC
   src/native/tray/TrayIcon.cpp
   src/native/core/ProbeTarget.cpp
   src/native/core/Probe.cpp
+  src/native/core/ProbePlan.cpp
+  src/native/core/DiagExport.cpp
   src/native/core/PortalPage.cpp
   src/native/core/Crypto.cpp
   src/native/core/LocalIp.cpp
@@ -137,6 +139,8 @@ add_executable(cnk_tests
   tests/portal_page_test.cpp
   tests/crypto_test.cpp
   tests/scheduler_test.cpp
+  tests/probe_fallback_test.cpp
+  tests/diag_export_test.cpp
   tests/cli_test.cpp
   tests/sys_test.cpp
   tests/integrity_test.cpp

@@ -18,6 +18,7 @@
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/Probe.h"
+#include "core/ProbePlan.h"
 #include "core/ProbeTarget.h"
 #include "core/PortalPage.h"
 #include "core/Scheduler.h"
@@ -164,11 +165,26 @@ int RunProbeNow(cnk::AppConfig& cfg) {
         PrintLine("本机: " + cnk::DescribeRoute(cnk::RouteForUrl(portal_url)) +
                   "（目标 " + portal_url + "）");
     }
-    // 离线可能是单次超时（实测），故策略定为「确定结论即停、离线才重试」
+    // 离线可能是单次超时（实测），故策略定为「确定结论即停、离线才重试」。
+    // 目标选择与守护进程共用（W5）：主地址不可用时同一轮回退备用，并记录实际目标。
     int tries = 0;
+    std::string last_url;
+    bool last_fb = false;
+    int last_ms = 0;
+    cnk::FallbackState fb_state;
     auto r = cnk::ProbeUntilDecided(
-        [&cfg, &tries] { ++tries; return cnk::ProbeOnce(cfg.settings); }, kDecideProbes,
-        kDecideDelayMs);
+        [&] {
+            ++tries;
+            const cnk::ProbeOutcome po = cnk::ProbeWithFallback(cfg.settings, fb_state);
+            last_url = po.used_url;
+            last_fb = po.used_fallback;
+            last_ms = po.total_ms;
+            return po.result;
+        },
+        kDecideProbes, kDecideDelayMs);
+    if (!last_url.empty())
+        PrintLine("实际目标: " + last_url + (last_fb ? "（备用地址）" : "（主地址）"));
+    if (last_ms > 0) PrintLine("整轮耗时: " + std::to_string(last_ms) + " ms");
     const char* names[] = {"Unknown", "Online（网络正常）",
                            "PortalDetected（被 Portal 劫持）", "Offline（无连接）"};
     PrintLine(std::string("结果: ") + names[(int)r.state]);
